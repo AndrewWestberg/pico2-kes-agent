@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "purpose": "Corrected native baseline inventory for T004; this is not a runtime qualification or an active gate.",
+  "observed_on": "2026-10-27",
+  "toolchain": {
+    "ghc": {"version": "9.12.4", "command": "ghc --numeric-version"},
+    "cabal_install": {"version": "3.16.1.0", "command": "cabal --numeric-version"}
+  },
+  "sources": {
+    "cardano_node": {
+      "root": "/home/westbam/haskell/cardano-node",
+      "revision": "7af71936a6164119a7a1446152b1ba2f7df54e07",
+      "research_revision_matches": true,
+      "dirty_source": {"state": "clean", "status_porcelain_v1_z_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "status_bytes": 0},
+      "commands": ["git -C /home/westbam/haskell/cardano-node rev-parse HEAD", "git -C /home/westbam/haskell/cardano-node status --porcelain=v1 -z -uall | sha256sum"]
+    },
+    "ouroboros_consensus": {
+      "root": "/home/westbam/haskell/ouroboros-consensus",
+      "revision": "6673fce255f12addb602b0ae2d0a20f51a2cd519",
+      "research_revision_matches": true,
+      "dirty_source": {"state": "clean", "status_porcelain_v1_z_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "status_bytes": 0},
+      "commands": ["git -C /home/westbam/haskell/ouroboros-consensus rev-parse HEAD", "git -C /home/westbam/haskell/ouroboros-consensus status --porcelain=v1 -z -uall | sha256sum"]
+    },
+    "dirty_digest_scope": "At this snapshot both tracked and nonignored untracked status streams are empty, so SHA-256 of the empty byte string is an unambiguous clean representation, bound to each HEAD above. A nonempty status hash is not a digest of changed contents: future dirty candidates must additionally retain staged and unstaged binary diffs and path-delimited hashes of untracked file contents, including modes and symlink targets; ignored build outputs are not source inventory. Re-record source identity and plans after native edits."
+  },
+  "archives": [
+    {"package": "kes-agent", "version": "1.3.0.0", "source": "CHaP secure repository cache", "path": "/home/westbam/.cabal/packages/cardano-haskell-packages/kes-agent/1.3.0.0/kes-agent-1.3.0.0.tar.gz", "sha256": "37b9729cb30590a0a520058b1d33f4ee1853b7503bbb46d3513be57d88369797", "research_digest_matches": true},
+    {"package": "kes-agent-crypto", "version": "1.1.0.0", "source": "CHaP secure repository cache", "path": "/home/westbam/.cabal/packages/cardano-haskell-packages/kes-agent-crypto/1.1.0.0/kes-agent-crypto-1.1.0.0.tar.gz", "sha256": "43afbdfbb6ee992d34adb1d1b3ac1070da5395ffa2ddd8411c2cc4ad1818cc36", "research_digest_matches": true}
+  ],
+  "archive_verification_command": "sha256sum /home/westbam/.cabal/packages/cardano-haskell-packages/kes-agent/1.3.0.0/kes-agent-1.3.0.0.tar.gz /home/westbam/.cabal/packages/cardano-haskell-packages/kes-agent-crypto/1.1.0.0/kes-agent-crypto-1.1.0.0.tar.gz",
+  "dependency_plans": {
+    "native_format": "Cabal dist-newstyle/cache/plan.json; paths and SHA-256 identify complete resolved graphs, not build or runtime evidence.",
+    "node": {
+      "status": "resolved offline dry-run, no build",
+      "command": "cabal build --dry-run --offline --builddir=/tmp/pico2-kes-node-plan cardano-node:exe:cardano-node",
+      "working_directory": "/home/westbam/haskell/cardano-node",
+      "source_override_for_offline_resolution": "The expected Cabal source-repository cache path /tmp/pico2-kes-node-plan/src/ouroboros_-96d9c29afa73db1d9e8bd3cdaa2bb9638646a0be882c169229a929af58291a14 was symlinked to the clean consensus checkout at the exact project tag. Offline mode did not contact the configured remote. The first attempt without this cache failed because the source directory was absent.",
+      "plan_path": "/tmp/pico2-kes-node-plan/cache/plan.json",
+      "plan_sha256": "7fbd8be8bc8a09650e60bdc87c1b9c6e04e299439a50f5778d4cbd8491d1a8bd",
+      "index_state": {"hackage.haskell.org": "2026-08-14T13:38:07Z", "cardano-haskell-packages": "2026-09-23T18:57:23Z"},
+      "local_project_option": "cardano-crypto-praos -external-libsodium-vrf",
+      "resolved_key_packages": {"cardano-node": "11.1.3", "ouroboros-consensus": "4.2.1.0", "kes-agent": "1.3.0.0", "kes-agent-crypto": "1.2.0.0"},
+      "consensus_source_repo": {"location": "git@bitbucket.org:muamw10/ouroboros-consensus.git", "tag": "6673fce255f12addb602b0ae2d0a20f51a2cd519", "plan_source_sha256": "0034cc245919ad03094543ec0628aa48cbb5e0a4ea86d446a1e5283f94b70ffa"}
+    },
+    "consensus": {
+      "status": "preexisting Cabal plan observed; generation time and exact source association are not independently established",
+      "plan_path": "/home/westbam/haskell/ouroboros-consensus/dist-newstyle/cache/plan.json",
+      "plan_sha256": "292217503692ea5c7f032f4818cef2d180d229d56d1accb14d4309ca526f830c",
+      "compiler": "ghc-9.12.4",
+      "cabal_version": "3.16.1.0",
+      "current_project_index_state": {"hackage.haskell.org": "2026-07-30T07:30:12Z", "cardano-haskell-packages": "2026-07-30T09:29:13Z"},
+      "resolved_key_packages": {"ouroboros-consensus": "4.2.1.0", "kes-agent": "1.3.0.0", "kes-agent-crypto": "1.2.0.0"}
+    },
+    "important_mismatch": "Both observed plans resolve kes-agent-crypto 1.2.0.0 (archive SHA-256 ebca1286b89e2f01335bfd9417fa29f6bbd9811d120dcb326b27930116093446), not the verified research archive 1.1.0.0. T056 must pin 1.1.0.0 and capture fresh integrated plans; the 1.1.0.0 archive hash alone does not prove it is selected. The node plan is in temporary storage and must be regenerated or retained for later qualification."
+  },
+  "compatibility_matrix": [
+    {"form": "legacy bulk triples", "status": "supported by inspected source", "details": "Bulk JSON is an array of triples [operational certificate text envelope, VRF signing-key text envelope, KES signing-key text envelope]. Each envelope is decoded into a file-backed PraosCredentialsUnsound; singleton and bulk credentials are concatenated. Bulk parsing does not perform the singleton opcert/KES-key hash check.", "source": "cardano-node/cardano-node/src/Cardano/Node/Protocol/Shelley.hs:161-169,233-273"},
+    {"form": "singleton file", "status": "supported by inspected source", "details": "--shelley-operational-certificate, --shelley-vrf-key and --shelley-kes-key must all be present or all absent. The key and certificate hot-key hashes are checked for equality.", "source": "cardano-node/cardano-node/src/Cardano/Node/Protocol/Shelley.hs:171-231; cardano-node/cardano-node/src/Cardano/Node/Parsers.hs:370-408"},
+    {"form": "singleton agent", "status": "supported by inspected source", "details": "--shelley-kes-agent-socket replaces --shelley-kes-key, still requires certificate and VRF. The loader reads the certificate cold verification key but does not check its hot key against the agent-delivered key. A dynamic hot key and receiver are constructed.", "source": "cardano-node/cardano-node/src/Cardano/Node/Protocol/Shelley.hs:183-204; ouroboros-consensus/ouroboros-consensus-protocol/src/ouroboros-consensus-protocol/Ouroboros/Consensus/Protocol/Praos/Common.hs:287-330"},
+    {"form": "versioned bulk object entries", "status": "not supported by corrected baseline", "details": "The inspected decoder expects triples, not object entries; versioned file and agent objects are planned integration, not existing baseline forms. Shelley/Credentials.hs is absent in this checkout.", "source": "cardano-node/cardano-node/src/Cardano/Node/Protocol/Shelley.hs:240-273"},
+    {"form": "bulk agent", "status": "rejected by corrected baseline", "details": "The bulk decoder accepts triples of text envelopes only; it has no agent source branch. A historical installed-node preflight rejected an agent-shaped object with 'expected Array, but encountered Object'; that binary's dirty-source/build identity was not established.", "source": "cardano-node/cardano-node/src/Cardano/Node/Protocol/Shelley.hs:240-273; specs/001-pico2-kes-agent/plan.md#c1-sighup-refinement-record"},
+    {"form": "external signing", "status": "no external-signing credential source observed in corrected baseline", "details": "PraosCredentialsSource has only unsound file credentials and agent socket constructors. Explicitly exclude reintroduction of removed cardano-kes-forge integration; do not treat the historical predecessor versioned/external-signing form as supported baseline behavior.", "source": "ouroboros-consensus/ouroboros-consensus-protocol/src/ouroboros-consensus-protocol/Ouroboros/Consensus/Protocol/Praos/Common.hs:285-297; specs/001-pico2-kes-agent/research.md#r1-corrected-native-baseline"}
+  ],
+  "reload_source_observations": {
+    "initialization_boundary": "On UNIX the initial handler updates topology and RPC and traces BlockForgingUpdate NotEffective; after consensus initialization the node-kernel hook installs the handler that calls updateBlockForging.",
+    "configured_paths": "updateBlockForging calls mkConsensusProtocol with ncProtocolConfig and ncProtocolFiles from the original NodeConfiguration; it rereads those configured credential paths, not new CLI paths. A matching block type yields new forging workers passed to setBlockForging.",
+    "malformed_or_invalid": "Bulk JSON decode produces EnvelopeParseError; invalid embedded envelopes produce FileError with synthetic bulk index/type location; singleton incomplete credentials or mismatched KES key yield explicit errors. Except for the missing-file cases below, updateBlockForging traces BlockForgingUpdateError without installing a replacement forging set. Block-type mismatch is also traced without setBlockForging.",
+    "missing_and_io": "For Shelley and Cardano protocol wrappers, singleton credential FileError FileDoesNotExistError causes setBlockForging [] and DisabledBlockForging. For the Cardano wrapper, every bulk CredentialsReadError is mapped to FileDoesNotExistError regardless of the underlying IO error and likewise disables the entire forging set. For a Shelley wrapper, CredentialsReadError is not mapped by wasFileRemovedFromScope and is traced as an update error instead. Malformed bulk JSON is not a CredentialsReadError. Agent socket connection errors occur asynchronously and are not credential-file read errors.",
+    "file_and_agent_lifecycle": "File credentials initialize a hot key; slot-driven evolution catches up in memory subject to validity. An agent constructs a keyless dynamic hot key and receiver; ordinary disconnect retains the existing key unless an explicit Drop is received. Explicit reload replaces workers and can leave an unavailable replacement keyless until a fresh delivery. These are source/design observations, not proof of a live reload.",
+    "sources": ["cardano-node/cardano-node/src/Cardano/Node/Run.hs:412-433,475-480,596-605,620-670", "cardano-node/cardano-node/src/Cardano/Node/Protocol/Shelley.hs:171-273", "ouroboros-consensus/ouroboros-consensus-protocol/src/ouroboros-consensus-protocol/Ouroboros/Consensus/Protocol/Praos/Common.hs:317-330", "specs/001-pico2-kes-agent/plan.md#sighup-credential-reload"]
+  },
+  "cancellation_evidence": {
+    "inspected_source_hazard": "runKESAgentClient catches AsyncCancelled inside forever, catches SomeException too, and delays ten seconds before retrying. HotKey.mkHotKeyWith finalizes with cancel keyThreadAsync followed by unset. A swallowed cancellation can prevent awaited cancellation and therefore cleanup; both exception handlers require cancellation-aware treatment.",
+    "sources": ["ouroboros-consensus/ouroboros-consensus-protocol/src/ouroboros-consensus-protocol/Ouroboros/Consensus/Protocol/Praos/AgentClient.hs:125-168", "ouroboros-consensus/ouroboros-consensus-protocol/src/ouroboros-consensus-protocol/Ouroboros/Consensus/Protocol/Ledger/HotKey.hs:300-321"],
+    "prior_isolated_probe": {"status": "historical observation, not rerun here", "source": "specs/001-pico2-kes-agent/plan.md#c1-sighup-refinement-record", "description": "An in-memory Haskell probe using io-classes 1.10.1.0 reproduced the exception-loop structure: cancellation was caught, the loop re-entered after ten seconds and waiting cancellation did not complete. It was not the actual native receiver/finalizer."},
+    "native_receiver_reproduction": "pending T047; no actual native receiver/finalizer reproduction or passing fix claimed",
+    "actual_sighup_and_accepted_blocks": "pending T058/T059/T094; no live-node hang, reload completion, accepted-block or hardware result claimed"
+  }
+}

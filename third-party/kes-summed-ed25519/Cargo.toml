@@ -1,0 +1,13 @@
+[package]
+name = "kes-summed-ed25519-adapted"
+version = "0.2.1"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Attributed bounded no_std Sum6KES adaptation of kes-summed-ed25519 0.2.1"
+repository = "https://github.com/input-output-hk/kes"
+
+[dependencies]
+blake2 = { version = "=0.10.6", default-features = false }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fast", "zeroize"] }
+zeroize = { version = "=1.8.2", default-features = false }

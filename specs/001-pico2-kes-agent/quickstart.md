@@ -82,7 +82,7 @@ Expected: active service, enrolled intended device identity, public capacity 64,
 
 ### Focused U1/U2/I1 validation
 
-Use disposable fixtures and the existing `smoke`, `power-loss`, `node` and `operator` qualification commands below:
+Use disposable fixtures for the focused scenarios below. The attended-cut runner is implemented separately in section 5; absent `smoke`, full `power-loss`, `node`, or `operator` commands remain pending rather than passing by description.
 
 - **U1:** begin on qualified blank state, then interrupt before first write, during a partial first write, after valid COMMIT before CLEAN, after CLEAN before reply, and before host pin installation. Observe the specified blank retry, explicit unavailable diagnosis, or same-identity recovery—not automatic formatting. Reject wrong serial, a second commissioning ID and corrupt/nonblank state; normal mode never initializes. Preserve public evidence and keep device-private identity/storage keys off the host.
 - **U2:** observe the stored public descriptor and actual V2 timestamp. Cut after publication COMMIT, after CLEAN before USB reply, and after send before confirmation. Repeated committed delivery must use the identical timestamp and bundle; a later visible state must be newer. Equal-period refresh, status polling and reconnect must not create publications. Exercise expiry Drop, direct replacement, explicit deletion without fresh period context, same-pool re-enrollment after restart with a lower valid host-time sample, different-pool slot reuse, and overflow rejection. Verify terminal deletion timestamp recovery from public receipts without retaining old key state.
@@ -162,6 +162,8 @@ After T047 registers the actual native regression cases, and before T054's fix, 
 cargo run --locked -p qualification -- native-regression --fixture "$FIXTURE"
 ```
 
+The command validates the complete fixture and its local prerequisites before starting native cases. Until the receiver/finalizer cases are registered, it reports zero cases as inconclusive and exits nonzero; this is not a regression result.
+
 Use only the isolated disposable fixture and a node it launched; establish `NODE_PID` from that fixture's process record and verify its live PID, executable and command line against the fixture's node, configuration and bulk paths before signaling. Verify from fixture/node initialization evidence that the SIGHUP handler is installed and consensus initialization is complete; also confirm valid context and the applicable agents are ready for the post-initialization cases. Never signal an arbitrary or production process. Then:
 
 ```sh
@@ -201,24 +203,31 @@ Compare derived public key with the expected KES vkey. This CLI conversion alone
 
 ## 5. Full qualification campaigns
 
-`FIXTURE` is an owner-controlled qualification JSON document naming the actual device pin, fitted-part qualification record, firmware/binary paths and hashes, 64 disposable pool/public identities, existing protected cold/VRF fixture locations, trusted network/genesis/node sockets, independent decoder/peer executables, recipient-host endpoint, power controller and evidence directory. For reload qualification it also identifies the disposable node PID/configuration, initialization and receiver/socket observations, mixed and singleton topologies, and predeclared leadership windows; retain observed timestamps, pool outcomes, public file immutability and peer-accepted block evidence without raw keys. Secrets are referenced only where the trusted fixture needs them, never embedded into reports. The runner validates readiness and refuses production networks/credentials or missing hardware. It must implement the exact fixture schema before use; absent runner/fixture is unavailable, not pass.
+`FIXTURE` is an owner-controlled qualification JSON document naming the actual device pin, fitted-part qualification record, firmware/binary paths and hashes, 64 disposable pool/public identities, existing protected cold/VRF fixture locations, trusted network/genesis/node sockets, independent decoder/peer executables, recipient-host endpoint, power controller and evidence directory. Secrets are referenced only where the trusted fixture needs them and are never copied into evidence. For the attended cut runner, set `power_controller` to `manual-usb-hub` and add `attended` with absolute `management_socket`, `commissioning_config`, `normal_config`, and current-candidate `hardware_report` paths, a physical `usb_hub_label`, and exactly ten `cut_plan` entries. Every entry has `operation`, optional absolute `receipt`, and `expected_outcome` (`success` or `rejected`); the plan must cover generation, certification, evolution, activation, discard, deletion, and cleanup.
 
-For the endurance projection, also provide public intended-deployment network/era profiles, the fitted part's guaranteed endurance rating and operating conditions, and a documented per-sector prior-wear bound. Keep deployment timing separate from any accelerated disposable test-network timing; no production credentials or production-node connection are needed for this input. Record the actual test-network schedule and count its physical campaign wear separately.
+First create the bounded physical-input worksheet without overwriting an existing file. Fill every value from measurements or traceable records: all 1,024 prior-wear and per-operation sector-cost rows, all 64 deployment network profiles, fitted-part rating/conditions, flash stall, stack/framework high-water values, and the three assessments. Each assessment requires `{"status":"pass","evidence":...}`; a placeholder, absent evidence, wrong dimensions, failed endurance margin, oversized image, or missing physical input remains non-passing.
 
 ```sh
-cargo run --locked -p qualification -- smoke --fixture "$FIXTURE"
-cargo run --locked -p qualification -- native-regression --fixture "$FIXTURE"
-cargo run --locked -p qualification -- interop --fixture "$FIXTURE"
-cargo run --locked -p qualification -- load --fixture "$FIXTURE" --rounds 1000
-cargo run --locked -p qualification -- power-loss --fixture "$FIXTURE" --cuts 1000
-cargo run --locked -p qualification -- node --fixture "$FIXTURE"
-cargo run --locked -p qualification -- operator --fixture "$FIXTURE"
+cargo run --locked -p qualification -- hardware --write-template "$PHYSICAL_INPUT"
+# Perform the physical measurements and replace every incomplete/zero placeholder.
+cargo run --locked -p qualification -- hardware --input "$PHYSICAL_INPUT"
 ```
+
+Keep deployment timing separate from accelerated disposable test-network timing; no production credentials or production-node connection are needed. Record the actual test-network schedule and count its physical campaign wear separately. The hardware report is candidate-bound: rebuild or source changes require a new report.
+
+After a passing current-candidate hardware report, start the pinned daemon in normal mode against the disposable fixture and confirm its management socket is live. In a second terminal, prepare each cut-plan operation against that same device. At each runner checkpoint: type `ARMED` only when the named operation is ready to execute, start that operation in the second terminal, immediately switch off the USB hub named by the runner, then type `OFF`. Switch the hub on only when prompted, wait for USB/daemon reconnect, and type `ON`. Do not disconnect host power, run production credentials, edit the receipt, or substitute an automated USB reset. The runner verifies reconnect identity/revision and reconciles each configured receipt. Repeat for exactly ten cuts; the resulting report explicitly covers only this attended-cut slice.
+
+```sh
+cargo run --locked -p qualification -- attended-cuts --fixture "$FIXTURE" --cuts 10
+cargo run --locked -p qualification -- native-regression --fixture "$FIXTURE"
+```
+
+`smoke`, `interop`, `load`, `node`, and `operator` remain separate full-campaign owners. Do not treat the attended-cut report as any of those results or as a complete G8/acceptance verdict.
 
 | Scenario | Required observed outcome |
 |---|---|
 | SC-001 capacity | All 64 pools correctly bound with 64 active+64 staged; 65th enrollment changes no existing pool |
-| SC-002/SC-009 faults/cleanup | >=1,000 physical cuts plus every modeled persistent boundary; no acknowledged/released rollback; obsolete regions erased/read-verified; corrupt pool unavailable without reset; no primary plaintext persistent outputs |
+| SC-002/SC-009 faults/cleanup | 10 attended physical cuts plus every modeled persistent boundary; no acknowledged/released rollback; obsolete regions erased/read-verified; corrupt pool unavailable without reset; no primary plaintext persistent outputs |
 | SC-003 recovery | All 64 valid pools ready <=60 s after device, daemon, valid context and requesting nodes are available; period 5 outage resumes at 8 without a new certificate |
 | SC-004 normal burst | Every one of 64 concurrent requests usable <=10 s, including stalled/malformed-client pressure; zero cross-pool results |
 | SC-005 rotation | Offline backup does not block activation; lost replies/restart create no duplicate generation or superseded-key resurrection; other 63 pools unaffected |

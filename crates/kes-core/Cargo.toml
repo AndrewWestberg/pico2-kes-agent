@@ -1,0 +1,33 @@
+[package]
+name = "kes-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+qualification = []
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false }
+blake2 = { version = "=0.10.6", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+zeroize = { version = "=1.8.2", default-features = false }
+rand_chacha = { version = "=0.9.0", default-features = false }
+hpke = { version = "=0.13.0", default-features = false, features = ["x25519"] }
+hkdf = { version = "=0.12.4", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets"] }
+chacha20poly1305 = { version = "=0.10.1", default-features = false }
+kes-summed-ed25519-adapted = { version = "=0.2.1", path = "../../third-party/kes-summed-ed25519" }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+criterion = "=0.8.2"
+libc = "=0.2.191"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+
+[[bench]]
+name = "lifecycle"
+path = "../../benches/lifecycle.rs"
+harness = false

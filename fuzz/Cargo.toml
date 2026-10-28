@@ -1,0 +1,59 @@
+[package]
+name = "pico2-kes-agent-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.qualification]
+active-targets = ["usb", "management"]
+pending-targets = ["node_service", "certificate", "artifact"]
+pending-policy = "Pending targets terminate non-successfully until wired to their production parser; compilation or an empty run is not evidence."
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+kes-core = { path = "../crates/kes-core" }
+kes-protocol = { path = "../crates/kes-protocol" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "usb"
+path = "fuzz_targets/usb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_service"
+path = "fuzz_targets/node_service.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "management"
+path = "fuzz_targets/management.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certificate"
+path = "fuzz_targets/certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "artifact"
+path = "fuzz_targets/artifact.rs"
+test = false
+doc = false
+bench = false
+
+[patch.crates-io]
+hpke = { path = "../third-party/hpke" }

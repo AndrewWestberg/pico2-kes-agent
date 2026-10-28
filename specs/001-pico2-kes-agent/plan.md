@@ -12,7 +12,7 @@ Build a Rust current-key provider for the accepted Pico2 A2: persist 64 independ
 
 `pico2-kes-agentd` owns USB, exposes one existing-protocol node-service socket per pool plus an equally authorized management socket, and persists only public configuration/reconciliation receipts. `pico2-kes-agent-cli` performs the full lifecycle through that daemon and restores conventional key files locally on the backup host. Extend the native bulk loader and receive validation without changing the node-service protocol or adding file fallback. Preserve supported baseline credential semantics; do not recreate the removed predecessor external-signing integration. Node retains delivered keys and signs locally.
 
-Research selects a single-image 3,088-KiB flash allocation instead of the inherited dual-image layout that would exceed 4 MiB at 64 pools. One shared KES workspace avoids retaining a full public tree per pool in RAM. Hardware fit, erase behavior and target timings remain measured acceptance gates.
+Research selects a single-image 3,104-KiB flash allocation instead of the inherited dual-image layout that would exceed 4 MiB at 64 pools. The allocation includes a durable operation-handoff journal so managed sequence/receipt state survives reboot. One shared KES workspace avoids retaining a full public tree per pool in RAM. Hardware fit, erase behavior and target timings remain measured acceptance gates.
 
 U1 uses explicit attended daemon commissioning and a public enrollment record before normal pinned startup. U2 makes publication timestamps device-owned, atomically committed with visible state and returned unchanged over USB. I1 keeps only per-pool-incarnation period floors while enrolled; deletion removes the floor, with no historical network registry. Required public retry/deletion receipts retain ordering continuity without keeping obsolete operational secrets. See research R11–R13 and the refined storage/management/node contracts.
 
@@ -36,7 +36,7 @@ C1 reuses cardano-node's existing post-initialization SIGHUP handler. File-backe
 
 **Project Type**: Embedded firmware + Unix service + operator CLI + native Cardano integration; no web UI/general HSM.
 
-**Performance Goals**: Every healthy pool in a concurrent 64-pool current-key burst within 10 seconds; all 64 valid pools recovered within 60 seconds after device/service/fresh context/requesting nodes are available; >=1,000 physical randomized power interruptions plus exhaustive software persistent cut points. Targets are unmeasured.
+**Performance Goals**: Every healthy pool in a concurrent 64-pool current-key burst within 10 seconds; all 64 valid pools recovered within 60 seconds after device/service/fresh context/requesting nodes are available; 10 attended physical power interruptions plus exhaustive software persistent cut points. Targets are unmeasured.
 
 **Constraints**: 64 active +64 staged generations; fixed device buffers/no avoidable copies; 128-KiB planned owned RAM budget plus measured framework overhead and >=32-KiB spare SRAM. Common socket authority, no runtime PIN, no secret import, cold signing external, one shared backup recipient private key off-primary, no plaintext primary cache/dumps/swap. No full-system forward-security, physical extraction resistance, captured-flash rollback resistance or producer-fencing claim.
 

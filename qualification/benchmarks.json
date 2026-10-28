@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "purpose": "P0 execution inventory; pending workloads and unapproved baselines are non-passing.",
+  "settings": {
+    "runs_per_revision": 3,
+    "sample_size": 100,
+    "warm_up_seconds": 5,
+    "measurement_seconds": 10,
+    "ratio_threshold": 1.05,
+    "combined_budget_seconds": 1800
+  },
+  "approved_baselines": [],
+  "targets": [
+    {
+      "package": "kes-core",
+      "bench": "lifecycle",
+      "workloads": [
+        {"id": "generation", "criterion_directory": "generation", "status": "pending", "input": "T028 disposable independently checked generation input"},
+        {"id": "evolution-one", "criterion_directory": "evolution-one", "status": "pending", "input": "T033 one-period evolution input"},
+        {"id": "catch-up-31-32", "criterion_directory": "catch-up-31-32", "status": "pending", "input": "T033 valid 31-to-32 catch-up input"},
+        {"id": "certificate-verify", "criterion_directory": "certificate-verify", "status": "pending", "input": "T026 disposable independently checked certificate"},
+        {"id": "artifact-verify", "criterion_directory": "artifact-verify", "status": "pending", "input": "T029 disposable independently checked artifact"}
+      ]
+    },
+    {
+      "package": "pico2-kes-agent",
+      "bench": "host",
+      "workloads": [
+        {"id": "framing-ordinary", "criterion_directory": "framing-ordinary", "status": "pending", "input": "T038 ordinary fixed protocol frame"},
+        {"id": "framing-maximum", "criterion_directory": "framing-maximum", "status": "pending", "input": "T038 maximum valid protocol frame"},
+        {"id": "journal-small", "criterion_directory": "journal-small", "status": "pending", "input": "T034 declared small journal with real fsync and reconcile"},
+        {"id": "journal-near-limit", "criterion_directory": "journal-near-limit", "status": "pending", "input": "T034 declared near-admission-limit journal with real fsync and reconcile"}
+      ]
+    }
+  ]
+}

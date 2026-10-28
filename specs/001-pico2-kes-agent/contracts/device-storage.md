@@ -4,16 +4,19 @@
 
 The layout is a design for qualified raw NOR with 4,096-byte erase sectors and 256-byte program pages, not an observation about the attached board. Read JEDEC/SFDP and match the qualified part/geometry before enrollment. Reject unsupported fitted storage without initialization. No filesystem, hidden translation layer or encryption-only erasure claim.
 
+The clean-cutover layout is storage format version 2. Version 2 adds the operation-handoff domain, pool discard recovery identity and configuration deletion recovery record. No version-1 migration or decoder fallback is implemented; a nonblank older/unknown format fails closed.
+
 | Region | Half-open offsets | Bytes |
 |---|---|---:|
 | Firmware, image header and boot metadata | `0x000000..0x100000` | 1,048,576 |
 | Device configuration A/B | `0x100000..0x104000` | 16,384 |
 | 64 pool regions | `0x104000..0x304000` | 2,097,152 |
-| Unallocated reserve | `0x304000..0x400000` | 1,032,192 |
+| Durable operation handoff A/B | `0x304000..0x308000` | 16,384 |
+| Unallocated reserve | `0x308000..0x400000` | 1,015,808 |
 
 Pool i starts at `0x104000 + i*0x8000`. Relative layout: secret snapshot A `0x0000..0x1000`, B `0x1000..0x2000`; immutable generation public objects A `0x2000..0x4000`, B `0x4000..0x6000`; reserved `0x6000..0x8000`. Public slots follow generation identity, not fixed active/staged semantics: activation changes references, not a secret-bearing object copy. Each public object holds one 4,064-byte tree, <=2,048-byte artifact and <=2,080 bytes of identity/integrity overhead. Both active+staged canonical states consume 1,216 bytes in one pool snapshot; the remaining 2,880 bytes include descriptors, certificates, authenticated headers and commit/clean marker pages. Encoding must prove this bound at maximum field sizes before hardware enrollment.
 
-Configuration holds device identity/storage keys, the commissioning operation binding, recipient policy, slot/incarnation directory, management sequence/receipt, and qualified format parameters within two 8-KiB banks. Period floors belong to pool incarnations, bound to their enrolled network, not to a device-wide historical network registry. Certificate and publication high-water state also remains in pool snapshots, avoiding a global flash write on every pool evolution. Global management sequence tracks managed commands, not every autonomous KES update. No counter wraps; exhaustion fails explicitly. The reserve is not a license to add old-secret caches or an unqualified wear-leveling layer.
+Configuration holds device identity/storage keys, recipient policy, slot/incarnation directory, the latest deletion terminal publication, and qualified format parameters within two 8-KiB banks. A separate pair of 8-KiB operation-handoff banks stores the exact pending or terminal managed mutation, result digest and next sequence, so reboot cannot reset sequence state or lose a committed result before host acknowledgment. Period floors belong to pool incarnations, bound to their enrolled network, not to a device-wide historical network registry. Certificate and publication high-water state also remains in pool snapshots, avoiding a global flash write on every pool evolution. Global management sequence tracks managed commands, not every autonomous KES update. No counter wraps; exhaustion fails explicitly. The reserve is not a license to add old-secret caches or an unqualified wear-leveling layer.
 
 Firmware uses bounded fixed buffers and one current KES/tree workspace. Never cache all 128 secrets or 64 full trees. Budgets and timing targets are in [research](../research.md); qualify actual image size, stacks and framework overhead. Flash routines execute from SRAM with XIP/cache/core/interrupt handling required by the HAL and fitted part; invalidate caches before read verification. Flash operations may interrupt USB service, so bound worst-case stalls and retain host-side fair queues.
 
@@ -23,9 +26,9 @@ Installation is attended trusted maintenance using the RP boot ROM/normal toolin
 
 Normal startup, discovery and reconnect never initialize storage or learn a new identity automatically. The explicit daemon commissioning mode and CLI ceremony are defined in [management-cli.md](management-cli.md#attended-commissioning). Trust comes from the operator's physically controlled USB connection to the intended board running attended-installed trusted firmware. A serial selects a device; a self-signature proves key possession, not independent hardware or firmware attestation.
 
-Before accepting USB `10 commission`, qualify the part and read-verify the complete allocated state region `0x100000..0x304000`. Classify it as:
+Before accepting USB `10 commission`, qualify the part and read-verify the complete allocated state region `0x100000..0x308000`. Classify it as:
 
-- **Blank:** every byte is erased in both configuration banks and all 64 pool regions. Only this state admits a new commissioning operation. Blank configuration with residual pool bytes is not blank.
+- **Blank:** every byte is erased in both configuration banks, both operation-handoff banks and all 64 pool regions. Only this state admits a new commissioning operation. Blank configuration with residual pool or handoff bytes is not blank.
 - **Committed:** a valid supported configuration COMMIT and body bind the device identity, empty initial directory, commissioning operation ID/request digest and initial sequence 0. Finish any required cleanup/CLEAN before exposing success. An exact retry returns the same public record; another operation is `already_commissioned`, never a reset.
 - **Unavailable:** nonblank state without a valid authoritative commit, invalid/ambiguous committed data, unsupported format, or failed read/erase verification. Return `storage_failure` or `unsupported_version`; preserve the evidence and require attended diagnosis. There is no automatic erase/reinitialize or production reset command.
 
@@ -35,9 +38,11 @@ The commissioning ID/digest and public result remain in configuration after rece
 
 ## Authenticated records and cleanup
 
-Each snapshot identifies format version, pool/incarnation, monotonically increasing revision, parent revision/digest, enrolled network binding, optional absolute period floor, active/staged descriptors, current canonical states, certificate history, current publication descriptor and referenced public-object hashes. The publication descriptor contains kind `none|key|drop`, publication revision, optional generation ID, relative period/certificate binding for a key, and u64 POSIX-microsecond timestamp/high-water. Encrypt/authenticate the body using XChaCha20-Poly1305 with a fresh 24-byte random nonce and device storage key; headers are authenticated associated data. Separate domain keys for device configuration and pool records using HKDF-SHA256. Device storage-key secrecy is not a physical-security claim: the accepted A2 threat boundary excludes malicious firmware and captured-flash rollback. Corruption detection is mandatory regardless.
+Each snapshot identifies format version, pool/incarnation, monotonically increasing revision, parent revision/digest, enrolled network binding, optional absolute period floor, active/staged descriptors, current canonical states, certificate history, current publication descriptor and referenced public-object hashes. The publication descriptor contains kind `none|key|drop`, publication revision, optional generation ID, relative period/certificate binding for a key, and u64 POSIX-microsecond timestamp/high-water. Encrypt/authenticate the body using XChaCha20-Poly1305 with a fresh 24-byte random nonce and device storage key; headers are authenticated associated data. Separate domain keys for device configuration, operation-handoff and pool records using HKDF-SHA256. Device storage-key secrecy is not a physical-security claim: the accepted A2 threat boundary excludes malicious firmware and captured-flash rollback. Corruption detection is mandatory regardless.
 
 COMMIT and CLEAN are fixed, authenticated, separately programmed marker records in reserved pages, bound to snapshot revision/digest. A partially programmed marker is never considered valid. Never program a page beyond the fitted part's qualified constraints. Public objects have authenticated digests in the secret snapshot. Erased bytes alone are not proof of a committed delete; deletion requires a committed tombstone/slot-directory transition and cleanup.
+
+Before a managed pool/device mutation, commit its exact pending handoff record. After the lifecycle transaction becomes authoritative, commit the terminal public receipt before replying. Receipt acknowledgment commits the next sequence and clears the receipt. On reboot, an exact pending retry either completes the operation or reconstructs its already-committed result from durable lifecycle metadata; it never substitutes a rejection for a committed operation. Commissioning is the blank-state exception: its configuration commit contains the operation binding, allowing the terminal commissioning handoff to be reconstructed before USB service starts.
 
 Transaction order:
 

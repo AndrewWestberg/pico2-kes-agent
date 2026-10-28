@@ -56,9 +56,9 @@ Selected crypto dependencies: `ed25519-dalek =2.2.0`, `blake2 =0.10.6`, `sha2 =0
 
 ## R5 — 64-pool storage and memory
 
-**Decision:** new layout with one 1-MiB firmware image including image/boot metadata, 16 KiB configuration, 64 independent 32-KiB pool regions, and 1,008 KiB reserve in nominal 4-MiB flash. Each pool has two 4-KiB secret snapshots (each holds active and staged state), two 8-KiB public objects and 8 KiB spare. See [storage contract](contracts/device-storage.md).
+**Decision:** new layout with one 1-MiB firmware image including image/boot metadata, 16 KiB configuration, 64 independent 32-KiB pool regions, a 16-KiB operation-handoff journal, and 992 KiB reserve in nominal 4-MiB flash. Each pool has two 4-KiB secret snapshots (each holds active and staged state), two 8-KiB public objects and 8 KiB spare. See [storage contract](contracts/device-storage.md).
 
-Arithmetic: 1,048,576 + 16,384 + 64*32,768 = 3,162,112 bytes, leaving 1,032,192 bytes in 4 MiB. The old dual-1-MiB-firmware layout at 64 pools requires 4,176 KiB and does not fit. Single-image attended installation is explicitly chosen; no remote update or crash-resilient A/B firmware updater is promised.
+Arithmetic: 1,048,576 + 16,384 + 64*32,768 + 16,384 = 3,178,496 bytes, leaving 1,015,808 bytes in 4 MiB. The final 16,384-byte term is the durable operation-handoff A/B journal required to retain managed sequence/receipt state across reboot. The old dual-1-MiB-firmware layout at 64 pools requires 4,176 KiB before that journal and does not fit. Single-image attended installation is explicitly chosen; no remote update or crash-resilient A/B firmware updater is promised.
 
 Keep only compact pool descriptors in RAM and one shared KES/tree workspace, not 64 permanent tree caches. Design RAM ceilings: 32 KiB descriptors, 32 KiB crypto/KES workspace, 16 KiB USB frames, 32 KiB stacks/runtime, 16 KiB storage buffers; 128 KiB combined design allocation plus separately measured framework overhead. Require >=32 KiB whole-device measured spare SRAM and image <=1 MiB. These are allocation budgets, not measured link results.
 
