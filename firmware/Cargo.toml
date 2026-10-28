@@ -1,0 +1,25 @@
+[package]
+name = "pico2-kes-firmware"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "pico2-kes-firmware"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+kes-core = { version = "=0.1.0", path = "../crates/kes-core" }
+kes-protocol = { version = "=0.1.0", path = "../crates/kes-protocol" }
+embassy-rp = { version = "=0.10.0", default-features = false, features = ["rp235xa", "rt", "critical-section-impl"] }
+embassy-usb = { version = "=0.6.0", default-features = false }
+embassy-sync = { version = "=0.8.0", default-features = false }
+embassy-futures = { version = "=0.1.2", default-features = false }
+rp-pac = { version = "=7.0.0", default-features = false, features = ["rp235x", "rt"] }
+cortex-m-rt = "=0.7.7"
+hkdf = { version = "=0.12.4", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+zeroize = { version = "=1.8.2", default-features = false }

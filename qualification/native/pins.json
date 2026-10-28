@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "compiler": "ghc-9.12.4",
+  "cabal_install": "3.16.1.0",
+  "index_state": {
+    "hackage.haskell.org": "2026-08-14T13:38:07Z",
+    "cardano-haskell-packages": "2026-09-23T18:57:23Z"
+  },
+  "packages": {
+    "kes-agent": {"version": "1.3.0.0", "sha256": "37b9729cb30590a0a520058b1d33f4ee1853b7503bbb46d3513be57d88369797"},
+    "kes-agent-crypto": {"version": "1.1.0.0", "sha256": "43afbdfbb6ee992d34adb1d1b3ac1070da5395ffa2ddd8411c2cc4ad1818cc36"},
+    "cardano-crypto-class": {"version": "2.5.1.0"},
+    "cardano-api": {"version": "11.6.0.0"}
+  },
+  "reference_revisions": {
+    "cardano-node": "7af71936a6164119a7a1446152b1ba2f7df54e07",
+    "ouroboros-consensus": "6673fce255f12addb602b0ae2d0a20f51a2cd519",
+    "cardano-cli": "25f4d7a6b243d80ed7d716cc91b9c51d9265ace6"
+  },
+  "resolved_plan": {
+    "path": "qualification/native/dist-newstyle/cache/plan.json",
+    "sha256": "9b0e7010c048e3674286f9a5089fa3b3fd9b546a5204b9651c63328609f712c4",
+    "built": true,
+    "bounded_metadata_relaxations": {
+      "allow_newer": ["kes-agent-crypto:contra-tracer", "kes-agent-crypto:cardano-crypto-class"],
+      "allow_older": ["ouroboros-consensus:kes-agent-crypto", "kes-agent:kes-agent-crypto"]
+    },
+    "rationale": "The verified kes-agent-crypto 1.1.0.0 source predates compatible selected dependency metadata. Relaxations are package-scoped; actual compilation and independent vectors remain required evidence."
+  },
+  "cli_resolved_plan": {
+    "source": "/home/westbam/haskell/cardano-cli",
+    "revision": "25f4d7a6b243d80ed7d716cc91b9c51d9265ace6",
+    "path": "/home/westbam/haskell/cardano-cli/dist-newstyle/cache/plan.json",
+    "sha256": "8592307c7b57f58970162b0cea886e84433dd3ab9244ddbb7a9c598a971916d0",
+    "executable": "/home/westbam/haskell/cardano-cli/dist-newstyle/build/x86_64-linux/ghc-9.12.4/cardano-cli-11.4.0.0/x/cardano-cli/build/cardano-cli/cardano-cli",
+    "version": "11.4.0.0",
+    "built": true
+  },
+  "qualification": "The pinned native oracle built with GHC 9.12.4 from a plan selecting kes-agent 1.3.0.0 and kes-agent-crypto 1.1.0.0 after the recorded package-scoped metadata relaxations. The clean cardano-cli 11.4.0.0 checkout at the pinned revision also built and reported the expected source revision. A disposable public-mode KES generation/signature invocation returned a verified signature, 608-byte state hash/length, 448-byte signature hash/length and 32-byte verification key without exposing state or signature bytes. This is infrastructure smoke only, not all-period differential evidence or a G7 reading. Only disposable seeds and keys may be used."
+}

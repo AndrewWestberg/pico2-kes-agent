@@ -1,0 +1,50 @@
+name: quality-dispatch
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Exercise and validate foundation scope
+        run: cargo run --locked -p qualification -- gates run foundation
+
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run host dispatch checks
+        run: cargo run --locked -p qualification -- gates run host
+
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run firmware dispatch checks
+        run: cargo run --locked -p qualification -- gates run firmware
+
+  native:
+    # Native source identities and Cabal plans are fixture prerequisites. A
+    # qualified runner provides the clean absolute checkouts recorded in the
+    # source inventory; a generic hosted runner must not substitute packages.
+    runs-on: [self-hosted, linux, x64, pico2-kes-qualified]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run pinned native dispatch checks
+        run: cargo run --locked -p qualification -- gates run native

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "name": "kes-summed-ed25519",
+    "version": "0.2.1",
+    "repository": "https://github.com/input-output-hk/kes",
+    "git_revision": "57d2f944ae87bc9d9281521f910caf3bf4976a68",
+    "registry_archive_sha256": "7bb27d940b150ff718b407f94ff443915c4bbf938cc813b0164c827b170738fc",
+    "license": "Apache-2.0",
+    "copyright": "2022 Input Output Global, Inc. (IOG)",
+    "reviewed_file_sha256": {
+      "Cargo.toml": "e33279011b7afab59c33f25ad6956d489f01f3cf6831f15b0f786afff71c6c18",
+      "src/lib.rs": "c242abbd5ea030591d725d3269b9ba623ec5f09cadd1fa9550e4f0db8ba4da36",
+      "src/common.rs": "f45ace3294be4bde7a62e3801b4453d3a0349700d389384d3e584468fe43f185",
+      "src/kes.rs": "f265ef46012e95de1236aba507f3a82acc569d992c5ca002672656a5d53378df",
+      "src/single_kes.rs": "78ae79a4d26921ab79c0f5eaa90b6101a0edb34e1474c9d9c8342b7e2eff10aa",
+      "src/traits.rs": "95bc11864d99907cb828839e6e012b0e7ab373b5cb44281a86abe25a0a22d38a",
+      "src/errors.rs": "cc9c29c5db31f8270c81e2f7bc156950a05261c76e3332ebbe166118e645dc5e",
+      "LICENSE": "eb2e27a1bb68c293f20af47c4bf2314369c9ecb3b99c281b1815b42be0a07e72"
+    }
+  },
+  "adaptation": {
+    "construction": "Sum6KES, not CompactSum6KES",
+    "changes": "Specializes upstream common.rs, kes.rs, and single_kes.rs to bounded no_std Sum6KES. Removes Compact, serde, RNG, allocating and secret clone/debug APIs; adds cooperative one-leaf generation, canonical 608-byte state, and a validated BFS public tree. Uses the workspace-pinned Blake2 0.10 API without changing BLAKE2b-256 inputs or outputs.",
+    "verification_key_bytes": 32,
+    "canonical_state_bytes": 608,
+    "signature_bytes": 448,
+    "public_tree_bytes": 4064,
+    "public_tree_layout": "version 1; 127 breadth-first 32-byte nodes; children 2n+1 and 2n+2; leaves 63 through 126",
+    "period_metadata": "separate checked 0 through 63; not serialized in conventional signing state",
+    "erasure_limit": "Owned state and generation seed stack are zeroized. Primitive-internal stack/register erasure is not claimed; host secret execution requires a protected disposable lab."
+  }
+}

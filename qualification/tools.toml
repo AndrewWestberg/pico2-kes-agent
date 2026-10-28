@@ -1,0 +1,197 @@
+# Inventory only. Availability does not activate or pass any qualification gate.
+# All commands are executed directly; arguments are separated by | and may not contain it.
+format = "1"
+timeout_ms = "5000"
+output_limit = "16384"
+
+[[tool]]
+id = "rustc"
+role = "production Rust compiler"
+kind = "command"
+command = "rustc"
+args = "--version"
+version = "1.99.1"
+match = "token"
+
+[[tool]]
+id = "cargo"
+role = "production Cargo"
+kind = "command"
+command = "cargo"
+args = "--version"
+version = "1.99.1"
+match = "token"
+
+[[tool]]
+id = "proptest"
+role = "property testing crate"
+kind = "lock"
+version = "1.11.0"
+
+[[tool]]
+id = "criterion"
+role = "benchmarking crate"
+kind = "lock"
+version = "0.8.2"
+
+[[tool]]
+id = "cargo-mutants"
+role = "mutation testing"
+kind = "command"
+command = "cargo-mutants"
+args = "mutants|--version"
+version = "27.0.0"
+match = "token"
+
+[[tool]]
+id = "cargo-llvm-cov"
+role = "coverage"
+kind = "command"
+command = "cargo-llvm-cov"
+args = "llvm-cov|--version"
+version = "0.9.1"
+match = "token"
+
+[[tool]]
+id = "cargo-fuzz"
+role = "fuzzing"
+kind = "command"
+command = "cargo-fuzz"
+args = "fuzz|--version"
+version = "0.13.1"
+match = "token"
+
+[[tool]]
+id = "fuzz-nightly"
+role = "isolated fuzz compiler"
+kind = "command"
+command = "rustup"
+args = "run|nightly-2026-10-22|rustc|--version"
+version = "nightly"
+match = "contains"
+
+[[tool]]
+id = "cargo-audit"
+role = "dependency audit"
+kind = "command"
+command = "cargo-audit"
+args = "audit|--version"
+version = "0.22.1"
+match = "token"
+
+[[tool]]
+id = "cargo-deny"
+role = "dependency and license policy"
+kind = "command"
+command = "cargo-deny"
+args = "deny|--version"
+version = "0.19.8"
+match = "token"
+
+[[tool]]
+id = "ghc"
+role = "native compiler"
+kind = "command"
+command = "ghc"
+args = "--numeric-version"
+version = "9.12.4"
+match = "token"
+
+[[tool]]
+id = "cabal"
+role = "native build tool"
+kind = "command"
+command = "cabal"
+args = "--numeric-version"
+version = "3.16.1.0"
+match = "token"
+
+[[tool]]
+id = "node-source"
+role = "native node source revision; dirty source and dependency plan require separate evidence"
+kind = "command"
+command = "git"
+args = "-C|/home/westbam/haskell/cardano-node|rev-parse|HEAD"
+version = "7af71936a6164119a7a1446152b1ba2f7df54e07"
+match = "token"
+
+[[tool]]
+id = "consensus-source"
+role = "native consensus source revision; dirty source and dependency plan require separate evidence"
+kind = "command"
+command = "git"
+args = "-C|/home/westbam/haskell/ouroboros-consensus|rev-parse|HEAD"
+version = "6673fce255f12addb602b0ae2d0a20f51a2cd519"
+match = "token"
+
+[[tool]]
+id = "cardano-cli"
+role = "independent conventional decoding oracle; source identity requires separate verification"
+kind = "command"
+command = "cardano-cli"
+args = "--version"
+version = "11.4.0.0"
+match = "token"
+
+[[tool]]
+id = "oracle-source"
+role = "unmodified cardano-cli source identity 25f4d7a6b243d80ed7d716cc91b9c51d9265ace6"
+kind = "manual"
+version = "unverified"
+
+[[tool]]
+id = "native-oracle"
+role = "independent Haskell agent and crypto oracle; kes-agent 1.3.0.0 and kes-agent-crypto 1.1.0.0"
+kind = "manual"
+version = "not implemented"
+
+[[tool]]
+id = "picotool"
+role = "RP2350 device tooling; no capability inferred from version"
+kind = "command"
+command = "picotool"
+args = "version"
+version = "unconstrained"
+match = "nonempty"
+
+[[tool]]
+id = "probe-rs"
+role = "hardware probe tooling; no probe or board capability inferred"
+kind = "command"
+command = "probe-rs"
+args = "--version"
+version = "unconstrained"
+match = "nonempty"
+
+[[tool]]
+id = "power-controller"
+role = "physical power-cut controller and control tool"
+kind = "manual"
+version = "not established"
+
+[[tool]]
+id = "hardware-qualification"
+role = "A2 stepping, flash geometry and endurance, prior wear and controller identity"
+kind = "manual"
+version = "not established"
+
+[[tool]]
+id = "firmware-target"
+role = "installed production RP2350 Rust target"
+kind = "command"
+command = "rustup"
+args = "target|list|--installed|--toolchain|1.99.1"
+version = "thumbv8m.main-none-eabihf"
+match = "token"
+
+[[tool]]
+id = "kes-agent-source"
+role = "kes-agent 1.3.0.0 source archive SHA-256 37b9729cb30590a0a520058b1d33f4ee1853b7503bbb46d3513be57d88369797; verification belongs to native inventory"
+kind = "manual"
+version = "verification required"
+
+[[tool]]
+id = "kes-agent-crypto-source"
+role = "kes-agent-crypto 1.1.0.0 source archive SHA-256 43afbdfbb6ee992d34adb1d1b3ac1070da5395ffa2ddd8411c2cc4ad1818cc36; verification belongs to native inventory"
+kind = "manual"
+version = "verification required"
