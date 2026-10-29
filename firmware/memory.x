@@ -11,4 +11,4 @@ _stext = ORIGIN(FLASH) + 0x200;
 /* Half-open state partitions; neither is available to the firmware linker. */
 __state_start = 0x10100000;
 __pool_regions_start = 0x10104000;
-__state_end = 0x10304000;
+__state_end = 0x10308000;

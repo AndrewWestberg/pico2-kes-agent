@@ -51,13 +51,26 @@ pub enum Error {
     Publication,
 }
 
-pub fn recover(
+/// Verify public artifact bindings and signature without unlocking a recipient.
+/// This reports the recipient used by this artifact, not the device's current
+/// policy. Qualification observes a newly generated artifact to exercise that policy.
+pub fn artifact_recipient(
     artifact_bytes: &[u8],
-    recipient: &RecipientKeyFile,
-    passphrase: &[u8],
     expected: Expectations,
-) -> Result<SecretBuffer, Error> {
-    let map = parse_artifact(artifact_bytes)?;
+) -> Result<[u8; 32], Error> {
+    let map = validated_artifact(artifact_bytes, expected)?;
+    let public: [u8; 32] = map
+        .required("recipient_public_key")
+        .and_then(Value::bytes)
+        .map_err(|_| Error::InvalidArtifact)?
+        .try_into()
+        .map_err(|_| Error::InvalidArtifact)?;
+    require_binding(map, "recipient_id", &Sha256::digest(public))?;
+    Ok(public)
+}
+
+fn validated_artifact(bytes: &[u8], expected: Expectations) -> Result<Map<'_>, Error> {
+    let map = parse_artifact(bytes)?;
     for (field, binding) in [
         ("device", expected.device.as_slice()),
         ("pool", expected.pool.as_slice()),
@@ -68,6 +81,16 @@ pub fn recover(
         require_binding(map, field, binding)?;
     }
     verify_signature(map, expected.identity_public_key)?;
+    Ok(map)
+}
+
+pub fn recover(
+    artifact_bytes: &[u8],
+    recipient: &RecipientKeyFile,
+    passphrase: &[u8],
+    expected: Expectations,
+) -> Result<SecretBuffer, Error> {
+    let map = validated_artifact(artifact_bytes, expected)?;
 
     let public = recipient.public().map_err(|_| Error::WrongRecipient)?;
     require_binding(map, "recipient_public_key", &public.public_key)

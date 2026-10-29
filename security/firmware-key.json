@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "purpose": "pico2-kes-firmware-boot-authority-v1",
+  "project": "https://github.com/AndrewWestberg/pico2-kes-agent",
+  "algorithm": "secp256k1",
+  "bootkey_slot": 0,
+  "bootkey_sha256": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+  "public_pem_sha256": "fbc03de5d416dff67163791a5ded88ceb05a95a080d6b92de219511e745180c8"
+}

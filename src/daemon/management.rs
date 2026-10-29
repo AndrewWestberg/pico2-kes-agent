@@ -94,6 +94,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
 
         let result = match action {
             Action::DeviceStatus => self.status(None)?,
+            Action::DeviceSecurity => self.query(Request::SecurityStatus)?,
             Action::PoolStatus => {
                 let pool =
                     parse_id::<28, PoolId>(&envelope.arguments, "pool_id", PoolId::from_bytes)?;
@@ -576,7 +577,10 @@ fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
     if mode == RunMode::Commissioning
         && !matches!(
             action,
-            Action::DeviceStatus | Action::DeviceCommission | Action::OperationReconcile
+            Action::DeviceStatus
+                | Action::DeviceSecurity
+                | Action::DeviceCommission
+                | Action::OperationReconcile
         )
     {
         return Err(Error::ModeDenied);
@@ -619,10 +623,52 @@ fn original_terminal_response<'a>(
     }
 }
 
+fn security_value(report: kes_protocol::security::SecurityStatus) -> Result<Value, Error> {
+    use kes_protocol::security::AUTHORIZED_BOOTKEY;
+    let serial = std::str::from_utf8(&report.usb_serial).map_err(|_| Error::Protocol)?;
+    if !serial
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(Error::Protocol);
+    }
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        let mut output = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(output, "{byte:02x}").unwrap();
+        }
+        output
+    }
+    Ok(json!({
+        "chip_revision": report.chip_revision,
+        "rom_version": report.rom_version,
+        "critical": report.critical,
+        "boot_flags0": report.boot_flags0,
+        "boot_flags1": report.boot_flags1,
+        "bootkey0": hex(&report.bootkey0),
+        "page2_lock0": report.page2_lock0,
+        "page2_lock1": report.page2_lock1,
+        "page63_lock0": report.page63_lock0,
+        "page63_lock1": report.page63_lock1,
+        "debugen": report.debugen,
+        "debugen_lock": report.debugen_lock,
+        "redundancy_ok": report.redundancy_ok,
+        "jedec_id": hex(&report.jedec_id),
+        "sfdp_header": hex(&report.sfdp_header),
+        "density_bits_minus_one": report.density_bits_minus_one,
+        "usb_serial": serial,
+        "storage_blank_at_boot": report.storage_blank_at_boot,
+        "profile": report.profile(AUTHORIZED_BOOTKEY.as_ref()),
+        "stepping": report.stepping(),
+    }))
+}
+
 fn response_value(response: Response<'_>) -> Result<Value, Error> {
     Ok(match response {
         Response::Hello(_) => return Err(Error::Protocol),
         Response::Status(response) => status::response(response, false),
+        Response::SecurityStatus(response) => security_value(response)?,
         Response::Context(_) | Response::Current(_) => return Err(Error::Protocol),
         Response::Mutate(receipt)
         | Response::Commission(receipt)
@@ -912,6 +958,7 @@ fn action_name(action: Action) -> &'static str {
     match action {
         Action::DeviceStatus => "device.status",
         Action::DeviceCommission => "device.commission",
+        Action::DeviceSecurity => "device.security",
         Action::PoolList => "pool.list",
         Action::PoolStatus => "pool.status",
         Action::PoolEnroll => "pool.enroll",

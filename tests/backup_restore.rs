@@ -99,6 +99,32 @@ fn fixture() -> (
 }
 
 #[test]
+fn public_recipient_inspection_authenticates_origin_and_bindings_without_decryption() {
+    let (artifact, recipient, expected, _) = fixture();
+    assert_eq!(
+        recover::artifact_recipient(&artifact, expected).unwrap(),
+        recipient.public().unwrap().public_key,
+    );
+    let mut wrong_identity = expected;
+    wrong_identity.identity_public_key =
+        SigningKey::from_bytes(&[92; 32]).verifying_key().to_bytes();
+    assert_eq!(
+        recover::artifact_recipient(&artifact, wrong_identity),
+        Err(Error::InvalidSignature)
+    );
+    let mut wrong_generation = expected;
+    wrong_generation.generation[0] ^= 1;
+    assert_eq!(
+        recover::artifact_recipient(&artifact, wrong_generation),
+        Err(Error::WrongBinding)
+    );
+    let mut altered = artifact;
+    let index = altered.len() - 80;
+    altered[index] ^= 1;
+    assert!(recover::artifact_recipient(&altered, expected).is_err());
+}
+
+#[test]
 fn restores_exact_period_zero_state_to_owner_only_no_clobber_file() {
     let (artifact, recipient, expected, state) = fixture();
     let directory = TestDir::new();

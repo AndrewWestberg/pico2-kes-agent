@@ -1,0 +1,129 @@
+name: signed-firmware-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-firmware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install explicit build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libusb-1.0-0-dev cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib gpg openssl
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 thumbv8m.main-none-eabihf
+      - name: Compile pinned native tools without signing secrets
+        run: |
+          set -euo pipefail
+          git clone https://github.com/raspberrypi/pico-sdk.git "$RUNNER_TEMP/pico-sdk"
+          git -C "$RUNNER_TEMP/pico-sdk" checkout 079c6f39023649b154152db30f1d781e884879bc
+          git -C "$RUNNER_TEMP/pico-sdk" submodule update --init lib/mbedtls
+          git clone https://github.com/raspberrypi/picotool.git "$RUNNER_TEMP/picotool"
+          git -C "$RUNNER_TEMP/picotool" checkout 2041936441b48a3cc53ae3da9e805229fe8f4e18
+          cmake -S "$RUNNER_TEMP/picotool" -B "$RUNNER_TEMP/picotool-build" \
+            -DPICO_SDK_PATH="$RUNNER_TEMP/pico-sdk" -DPICOTOOL_NO_LIBUSB=0 \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/release-build/toolchain"
+          cmake --build "$RUNNER_TEMP/picotool-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/picotool-build"
+          echo "$GITHUB_WORKSPACE/release-build/toolchain/bin" >> "$GITHUB_PATH"
+          cmake -S tools/otp_permissions -B target/otp-permissions \
+            -DPICO_SDK_PATH="$RUNNER_TEMP/pico-sdk" -DPICO_BOARD=pico2
+          cmake --build target/otp-permissions --parallel 2
+      - name: Verify public authority and build compatible firmware and host tools
+        env:
+          PICO2_REQUIRE_FIRMWARE_AUTHORITY: '1'
+        run: |
+          set -euo pipefail
+          python3 -c 'import runpy; runpy.run_path("tools/firmware.py")["verify_authority"]("security")'
+          cargo test --locked -p kes-protocol
+          cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore
+          cargo build --locked --release --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+          cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
+      - name: Exercise isolated signing and verifier fixtures without production secrets
+        env:
+          PICO2_PERMISSIONS_HELPER: ${{ github.workspace }}/target/otp-permissions/pico2-otp-permissions.elf
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/tests -p 'test_firmware.py'
+          cp target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware release-build/pico2-kes-firmware.elf
+          cp target/otp-permissions/pico2-otp-permissions.elf release-build/pico2-otp-permissions.elf
+          {
+            rustc --version
+            picotool version
+            cmake --version
+            arm-none-eabi-gcc --version
+            git -C "$RUNNER_TEMP/pico-sdk" rev-parse HEAD
+            git -C "$RUNNER_TEMP/pico-sdk" submodule status lib/mbedtls
+          } > release-build/tool-versions.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-release-build
+          path: release-build/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-and-publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: unsigned-release-build
+          path: release-build/
+      - name: Prepare native verifier runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0 gpg openssl
+          chmod +x release-build/toolchain/bin/picotool
+          echo "$GITHUB_WORKSPACE/release-build/toolchain/bin" >> "$GITHUB_PATH"
+      - name: Sign only the production flash image and authenticate the complete bundle
+        env:
+          PICO2_FIRMWARE_SIGNING_KEY_PEM: ${{ secrets.PICO2_FIRMWARE_SIGNING_KEY_PEM }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          PRIVATE_DIR="$(mktemp -d /dev/shm/pico2-signing.XXXXXXXX)"
+          trap 'rm -rf -- "$PRIVATE_DIR"' EXIT HUP INT TERM
+          test -n "$PICO2_FIRMWARE_SIGNING_KEY_PEM"
+          printf '%s\n' "$PICO2_FIRMWARE_SIGNING_KEY_PEM" > "$PRIVATE_DIR/key.pem"
+          unset PICO2_FIRMWARE_SIGNING_KEY_PEM
+          chmod 0600 "$PRIVATE_DIR/key.pem"
+          python3 tools/firmware.py seal --elf release-build/pico2-kes-firmware.elf \
+            --permissions-helper release-build/pico2-otp-permissions.elf \
+            --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT" \
+            --key-file "$PRIVATE_DIR/key.pem" --out-dir signed-release
+          python3 tools/firmware.py verify --bundle signed-release
+      - name: Publish without overwriting historical assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 tools/publish_release.py --bundle signed-release \
+            --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"

@@ -4,6 +4,7 @@
 mod entropy;
 mod flash;
 mod scheduler;
+mod security;
 mod service;
 mod usb;
 
@@ -62,6 +63,8 @@ pub struct Runtime<'d> {
     handoff: Handoff,
     scheduler: Scheduler,
     handoff_buffer: [u8; MAX_HANDOFF_BYTES],
+    flash_identity: Identity,
+    boot_admission: Admission,
 }
 
 impl<'d> Runtime<'d> {
@@ -70,12 +73,12 @@ impl<'d> Runtime<'d> {
         entropy: HealthCheckedEntropy<'d>,
         serial: UsbSerial,
     ) -> Result<Self, StartupError> {
-        let identity = flash.identity();
+        let flash_identity = flash.identity();
         let admission = flash
             .classify_allocated()
             .map_err(|_| StartupError::Flash)?;
-        let hardware = hardware_identity(identity)?;
-        let root_key = configuration_root(identity)?;
+        let hardware = hardware_identity(flash_identity)?;
+        let root_key = configuration_root(flash_identity)?;
         let mut device = LifecycleDevice::open_with_root(flash, entropy, root_key, hardware)
             .map_err(|_| StartupError::InvalidConfiguration)?;
         if admission == Admission::NonBlank {
@@ -111,6 +114,8 @@ impl<'d> Runtime<'d> {
             handoff,
             scheduler: Scheduler::new(),
             handoff_buffer: [0; MAX_HANDOFF_BYTES],
+            flash_identity,
+            boot_admission: admission,
         };
         if !had_persisted && identity.is_some() {
             runtime
@@ -224,6 +229,9 @@ fn usb_serial(bytes: &mut [u8; 16]) -> Result<UsbSerial, StartupError> {
 #[entry]
 fn main() -> ! {
     let peripherals = embassy_rp::init(Default::default());
+    if security::harden_debug().is_err() {
+        halt();
+    }
     let mut serial_bytes = [0; 16];
     let serial = match usb_serial(&mut serial_bytes) {
         Ok(serial) => serial,

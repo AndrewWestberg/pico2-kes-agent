@@ -5,6 +5,9 @@ use pico2_kes_agent::daemon::usb::{IdentityPin, Mode, Transport, UsbSelection};
 use serde::Deserialize;
 use std::{fs, path::Path, time::Duration};
 
+#[path = "physical_security.rs"]
+mod physical_security;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {
@@ -25,6 +28,18 @@ struct Input {
 }
 
 pub fn run(arguments: &[String]) -> i32 {
+    if let [flag, input, path] = arguments
+        && flag == "--preserve-update"
+        && input == "--input"
+    {
+        return match physical_security::execute(Path::new(path)) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("physical preservation: {error}");
+                1
+            }
+        };
+    }
     let [flag, path] = arguments else {
         eprintln!("usage: qualification physical-context --input INPUT.json");
         return 2;

@@ -79,6 +79,15 @@ impl Operations for Runtime<'_> {
         match request {
             Request::Hello { nonce } => self.hello(nonce, output),
             Request::Status { pool } => self.status(pool, output),
+            Request::SecurityStatus => {
+                let status = crate::security::read(
+                    self.flash_identity,
+                    self.boot_admission,
+                    self.serial.as_slice(),
+                )
+                .map_err(|_| DispatchError::State)?;
+                encode(&Response::SecurityStatus(status), output)
+            }
             Request::Context {
                 target,
                 network,

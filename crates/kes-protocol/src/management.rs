@@ -84,6 +84,7 @@ impl FrameDecoder {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     DeviceStatus,
+    DeviceSecurity,
     DeviceCommission,
     PoolList,
     PoolStatus,
@@ -101,6 +102,7 @@ impl Action {
     fn parse(s: &str) -> Result<Self, Error> {
         Ok(match s {
             "device.status" => Self::DeviceStatus,
+            "device.security" => Self::DeviceSecurity,
             "device.commission" => Self::DeviceCommission,
             "pool.list" => Self::PoolList,
             "pool.status" => Self::PoolStatus,
@@ -473,7 +475,25 @@ impl<'a> Parser<'a> {
                 }
                 7 => {
                     if !self.null() {
-                        self.public_object(false)?;
+                        let start = self.pos;
+                        self.skip_object()?;
+                        let mut p = Parser {
+                            src: &self.src[start..self.pos],
+                            pos: 0,
+                        };
+                        if p.is_security_object()? {
+                            let mut p = Parser {
+                                src: &self.src[start..self.pos],
+                                pos: 0,
+                            };
+                            p.security_object()?;
+                        } else {
+                            let mut p = Parser {
+                                src: &self.src[start..self.pos],
+                                pos: 0,
+                            };
+                            p.public_object(false)?;
+                        }
                         result = Some(());
                     }
                 }
@@ -694,7 +714,7 @@ impl<'a> Parser<'a> {
             }
         }
         let required = match action {
-            Action::DeviceStatus | Action::PoolList => 0,
+            Action::DeviceStatus | Action::DeviceSecurity | Action::PoolList => 0,
             Action::DeviceCommission => 1 << 0,
             Action::PoolStatus => 1 << 1,
             Action::PoolEnroll => (1 << 4) | (1 << 5),
@@ -777,6 +797,191 @@ impl<'a> Parser<'a> {
             return Err(Error::InvalidField);
         }
         code.ok_or(Error::InvalidField)
+    }
+    // Responses have no action field. Security-only fields select the exact schema.
+    fn is_security_object(&mut self) -> Result<bool, Error> {
+        self.object_start()?;
+        let mut first = true;
+        let mut found = false;
+        while self.next(&mut first)? {
+            found |= self.text(|s| {
+                Ok(matches!(
+                    s,
+                    "chip_revision"
+                        | "rom_version"
+                        | "critical"
+                        | "boot_flags0"
+                        | "boot_flags1"
+                        | "bootkey0"
+                        | "page2_lock0"
+                        | "page2_lock1"
+                        | "page63_lock0"
+                        | "page63_lock1"
+                        | "debugen"
+                        | "debugen_lock"
+                        | "redundancy_ok"
+                        | "jedec_id"
+                        | "sfdp_header"
+                        | "density_bits_minus_one"
+                        | "storage_blank_at_boot"
+                        | "profile"
+                        | "stepping"
+                ))
+            })?;
+            self.byte(b':')?;
+            self.skip_value(0)?;
+        }
+        Ok(found)
+    }
+    fn security_object(&mut self) -> Result<(), Error> {
+        use crate::security::{AUTHORIZED_BOOTKEY, SecurityStatus};
+        const N: &[&str] = &[
+            "chip_revision",
+            "rom_version",
+            "critical",
+            "boot_flags0",
+            "boot_flags1",
+            "bootkey0",
+            "page2_lock0",
+            "page2_lock1",
+            "page63_lock0",
+            "page63_lock1",
+            "debugen",
+            "debugen_lock",
+            "redundancy_ok",
+            "jedec_id",
+            "sfdp_header",
+            "density_bits_minus_one",
+            "usb_serial",
+            "storage_blank_at_boot",
+            "profile",
+            "stepping",
+        ];
+        let mut v = SecurityStatus {
+            chip_revision: 0,
+            rom_version: 0,
+            critical: 0,
+            boot_flags0: 0,
+            boot_flags1: 0,
+            bootkey0: [0; 32],
+            page2_lock0: 0,
+            page2_lock1: 0,
+            page63_lock0: 0,
+            page63_lock1: 0,
+            debugen: 0,
+            debugen_lock: 0,
+            redundancy_ok: false,
+            jedec_id: [0; 3],
+            sfdp_header: [0; 16],
+            density_bits_minus_one: 0,
+            usb_serial: [0; 16],
+            storage_blank_at_boot: false,
+        };
+        let (mut first, mut seen, mut profile, mut stepping) = (true, 0, 0, 0);
+        self.object_start()?;
+        while self.next(&mut first)? {
+            match self.key(N, &mut seen)? {
+                0 => {
+                    v.chip_revision = self.number()?.try_into().map_err(|_| Error::InvalidField)?
+                }
+                1 => v.rom_version = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                2 => v.critical = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                3 => v.boot_flags0 = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                4 => v.boot_flags1 = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                5 => v.bootkey0 = self.security_hex()?,
+                6 => v.page2_lock0 = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                7 => v.page2_lock1 = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                8 => v.page63_lock0 = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                9 => v.page63_lock1 = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                10 => v.debugen = self.number()?.try_into().map_err(|_| Error::InvalidField)?,
+                11 => {
+                    v.debugen_lock = self.number()?.try_into().map_err(|_| Error::InvalidField)?
+                }
+                12 => v.redundancy_ok = self.security_bool()?,
+                13 => v.jedec_id = self.security_hex()?,
+                14 => v.sfdp_header = self.security_hex()?,
+                15 => {
+                    v.density_bits_minus_one =
+                        self.number()?.try_into().map_err(|_| Error::InvalidField)?
+                }
+                16 => {
+                    v.usb_serial = self.text(|s| {
+                        if s.len() != 16
+                            || !s
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        {
+                            return Err(Error::InvalidField);
+                        }
+                        s.as_bytes().try_into().map_err(|_| Error::InvalidField)
+                    })?
+                }
+                17 => v.storage_blank_at_boot = self.security_bool()?,
+                18 => {
+                    profile = self.text(|s| match s {
+                        "unlocked" => Ok(1),
+                        "incomplete" => Ok(2),
+                        "rp2350-signed-msd-v1" => Ok(3),
+                        _ => Err(Error::InvalidField),
+                    })?
+                }
+                19 => {
+                    stepping = self.text(|s| match s {
+                        "unsupported" => Ok(1),
+                        "A2" => Ok(2),
+                        "A4" => Ok(3),
+                        _ => Err(Error::InvalidField),
+                    })?
+                }
+                _ => unreachable!(),
+            }
+        }
+        if seen != (1 << 20) - 1
+            || profile
+                != match v.profile(AUTHORIZED_BOOTKEY.as_ref()) {
+                    "unlocked" => 1,
+                    "incomplete" => 2,
+                    _ => 3,
+                }
+            || stepping
+                != match v.stepping() {
+                    "A2" => 2,
+                    "A4" => 3,
+                    _ => 1,
+                }
+        {
+            return Err(Error::InvalidField);
+        }
+        Ok(())
+    }
+    fn security_bool(&mut self) -> Result<bool, Error> {
+        self.ws();
+        if self.literal(b"true") {
+            Ok(true)
+        } else if self.literal(b"false") {
+            Ok(false)
+        } else {
+            Err(Error::InvalidField)
+        }
+    }
+    fn security_hex<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+        self.text(|s| {
+            if s.len() != N * 2 {
+                return Err(Error::InvalidField);
+            }
+            fn digit(b: u8) -> Result<u8, Error> {
+                match b {
+                    b'0'..=b'9' => Ok(b - b'0'),
+                    b'a'..=b'f' => Ok(b - b'a' + 10),
+                    _ => Err(Error::InvalidField),
+                }
+            }
+            let mut out = [0; N];
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = digit(s.as_bytes()[i * 2])? * 16 + digit(s.as_bytes()[i * 2 + 1])?;
+            }
+            Ok(out)
+        })
     }
     fn public_object(&mut self, nested: bool) -> Result<(), Error> {
         const N: &[&str] = &[

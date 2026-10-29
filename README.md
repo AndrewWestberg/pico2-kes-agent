@@ -2,7 +2,7 @@
 
 Persistent Cardano KES state on a Raspberry Pi Pico 2, with a Linux daemon and operator CLI. The goal is to retain and recover current operational KES state after **both host and device lose power**, without an ordinary KES signing-key file on the primary host or a surviving RAM-only peer.
 
-One USB-owning daemon supports up to **64 pools**, each with one active and one staged generation and its own KES Service V2 Unix socket. Nodes receive current key material and sign locally. This README builds this project's firmware and host tools, not a custom Cardano node.
+One USB-owning daemon supports up to **64 pools**, each with one active and one staged generation and its own KES Service V2 Unix socket. Nodes receive current key material and sign locally.
 
 ## Contents
 
@@ -31,6 +31,7 @@ One USB-owning daemon supports up to **64 pools**, each with one active and one 
 | Pool incarnation | Unique enrollment lifetime; deleting and re-enrolling a pool creates a different incarnation. |
 | Recipient key | Off-primary backup decryption key; only its public part is installed on the device. |
 | Receipt | Durable local record of a mutation's operation ID, target, revision, request, and available result; retain it to reconcile uncertainty. |
+| A2 / A4 | RP2350 silicon/boot-ROM steppings; unrelated to the Cardano KES Service V2 host protocol. A4 fixes several A2 ROM/OTP issues but retains invasive OTP-extraction limitations. |
 
 ### Why persistence?
 
@@ -44,7 +45,7 @@ The original [IntersectMBO KES agent](https://github.com/IntersectMBO/kes-agent)
 | Recovery peer dependence | A surviving peer can refill the agent; simultaneous loss of all RAM copies requires operator intervention | No surviving RAM peer needed for intact-device recovery |
 | Backup tradeoff | Avoid persistent initial signing-state backups; availability can use live peers | Encrypted period-zero artifacts allow offline recovery, but retained recipients/artifacts can reconstruct past states |
 
-These are design tradeoffs, not consequences of Haskell versus Rust. Rust does not eliminate host compromise.
+These are intentional design tradeoffs.
 
 ```mermaid
 flowchart LR
@@ -61,6 +62,8 @@ Treat socket-group membership as full trust: management-socket access grants all
 
 Device encryption and read-verified cleanup do **not** establish resistance to physical extraction, malicious firmware, captured-flash rollback, or invasive remanence analysis. Retained period-zero backups and recipient keys can reconstruct earlier periods. Changing recipients does not revoke old ciphertext. Device erasure, pool deletion, disconnection, and daemon shutdown cannot revoke node or backup copies.
 
+The optional `rp2350-signed-msd-v1` profile uses native ROM secp256k1 signatures, disables ordinary PICOBOOT/debug/alternate execution paths, and retains physical USB mass-storage recovery. It targets straightforward post-lock USB/SWD reads and unsigned firmware substitution, not specialist invasive extraction or fault injection. An application report is diagnosis, not independent attestation; negative boot and recovery observations are required. Locking cannot revoke a previously copied RANDID/wrapping root, flash image or operational state. Treat a pre-extracted/untrusted board as compromised and use a trusted replacement before installing operational secrets.
+
 ## Requirements and compatibility
 
 | Execution host | Responsibility |
@@ -73,8 +76,8 @@ Requirements:
 
 - Linux with systemd and udev; Git, a native C compiler/linker and normal platform build prerequisites; rustup; `jq`; `sha256sum`; USB diagnostic tools.
 - Rust **1.99.1**, pinned by [rust-toolchain.toml](rust-toolchain.toml), and `thumbv8m.main-none-eabihf`.
-- RP2350-capable [picotool](https://github.com/raspberrypi/picotool), for attended flashing.
-- Supported Pico 2 A2 with the fitted 4-MiB flash profile checked by [firmware/src/flash.rs](firmware/src/flash.rs): JEDEC `ef4016`, with matching SFDP data. This is not support for every RP2040/RP2350 board.
+- [Picotool 2.3.1](https://github.com/raspberrypi/picotool), Python 3, OpenSSL, GPG/GPGV and CMake for attended provisioning and signed-bundle verification. Locked-device updates need the verified signed UF2 and physical mass-storage BOOTSEL, not picotool access.
+- Pico 2 with the fitted 4-MiB flash profile checked by [firmware/src/flash.rs](firmware/src/flash.rs): JEDEC `ef4016`, SFDP `534644500a0100ff00080117800000ff`, density-minus-one `0x01ffffff`. The shared profile identifies A2/A4; A4 is expected-compatible and hardware-unverified. A2 secure-boot qualification is separate from the existing storage evidence. A3, RP2040, unknown revisions and other flash profiles are not admitted for this profile.
 - A `cardano-node` release supporting the standard `--shelley-kes-agent-socket` interface and a matching `cardano-cli`. Obtain these using the [Cardano node installation guide](https://developers.cardano.org/docs/get-started/infrastructure/node/installing-cardano-node/). Check your installed node's help before cutover.
 - Trusted genesis, network parameters, and actual era/slot-length history; synchronized host clock; access to the local node's query socket and the intended USB device.
 - The node's ordinary network, topology, database, VRF key, and service configuration remain necessary. Building successfully or connecting a socket does not demonstrate live forging or peer-accepted blocks.
@@ -100,9 +103,142 @@ Outputs:
 - `target/release/pico2-kes-agent-cli`
 - `target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware`
 
-### Flash the intended board
+The default source build is **unsigned**. `ARM Secure` image metadata does not enable signature enforcement. Published locked-device upgrades require the signed UF2; an unsigned local build cannot run on a locked board. Release builds require the public authorized authority via `PICO2_REQUIRE_FIRMWARE_AUTHORITY=1`; missing public authorization must not silently produce a claimed locked profile.
 
-**USB host — attended maintenance:** stop any running agent before flashing. Hold BOOTSEL while connecting the board to USB. When several boards are attached, identify/select the intended board using your picotool version's selection options, or disconnect the other boards before this command.
+### Build the pinned security tools
+
+Use a native C/C++ toolchain, `arm-none-eabi-gcc`, CMake, pkg-config and libusb development headers. Install prerequisites explicitly using the host's package manager; the firmware utility never installs packages. Build picotool with the SDK's pinned mbedTLS submodule so native signing and USB support are both present.
+
+```bash
+set -euo pipefail
+TOOL_ROOT="$HOME/.local/share/pico2-kes-tools"
+mkdir -p "$TOOL_ROOT"
+git clone https://github.com/raspberrypi/pico-sdk.git "$TOOL_ROOT/pico-sdk"
+git -C "$TOOL_ROOT/pico-sdk" checkout 079c6f39023649b154152db30f1d781e884879bc
+git -C "$TOOL_ROOT/pico-sdk" submodule update --init lib/mbedtls
+git clone https://github.com/raspberrypi/picotool.git "$TOOL_ROOT/picotool"
+git -C "$TOOL_ROOT/picotool" checkout 2041936441b48a3cc53ae3da9e805229fe8f4e18
+cmake -S "$TOOL_ROOT/picotool" -B "$TOOL_ROOT/picotool-build" \
+  -DPICO_SDK_PATH="$TOOL_ROOT/pico-sdk" -DPICOTOOL_NO_LIBUSB=0 \
+  -DCMAKE_INSTALL_PREFIX="$TOOL_ROOT/install"
+cmake --build "$TOOL_ROOT/picotool-build" --parallel
+cmake --install "$TOOL_ROOT/picotool-build"
+export PATH="$TOOL_ROOT/install/bin:$PATH"
+picotool version
+cmake -S tools/otp_permissions -B target/otp-permissions \
+  -DPICO_SDK_PATH="$TOOL_ROOT/pico-sdk" -DPICO_BOARD=pico2
+cmake --build target/otp-permissions --parallel
+```
+
+The permission helper is **unsigned preparation code**, not a firmware update. It runs entirely in XIP-SRAM before secure boot, accepts only the two expected CHIPID words, and can only close page-2/page-63 permissions. Authenticate its bundle digest before making a target-bound private copy. Never use stock `picotool otp permissions`: its page-63 omission does not satisfy this profile.
+
+### Maintainer boot authority
+
+GPG authorizes one dedicated secp256k1 public boot authority; automated releases are not individually OpenPGP-signed. The pinned primary is `9FF957E79B5D853544805F4725491F18087931B6`, signing subkey `78C0F32094CD02A4BAFA444C684E37A210480F82!`. Email-only selection and the revoked older identity are not acceptable. The ROM fingerprint is SHA-256 of 64-byte big-endian `X || Y`, not the PEM digest or GPG fingerprint.
+
+Before first creation, inspect both `gh secret list --repo AndrewWestberg/pico2-kes-agent` and `$HOME/.local/share/pico2-kes-signing`. An existing secret/backup is a recovery requirement, not permission to rotate. GitHub secrets cannot be read back as backups. Reuse only after recovering the same key and comparing its public identity with the authorized statement. The personal GPG private key stays local; devices receive only the public boot-key hash.
+
+Every pushed `v*` tag on any commit triggers the release-signing workflow; there is no branch, signed-tag, or protected-environment approval gate. Access to the repository, workflow, tags, or signing secret is therefore firmware-signing authority. Protect and review that access accordingly. This is a single lifetime authority: the unused boot-key slots are invalidated during provisioning, so there is no independent emergency key or transparent rotation. Loss of the key and its protected backups prevents new signed releases for locked devices; compromise permits malicious authorized firmware. A GitHub secret is not a recoverable backup. Publication or physical qualification must not be inferred from the workflow's existence.
+
+**Maintainer, once only, trusted checkout:** the following deliberately refuses an existing authority. Local GPG pinentry interaction may be required. Do not put PEM contents in shell arguments, logs, build outputs, or the checkout.
+
+```bash
+set -euo pipefail
+umask 077
+SIGNING_HOME="$HOME/.local/share/pico2-kes-signing"
+install -d -m 0700 "$SIGNING_HOME"
+BACKUP="$SIGNING_HOME/firmware-signing-key.pem.gpg"
+test ! -e "$BACKUP"
+test ! -e security/firmware-key.json
+test "$(gh secret list --repo AndrewWestberg/pico2-kes-agent --json name \
+  | jq '[.[] | select(.name == "PICO2_FIRMWARE_SIGNING_KEY_PEM")] | length')" = 0
+PRIVATE_DIR="$(mktemp -d /dev/shm/pico2-signing.XXXXXXXX)"
+trap 'rm -rf -- "$PRIVATE_DIR"' EXIT
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:secp256k1 \
+  -out "$PRIVATE_DIR/key.pem"
+chmod 0600 "$PRIVATE_DIR/key.pem"
+openssl pkey -in "$PRIVATE_DIR/key.pem" -pubout -out "$PRIVATE_DIR/public.pem"
+gpg --encrypt --recipient 9FF957E79B5D853544805F4725491F18087931B6 \
+  --output "$BACKUP" "$PRIVATE_DIR/key.pem"
+chmod 0600 "$BACKUP"
+gpg --decrypt --output "$PRIVATE_DIR/recovered.pem" "$BACKUP"
+openssl pkey -in "$PRIVATE_DIR/recovered.pem" -pubout \
+  -out "$PRIVATE_DIR/recovered-public.pem"
+cmp "$PRIVATE_DIR/public.pem" "$PRIVATE_DIR/recovered-public.pem"
+python3 tools/firmware.py authorize --public-key "$PRIVATE_DIR/public.pem" --out-dir security
+gh secret set PICO2_FIRMWARE_SIGNING_KEY_PEM \
+  --repo AndrewWestberg/pico2-kes-agent < "$PRIVATE_DIR/key.pem"
+```
+
+`authorize` validates a public secp256k1 key and publishes the public PEM, exact signed JSON statement, detached armored signature and public GPG certificate without clobber. It never generates or uploads a private key. If pinentry/decryption/signing fails, preserve the encrypted backup and recover that authority; never rerun key generation to conceal the failure. Preserve a separate protected offline backup before provisioning. Invalidating unused boot slots makes this a single-authority lifetime commitment: loss prevents new releases; compromise permits malicious signed code. There is no second emergency authority or automatic key rotation.
+
+### Authenticate a downloaded bundle before executing its verifier
+
+Prefer `python3 tools/firmware.py verify --bundle DIR` from an already-trusted checkout. A downloaded verifier cannot establish its own trust by printing success. Otherwise run these bootstrap commands from trusted local shell/Python, with `BUNDLE` set to the downloaded directory; they use only GPGV/OpenSSL and the pinned fingerprints before authenticating executable bytes.
+
+```bash
+set -euo pipefail
+umask 077
+BUNDLE=/absolute/path/to/downloaded-bundle
+TRUST="$(mktemp -d)"
+trap 'rm -rf -- "$TRUST"' EXIT
+gpg --batch --no-options --dearmor --output "$TRUST/authority.gpg" \
+  "$BUNDLE/release-authority.asc"
+gpgv --homedir "$TRUST" --keyring "$TRUST/authority.gpg" --status-fd 1 \
+  "$BUNDLE/firmware-key.json.asc" "$BUNDLE/firmware-key.json" \
+  > "$TRUST/authorization.status"
+python3 - "$BUNDLE" "$TRUST/authorization.status" <<'PY'
+import hashlib, json, pathlib, sys
+bundle, status = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+lines = status.read_text().splitlines()
+valid = [line.split() for line in lines if line.startswith("[GNUPG:] VALIDSIG ")]
+assert len(valid) == 1 and len(valid[0]) == 12
+assert valid[0][2] == "78C0F32094CD02A4BAFA444C684E37A210480F82"
+assert valid[0][11] == "9FF957E79B5D853544805F4725491F18087931B6"
+assert not any(f"[GNUPG:] {bad}" in line for line in lines
+               for bad in ("REVKEYSIG", "EXPKEYSIG", "EXPSIG", "BADSIG", "ERRSIG"))
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        assert key not in result
+        result[key] = value
+    return result
+statement = json.loads((bundle / "firmware-key.json").read_bytes(), object_pairs_hook=unique)
+assert set(statement) == {"schema_version", "purpose", "project", "algorithm",
+                          "bootkey_slot", "bootkey_sha256", "public_pem_sha256"}
+assert type(statement["schema_version"]) is int and statement["schema_version"] == 1
+assert statement["purpose"] == "pico2-kes-firmware-boot-authority-v1"
+assert statement["project"] == "https://github.com/AndrewWestberg/pico2-kes-agent"
+assert statement["algorithm"] == "secp256k1"
+assert type(statement["bootkey_slot"]) is int and statement["bootkey_slot"] == 0
+pem = bundle / "firmware-signing-public.pem"
+assert pem.is_file() and not pem.is_symlink() and pem.stat().st_size <= 4096
+assert hashlib.sha256(pem.read_bytes()).hexdigest() == statement["public_pem_sha256"]
+PY
+openssl dgst -sha256 -verify "$BUNDLE/firmware-signing-public.pem" \
+  -signature "$BUNDLE/release.json.sig" "$BUNDLE/release.json"
+python3 - "$BUNDLE" <<'PY'
+import hashlib, json, pathlib, sys
+bundle = pathlib.Path(sys.argv[1])
+manifest = json.loads((bundle / "release.json").read_bytes())
+assert manifest["schema_version"] == 1
+assert manifest["purpose"] == "pico2-kes-firmware-release-v1"
+entries = [entry for entry in manifest["artifacts"] if entry["name"] == "firmware.py"]
+assert len(entries) == 1
+tool = bundle / "firmware.py"
+assert tool.is_file() and not tool.is_symlink() and tool.stat().st_size <= 1024 * 1024
+data = tool.read_bytes()
+assert len(data) == entries[0]["size_bytes"]
+assert hashlib.sha256(data).hexdigest() == entries[0]["sha256"]
+PY
+python3 "$BUNDLE/firmware.py" verify --bundle "$BUNDLE"
+```
+
+The final verifier checks the full authority/manifest chain, every fixed asset, signed ELF metadata and exact UF2 writes/erase sectors. No USB or network is contacted by `verify`. Keep the verified last-known-good storage-compatible bundle offline.
+
+### Flash the intended unlocked board
+
+**Unlocked/pre-lock boards only — USB host, attended maintenance:** stop any running agent before flashing. Hold BOOTSEL while connecting the board to USB. When several boards are attached, identify/select the intended board using picotool's current bus/address selection options, or disconnect the other boards before this command. Locked boards use the [signed UF2 upgrade and recovery procedure](#firmware-upgrade), never this unsigned source-build command.
 
 ```bash
 sudo picotool load -v -x target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware -t elf
@@ -223,6 +359,54 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl start pico2-kes-agentd
 ```
+
+### Optional attended OTP provisioning
+
+Complete this **before** `device commission` if choosing the irreversible `rp2350-signed-msd-v1` profile. Ordinary updates do not use this procedure. Locking does not make previously exposed device secrets private again; use a trusted replacement if extraction is suspected. A2 and A4 are silicon steppings, not KES Service V2 versions; A4 is expected-compatible but has not been physically qualified here. Review the [security boundary](#purpose-and-security-boundary) and retain a separate protected signing-key backup before committing.
+
+Authenticate the downloaded bundle as described [above](#authenticate-a-downloaded-bundle-before-executing-its-verifier), and use the verifier/provisioner from a trusted checkout. Attach exactly one intended board. `USB_SERIAL` is its 16-character application chip-derived serial, **not** the BOOTSEL USB serial or a remembered bus address. The tool rediscovers and verifies the board and explicitly selects its current bus/address; stop if identity, stepping, or selection is ambiguous. BOOTSEL inspection alone cannot establish the fitted JEDEC/SFDP/density tuple. A running verified application report must establish `ef4016`, `534644500a0100ff00080117800000ff`, and `0x01ffffff` before any OTP write; absence of that report is not admission.
+
+Choose a new owner-only public record path and a verified bundle; retain the same record and bundle for every stage and any resume. The record contains public identity, policy, artifact and OTP observations, not keys or raw flash. Each applying operation requires an interactive terminal and typing the displayed exact serial; there is no default target or unattended confirmation. A preview without `--apply` performs no installation or writes and identifies prerequisites not yet observed.
+
+```bash
+BUNDLE=/path/to/verified-bundle
+RECORD="$OPS/otp-provisioning.json"
+python3 tools/firmware.py verify --bundle "$BUNDLE"
+python3 tools/firmware.py inspect --serial "$USB_SERIAL"
+python3 tools/firmware.py provision --stage prepare --serial "$USB_SERIAL" --bundle "$BUNDLE" --record "$RECORD"
+```
+
+Initial conversion requires genuinely blank allocated application storage and an uncommissioned device. If already commissioned, first export needed artifacts, archive public records, and stop/fence all producers. The following is a **separate destructive action**, never an automatic part of provisioning or an update. Only on an unlocked board, and only after consciously accepting loss of the device's existing state, it erases `[0x10100000, 0x10308000)` and records that range. It does not erase firmware or OTP, securely erase copies, or revoke exported secrets:
+
+```bash
+python3 tools/firmware.py erase-state --serial "$USB_SERIAL" --record "$RECORD" --apply
+```
+
+Follow the tool's prompts for physical BOOTSEL and application-mode transitions. Stop `pico2-kes-agentd` before each BOOTSEL/picotool operation; restart the installed daemon in the commissioning configuration above when prompted for application reports. Do not replace its service configuration or bypass its identity handshake. The tool invokes the installed CLI and checks the configured serial, report and status itself; pasted assertions are not evidence. In particular, confirm `storage_blank_at_boot` and still-uncommissioned status on the freshly started same device. Re-identify after every reboot.
+
+1. **Prepare:** start with the verified bundle and selected board, preview as above, then apply. The tool installs and verifies the signed ELF, pauses for the same-device application/flash/blank-state checks, programs and reads back the slot-0 fingerprint and key masks, then runs the authenticated target-bound unsigned permission helper before secure boot. It independently checks both page-2 and page-63 lock words and their redundant copies, with RMA clear. Never use `picotool otp permissions` or run any unsigned helper after secure boot.
+
+   ```bash
+   python3 tools/firmware.py provision --stage prepare --serial "$USB_SERIAL" --bundle "$BUNDLE" --record "$RECORD" --apply
+   ```
+
+2. **Enable:** with the prepared record and fresh matching readback, apply secure boot only. When prompted, start the signed application and commissioning daemon, verify its security report, then physically enter BOOTSEL and exercise a verified signed UF2 reinstall through mass storage before advancing. A missing or uncertain startup/reinstall is not success.
+
+   ```bash
+   python3 tools/firmware.py provision --stage enable --serial "$USB_SERIAL" --bundle "$BUNDLE" --record "$RECORD"
+   python3 tools/firmware.py provision --stage enable --serial "$USB_SERIAL" --bundle "$BUNDLE" --record "$RECORD" --apply
+   ```
+
+3. **Lock:** only after successful enable-stage observations, apply the remaining boot-path restrictions and both debug-disable fuses. Read back public values and redundancy before the final power cycle. Cold-power-cycle as prompted, restart the commissioning daemon, and verify the same identity, authorized boot key, runtime debug locks and `rp2350-signed-msd-v1` application report. Physically re-enter BOOTSEL and confirm mass storage works and PICOBOOT is absent. After locking, do not depend on picotool access.
+
+   ```bash
+   python3 tools/firmware.py provision --stage lock --serial "$USB_SERIAL" --bundle "$BUNDLE" --record "$RECORD"
+   python3 tools/firmware.py provision --stage lock --serial "$USB_SERIAL" --bundle "$BUNDLE" --record "$RECORD" --apply
+   ```
+
+Never blindly replay a timed-out or partially programmed operation: retain the record and diagnostics, obtain fresh readback, and stop on conflicting flags, different keys, active RMA, incomplete redundancy, incompatible locks, or lost access. A fully matching locked device is confirmed read-only through the daemon, not inferred from a failed picotool query. Only after successful locking and the final checks should a fresh device be commissioned and pools generated below; use fresh receipts and identity pin rather than silently reusing an old journal or pin. If the optional profile is not selected, commissioning an unlocked board remains possible without claiming these protections.
+
+### Commission the blank device
 
 **Primary — operator, attended blank-device initialization:**
 
@@ -494,6 +678,7 @@ These are all implemented CLI commands; global options are `--socket PATH` and `
 | --- | --- |
 | `status` | [Routine inspection](#routine-inspection) |
 | `device commission` | [Commissioning](#operator-workspace-and-commissioning-mode) |
+| `device security` | Read-only public OTP/flash/debug report, available in commissioning and normal modes; no command-specific flags |
 | `pool list`, `pool status` | [Routine inspection](#routine-inspection) |
 | `pool enroll` | [Enrollment](#3-enroll-the-pool) |
 | `pool delete` | [Pool removal](#pool-removal-and-re-enrollment) |
@@ -588,7 +773,15 @@ There is no daemon configuration hot reload. Check configuration as the service 
 
 ### Firmware upgrade
 
-Stop the agent; make public records/state backups after clean shutdown. Enter BOOTSEL physically and use the verified ELF-only [flash procedure](#flash-the-intended-board), preserving state. Start normally and compare identity, revision, and pool state with the pre-maintenance records. There is no automatic migration or downgrade guarantee. Unsupported/corrupt state fails closed: stop, preserve diagnostics, and obtain a reviewed recovery procedure rather than erasing it.
+**Normal update or application-failure recovery — not provisioning:** authenticate and verify the complete bundle using the [bootstrap procedure](#authenticate-a-downloaded-bundle-before-executing-its-verifier), including its signed manifest, ELF and UF2 range checks. Keep the last known-good compatible signed bundle offline. The verified UF2 writes/erases only firmware `[0x10000000, 0x10100000)`; preserve all state `[0x10100000, 0x10308000)`, including configuration, pool and handoff sectors. The signed ELF and unsigned permission helper are not the update file.
+
+Before planned maintenance, record the pinned device identity, recipient configuration, pool/incarnation/generation bindings, active and staged verification keys and certificates, period floors, and usable current KES state under valid context. Preserve the existing normal configuration, pin, journal and public records. Stop/fence producers as appropriate and stop the daemon. Physically hold BOOTSEL while reconnecting the intended board, identify its actual RP2350 mass-storage volume, and copy **only** the verified `pico2-kes-firmware.signed.uf2` to that volume. Wait for the copy and reboot to complete, then restart the daemon in its existing normal configuration and re-establish valid context. Do not use picotool on a locked board, enter commissioning mode, run `provision` or `erase-state`, erase or restore a whole flash image, replace the pin or journal, export/reimport device keys, regenerate keys, or recommission.
+
+Check that the same pinned identity and recipient configuration remain, and compare every pool/incarnation/generation, active and staged verification key and certificate binding, period floor, and usable current KES state with the pre-update observations. At the same valid period, current KES state must be retained; when context later advances normally to the staged generation's start period, that same staged generation must become usable with its original bindings. Normal evolution, activation and expiry are distinct from update-induced loss. If a key, identity, floor or binding is missing or changed, stop and preserve diagnostics; do not make the comparison pass by resetting or replacing state.
+
+Any compatible project-signed release can boot: there is no automatic irreversible firmware anti-rollback. A downgrade is supported only when its storage format and interpretation are compatible. This release retains storage version 2 and the existing wrapping-root derivation and record bindings; preserved bytes alone would not suffice if those changed. Incompatible or corrupt state must fail closed without formatting or discarding generations. Restore the last known-good compatible signed UF2 to regain access; a future format change requires a separately designed key-preserving migration.
+
+If a copy is interrupted or the application will not boot, repeat the verified **full** UF2 copy through physical BOOTSEL, then perform the same identity and state checks; never repeat OTP provisioning. This recovery promise is limited to supported generated images and qualified interruption scenarios. A2 erratum E22 can hang BOOTSEL on malformed metadata: arbitrary corruption or malicious images, OTP errors, damaged hardware, and a lost signing authority are not guaranteed recoverable. ROM signature enforcement rejects execution of an unauthorized image; it does not promise that the mass-storage interface refuses to write its bytes.
 
 ### Device loss or replacement
 
@@ -683,7 +876,7 @@ Read-only diagnosis first. No blanket chmod, journal deletion, pin reset, reform
 | --- | --- |
 | Missing socket / service preflight failure | Inspect `systemctl status` and journal; verify policy file, actual no-swap policy, four masked targets and both units' memory limits. |
 | Permission / new membership / sandbox / node query failure | New login and controlled node restart for group changes; inspect ownership and parent traversal. Check sandbox-visible absolute paths and daemon node-query access separately from management/delivery sockets. |
-| USB renumbered / denied / BOOTSEL | Rediscover with `lsusb`/udev; expect `1209:4b45` and group mode `0660` only in application mode. BOOTSEL uses attended privileged picotool. |
+| USB renumbered / denied / BOOTSEL | Rediscover with `lsusb`/udev; expect `1209:4b45` and group mode `0660` only in application mode. Unlocked pre-lock maintenance may use attended privileged picotool; locked devices use physical BOOTSEL mass storage. |
 | Wrong pin / identity failure | Stop; compare trusted original record and physical device. Do not silently re-pin. |
 | Busy / recovering / uncertain receipt | Preserve original receipt and reconcile after recovery. Do not create a replacement mutation. |
 | `revision_conflict` | Rejected, not success. Refresh correct device/pool status; reconsider intent before a new operation with a new receipt. |
@@ -722,8 +915,40 @@ Repository-root-relative references:
 - [Current configuration parser](src/config.rs) and [context acquisition](src/daemon/context.rs)
 - [Original KES agent](https://github.com/IntersectMBO/kes-agent), [FAQ](https://github.com/IntersectMBO/kes-agent/blob/master/doc/faq.markdown), and [guide](https://github.com/IntersectMBO/kes-agent/blob/master/doc/guide.markdown)
 - [Standard Cardano node installation](https://developers.cardano.org/docs/get-started/infrastructure/node/installing-cardano-node/)
+- [RP2350 datasheet](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf), secure boot/OTP and A2 errata; [A4 compatibility and residual extraction limitation](https://www.raspberrypi.com/news/rp2350-a4-rp2354-and-a-new-hacking-challenge/)
 
 Builds, configuration checks, firmware flashing, device status, and socket connection are different evidence from live network forging and peer-accepted blocks. This handbook makes no production-certification or invasive physical-security claim.
+
+### Secure-boot qualification
+
+Secure-boot evidence is separate from `qualification/hardware.json`. A2 storage/USB qualification does not prove ROM signature enforcement; A4 must not inherit an A2 result. Until the attended measurements exist, secure-boot, negative-boot and key-preserving-update checks are **not observed**, not passed. Observed debug fuses and volatile locks are not an external SWD-denial test.
+
+Software verification, without USB or production secrets:
+
+```bash
+PICO2_PERMISSIONS_HELPER="$PWD/target/otp-permissions/pico2-otp-permissions.elf" \
+  python3 -m unittest discover -s tools/tests -p 'test_firmware.py'
+cargo test --locked -p kes-protocol
+cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore
+cargo test --locked -p qualification --bin qualification
+```
+
+**Disposable A2 hardware only, attended:** first prove correct signed UF2 boot/reinstall before final restrictions. Negative images must have valid bounded metadata: use a different ephemeral signing authority, then a payload bit changed after signing. Observe non-execution and restore the authorized full UF2 via physical MSD; do not claim that MSD refused its bytes. Never burn another boot key or rollback counter. Test interrupted beginning/middle/end copies separately, recover each with the complete verified UF2, and stop irreversible work if recovery fails.
+
+For each actual firmware-version upgrade, compatible downgrade and interrupted-transfer/full-reflash scenario, populate at least two disposable pools, each with active and certified staged generations. Keep the same valid comparison period across the reboot, then advance only forward to activate the original staged generations. Stop the daemon before direct USB ownership. Do not use real cold keys, recipients, certificates, or signing periods.
+
+```bash
+cargo run --locked -p qualification -- physical-context --preserve-update --input "$OPS/preservation-input.json"
+cargo run --locked -p qualification -- security --input "$OPS/security-observations.json"
+```
+
+The preservation fixture input contains the original `device_id`, `identity_public_key`, `usb_serial`, `recipient_public_key`; `genesis_digest`, `network_magic`, `slots_per_period`, `lifetime`, `period`, `session`, `sequence`, `lease_seconds`, `publication_time_us`; `scenario` (`upgrade`, `downgrade`, `interrupted_beginning`, `interrupted_middle`, or `interrupted_end`); `before_bundle`, `after_bundle`, a distinct public `output` path; and `pools`, each with `pool_id`, `incarnation_id`, `active_certificate`, and `staged_certificate` paths. Certificate inputs are canonical CBOR operational-certificate bytes, not a private cold key or the 112-byte direct encoding. Use the original public certificate objects and installation records from the operator workflow.
+
+The fixture verifies both bundles and requires distinct source commits/tags/image digests. It retains current KES bytes only in locked, zeroized process memory; it never logs or persists their plaintext or hashes. It checks nonce-pinned identity, same-period byte equality, public pool/generation/key/artifact/certificate bindings and floors, then exercises original staged activation. When prompted, use the existing operator workflow to replenish disposable staged generations without changing the recipient; the fixture verifies the newly generated signed artifact's recipient binding. The fixture does not generate keys, erase storage, recommission, or replace pins/journals. Installed-image identification is an attended operational observation of the verified UF2 transfer and native single-image boot, not independent hardware attestation.
+
+The `security` validator performs no device operations. Its strict version-1 input binds `candidate` commit/dirty identity, actual `chip` revision/ROM/serial, `tools`, public `artifacts` hashes, `pre_device`/`post_device`, and `checks`. The nine required names are `signed_boot`, `wrong_key_rejected`, `tampered_image_rejected`, `picoboot_disabled`, `debug_fuses_and_runtime_locks`, `msd_recovery`, `state_preserving_update`, `compatible_downgrade`, and `interrupted_update_recovery`. Each has an `outcome` (`pass`, `fail`, `not-observed`) and typed `observations`; a global success assertion is insufficient. Not-observed entries have no invented observations. Preservation observations include per-pool comparisons and activation records; interrupted recovery needs all three positions individually. Use the fixture's public observation, not guessed booleans. Input schemas are in [the validator](qualification/src/security.rs) and [the attended fixture](qualification/src/physical_security.rs).
+
+Only complete passing observations for the exact candidate and authorized authority produce a stepping-specific pass. Reports are atomically written under `evidence/<candidate>/security/`; A2 observations leave A4 not observed. Missing hardware, unavailable application reports or unsuccessful recovery are blockers, not waivers.
 
 ### Before leaving the producer unattended
 

@@ -3,7 +3,7 @@ mod support;
 use serde_json::Value;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
@@ -262,4 +262,108 @@ fn destructive_commands_name_target_and_require_confirmation_before_contact() {
     assert!(error.contains("external copies are unaffected"));
     assert!(error.contains("--yes"));
     assert!(!Path::new(&receipt).exists());
+}
+
+#[test]
+fn security_command_reports_observed_state_and_disallows_mutation_flags() {
+    for mut rig in [
+        TestRig::blank_commissioning("attended-board01"),
+        TestRig::commissioned_pool(),
+    ] {
+        let socket = rig.management_socket().display().to_string();
+        let args = ["--socket", &socket, "--json", "device", "security"];
+        let output = cli(&strings(&args));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        kes_protocol::management::Message::decode(&output.stdout).unwrap();
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["result"]["profile"], "unlocked");
+        assert_eq!(response["result"]["stepping"], "A2");
+        assert_eq!(response["result"]["usb_serial"], "00afd9003906a634");
+
+        let mut report = rig.security_report();
+        report.critical = 1;
+        rig.set_security_report(Some(report));
+        let output = cli(&strings(&args));
+        assert_eq!(output.status.code(), Some(0));
+        kes_protocol::management::Message::decode(&output.stdout).unwrap();
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["result"]["profile"], "incomplete");
+
+        report.usb_serial[0] = b'G';
+        rig.set_security_report(Some(report));
+        assert!(!cli(&strings(&args)).status.success());
+        rig.set_security_report(None);
+        assert!(!cli(&strings(&args)).status.success());
+
+        for (flag, value) in [
+            ("--operation-id", "00000000000000000000000000000000"),
+            ("--expected-revision", "0"),
+            ("--receipt", "/tmp/not-created-security-receipt"),
+            ("--usb-serial", "00afd9003906a634"),
+        ] {
+            let mut arguments = strings(&args);
+            arguments.extend(strings(&[flag, value]));
+            assert_eq!(cli(&arguments).status.code(), Some(2));
+        }
+    }
+}
+
+#[test]
+fn executable_rejects_forged_or_malformed_security_replies() {
+    let rig = TestRig::commissioned_pool();
+    let output = cli(&strings(&[
+        "--socket",
+        rig.management_socket().to_str().unwrap(),
+        "--json",
+        "device",
+        "security",
+    ]));
+    assert!(output.status.success());
+    let baseline: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for (index, (field, value)) in [
+        ("profile", Value::String("rp2350-signed-msd-v1".into())),
+        ("stepping", Value::String("A4".into())),
+        ("bootkey0", Value::String("00".into())),
+        ("critical", Value::from(0x1_0000_0000u64)),
+        ("redundancy_ok", Value::from(1)),
+        ("usb_serial", Value::String("00AFD9003906A634".into())),
+        ("unexpected", Value::Bool(true)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = temporary(&format!("forged-security-{index}.sock"));
+        let listener = UnixListener::bind(&path).unwrap();
+        let mut forged = baseline.clone();
+        forged["result"][field] = value;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut length = [0; 4];
+            stream.read_exact(&mut length).unwrap();
+            let mut request = vec![0; u32::from_be_bytes(length) as usize];
+            stream.read_exact(&mut request).unwrap();
+            let request: Value = serde_json::from_slice(&request).unwrap();
+            forged["request_id"] = request["request_id"].clone();
+            let bytes = serde_json::to_vec(&forged).unwrap();
+            stream
+                .write_all(&(bytes.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let output = cli(&strings(&[
+            "--socket",
+            path.to_str().unwrap(),
+            "--json",
+            "device",
+            "security",
+        ]));
+        assert_eq!(output.status.code(), Some(7), "malformed field {field}");
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+    }
 }

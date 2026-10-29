@@ -41,5 +41,6 @@ Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepte
 - **Approver:** Project maintainer (the user in this conversation).
 - **Authorization:** Remove over-detailed qualification requirements and continue making the software work on the device.
 - **Approved definition SHA-256:** `f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce`.
-- **Referenced storage-contract SHA-256:** `21cdcb8d76f874efdcaff3c1149d35880ccf3dd63c35e258b19b792b46bfda14`.
+- **Referenced storage-contract SHA-256:** `2e8f615650cbd09f156827a4716e1411df25c91aff4f87e10ec324b34ede93c7`.
 - **Effect:** Functional software/device evidence remains required; voltage/temperature/endurance labs, repeated attended cuts, fixed coverage/mutation/benchmark thresholds, and supplied-leadership/accepted-block campaigns are excluded.
+- **Storage-linkage amendment:** The approved secure Pico2 provisioning/update plan adds signed firmware-only ranges, the read-only security report and explicitly attended OTP conversion. This updates the storage-contract linkage without promoting existing hardware evidence to secure-boot qualification.

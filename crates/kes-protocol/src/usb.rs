@@ -35,6 +35,7 @@ pub enum Kind {
     Artifact,
     PublicKey,
     Commission,
+    SecurityStatus,
 }
 impl TryFrom<u16> for Kind {
     type Error = Error;
@@ -50,6 +51,7 @@ impl TryFrom<u16> for Kind {
             8 => Self::Artifact,
             9 => Self::PublicKey,
             10 => Self::Commission,
+            11 => Self::SecurityStatus,
             _ => return Err(Error::Kind),
         })
     }
@@ -311,6 +313,7 @@ use kes_core::operation::{Action, GenerationTarget, Mutation, PoolTarget, UsbSer
 /// The typed host-to-device messages. Integer map keys are specified by the
 /// decoder below and are always emitted in increasing order on the wire.
 pub enum Request {
+    SecurityStatus,
     Hello {
         nonce: [u8; 32],
     },
@@ -503,6 +506,10 @@ pub fn decode_request(kind: Kind, bytes: &[u8]) -> Result<Request, Error> {
     validate_cbor(bytes)?;
     let mut c = Cursor { bytes, pos: 0 };
     let request = match kind {
+        Kind::SecurityStatus => {
+            c.map(0)?;
+            Request::SecurityStatus
+        }
         Kind::Hello => {
             c.map(1)?;
             c.key(1)?;
@@ -794,6 +801,10 @@ pub fn encode_request(request: &Request, out: &mut [u8]) -> Result<(Kind, usize)
     use kes_core::operation::Binding;
     let mut w = Writer { out, pos: 0 };
     let kind = match request {
+        Request::SecurityStatus => {
+            w.map(0)?;
+            Kind::SecurityStatus
+        }
         Request::Hello { nonce } => {
             w.map(1)?;
             w.uint(1)?;
@@ -1532,6 +1543,7 @@ pub struct ReceiptAckResponse {
 
 /// Secret-bearing variants do not expose diagnostic formatting.
 pub enum Response<'a> {
+    SecurityStatus(crate::security::SecurityStatus),
     Hello(HelloResponse),
     Status(StatusResponse),
     Context(ContextResponse),
@@ -2109,6 +2121,46 @@ pub fn encode_response(value: &Response<'_>, out: &mut [u8]) -> Result<(Kind, us
     }
     let mut w = Writer { out, pos: 0 };
     let kind = match value {
+        Response::SecurityStatus(v) => {
+            w.map(18)?;
+            w.uint(1)?;
+            w.uint(v.chip_revision.into())?;
+            w.uint(2)?;
+            w.uint(v.rom_version.into())?;
+            w.uint(3)?;
+            w.uint(v.critical.into())?;
+            w.uint(4)?;
+            w.uint(v.boot_flags0.into())?;
+            w.uint(5)?;
+            w.uint(v.boot_flags1.into())?;
+            w.uint(6)?;
+            w.bytes(&v.bootkey0)?;
+            w.uint(7)?;
+            w.uint(v.page2_lock0.into())?;
+            w.uint(8)?;
+            w.uint(v.page2_lock1.into())?;
+            w.uint(9)?;
+            w.uint(v.page63_lock0.into())?;
+            w.uint(10)?;
+            w.uint(v.page63_lock1.into())?;
+            w.uint(11)?;
+            w.uint(v.debugen.into())?;
+            w.uint(12)?;
+            w.uint(v.debugen_lock.into())?;
+            w.uint(13)?;
+            w.boolean(v.redundancy_ok)?;
+            w.uint(14)?;
+            w.bytes(&v.jedec_id)?;
+            w.uint(15)?;
+            w.bytes(&v.sfdp_header)?;
+            w.uint(16)?;
+            w.uint(v.density_bits_minus_one.into())?;
+            w.uint(17)?;
+            w.bytes(&v.usb_serial)?;
+            w.uint(18)?;
+            w.boolean(v.storage_blank_at_boot)?;
+            Kind::SecurityStatus
+        }
         Response::Hello(v) => {
             w.hello(v, true)?;
             Kind::Hello
@@ -2191,6 +2243,65 @@ pub fn decode_response(kind: Kind, bytes: &[u8]) -> Result<Response<'_>, Error> 
     validate_cbor(bytes)?;
     let mut c = Cursor { bytes, pos: 0 };
     let response = match kind {
+        Kind::SecurityStatus => {
+            c.map(18)?;
+            c.key(1)?;
+            let chip_revision = c.small()?;
+            c.key(2)?;
+            let rom_version = c.small()?;
+            c.key(3)?;
+            let critical = u32::try_from(c.uint()?).map_err(|_| Error::Schema)?;
+            c.key(4)?;
+            let boot_flags0 = u32::try_from(c.uint()?).map_err(|_| Error::Schema)?;
+            c.key(5)?;
+            let boot_flags1 = u32::try_from(c.uint()?).map_err(|_| Error::Schema)?;
+            c.key(6)?;
+            let bootkey0 = c.fixed()?;
+            c.key(7)?;
+            let page2_lock0 = c.small()?;
+            c.key(8)?;
+            let page2_lock1 = c.small()?;
+            c.key(9)?;
+            let page63_lock0 = c.small()?;
+            c.key(10)?;
+            let page63_lock1 = c.small()?;
+            c.key(11)?;
+            let debugen = u32::try_from(c.uint()?).map_err(|_| Error::Schema)?;
+            c.key(12)?;
+            let debugen_lock = u32::try_from(c.uint()?).map_err(|_| Error::Schema)?;
+            c.key(13)?;
+            let redundancy_ok = c.boolean()?;
+            c.key(14)?;
+            let jedec_id = c.fixed()?;
+            c.key(15)?;
+            let sfdp_header = c.fixed()?;
+            c.key(16)?;
+            let density_bits_minus_one = u32::try_from(c.uint()?).map_err(|_| Error::Schema)?;
+            c.key(17)?;
+            let usb_serial = c.fixed()?;
+            c.key(18)?;
+            let storage_blank_at_boot = c.boolean()?;
+            Response::SecurityStatus(crate::security::SecurityStatus {
+                chip_revision,
+                rom_version,
+                critical,
+                boot_flags0,
+                boot_flags1,
+                bootkey0,
+                page2_lock0,
+                page2_lock1,
+                page63_lock0,
+                page63_lock1,
+                debugen,
+                debugen_lock,
+                redundancy_ok,
+                jedec_id,
+                sfdp_header,
+                density_bits_minus_one,
+                usb_serial,
+                storage_blank_at_boot,
+            })
+        }
         Kind::Hello => {
             c.map(2)?;
             c.key(1)?;
