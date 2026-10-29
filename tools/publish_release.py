@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Publish an already verified bundle; never repair or overwrite a release."""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from urllib.parse import quote
+
+import firmware
+
+REPOSITORY = "AndrewWestberg/pico2-kes-agent"
+NOTES = """Native RP2350 signed firmware; profile rp2350-signed-msd-v1.
+
+Verify the GPG-authorized boot authority and signed manifest before executing
+downloaded tooling or copying the signed UF2. Normal updates preserve storage
+version 2 and all state at [0x10100000,0x10308000); never erase or recommission.
+
+A2 qualification is scoped to candidate-matching measured security evidence, not
+the presence of a signature. A4 is expected-compatible and not physically
+validated. A2 interrupted-update recovery covers supported generated images and
+qualified transfer interruptions, not arbitrary malformed metadata. Neither
+signatures nor secure boot establish live forging or invasive-extraction safety.
+
+GPG authorizes the single boot authority; releases are not individually GPG-signed.
+Repository/workflow/tag access is signing authority: every pushed v* tag signs,
+without branch, signed-tag, or protected-environment approval gates.
+"""
+
+
+def gh(*arguments):
+    return firmware.run(["gh", *arguments], timeout=180)[0]
+
+
+def release_state(tag):
+    # `--include` gives a status line even on a 404. Network/auth failures are
+    # not interpreted as an absent release.
+    result = subprocess.run(["gh", "api", "--include", "--hostname", "github.com",
+                             f"repos/{REPOSITORY}/releases/tags/{quote(tag, safe='')}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    firmware.require(len(result.stdout) <= 1024 * 1024, "oversized release response")
+    text = result.stdout.decode("utf-8")
+    status = text.splitlines()[0] if text else ""
+    if status.startswith(("HTTP/2.0 404", "HTTP/1.1 404", "HTTP/2 404")):
+        return None
+    firmware.require(result.returncode == 0, "release inspection failed; refusing publication")
+    separator = "\r\n\r\n" if "\r\n\r\n" in text else "\n\n"
+    firmware.require(separator in text, "missing release HTTP headers")
+    return json.loads(text.split(separator, 1)[1], object_pairs_hook=firmware.unique_object)
+
+
+def require_asset_set(release, bundle):
+    assets = release.get("assets")
+    firmware.require(type(assets) is list, "missing release assets")
+    expected = {path.name: path.stat().st_size for path in bundle.iterdir()}
+    actual = {}
+    for asset in assets:
+        name = asset.get("name")
+        firmware.require(type(name) is str and name in expected and name not in actual,
+                         "unexpected or duplicate published asset")
+        actual[name] = asset.get("size")
+    firmware.require(actual == expected, "partial/different release; explicit maintainer action required")
+
+
+def compare_download(tag, bundle):
+    with tempfile.TemporaryDirectory(prefix="pico2-release-download-") as directory:
+        gh("release", "download", tag, "--repo", REPOSITORY, "--dir", directory)
+        downloaded = Path(directory)
+        firmware.verify_bundle(downloaded)
+        firmware.require({p.name for p in downloaded.iterdir()} == {p.name for p in bundle.iterdir()},
+                         "downloaded asset set differs")
+        for path in bundle.iterdir():
+            firmware.require(firmware.bounded_file(path, firmware.MAX_ELF)
+                             == firmware.bounded_file(downloaded / path.name, firmware.MAX_ELF),
+                             "different historical artifact; refusing overwrite")
+
+
+def publish(bundle, tag, commit):
+    bundle = Path(bundle)
+    manifest = firmware.verify_bundle(bundle)
+    firmware.require(manifest["tag"] == tag and manifest["commit"] == commit,
+                     "bundle does not match triggering tag/commit")
+    target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}"))
+    firmware.require(target.get("sha") == commit, "triggering tag moved or resolves to another commit")
+    existing = release_state(tag)
+    if existing is not None:
+        firmware.require(existing.get("tag_name") == tag and existing.get("draft") is False,
+                         "pre-existing draft/partial release; explicit maintainer action required")
+        require_asset_set(existing, bundle)
+        compare_download(tag, bundle)
+        print("Identical completed release already exists; no changes.")
+        return
+    with tempfile.TemporaryDirectory(prefix="pico2-release-notes-") as temporary:
+        notes = Path(temporary) / "notes.txt"
+        notes.write_text(NOTES, encoding="utf-8")
+        gh("release", "create", tag, "--repo", REPOSITORY, "--verify-tag", "--target", commit,
+           "--draft", "--title", tag, "--notes-file", notes)
+    # Any failure leaves a reported draft, never a published partial bundle.
+    gh("release", "upload", tag, "--repo", REPOSITORY,
+       *(bundle / name for name in (*firmware.ARTIFACTS, "release.json", "release.json.sig")))
+    uploaded = release_state(tag)
+    firmware.require(uploaded is not None and uploaded.get("draft") is True, "draft release changed")
+    require_asset_set(uploaded, bundle)
+    compare_download(tag, bundle)
+    target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}"))
+    firmware.require(target.get("sha") == commit, "triggering tag moved during upload; draft retained")
+    gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false")
+    print("Verified complete release published.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bundle", required=True, type=Path)
+    parser.add_argument("--tag", required=True)
+    parser.add_argument("--commit", required=True)
+    args = parser.parse_args()
+    firmware.require(bool(os.environ.get("GH_TOKEN")), "GH_TOKEN is unavailable")
+    publish(args.bundle, args.tag, args.commit)
+
+
+if __name__ == "__main__":
+    main()

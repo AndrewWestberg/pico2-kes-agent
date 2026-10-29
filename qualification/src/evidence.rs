@@ -14,7 +14,7 @@ const DEFINITION: &str = "specs/001-pico2-kes-agent/contracts/quality-gates.md";
 pub(crate) const APPROVED_DIGEST: &str =
     "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce";
 const APPROVED_STORAGE_DIGEST: &str =
-    "21cdcb8d76f874efdcaff3c1149d35880ccf3dd63c35e258b19b792b46bfda14";
+    "2e8f615650cbd09f156827a4716e1411df25c91aff4f87e10ec324b34ede93c7";
 const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);

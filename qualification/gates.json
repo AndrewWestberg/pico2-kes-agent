@@ -11,7 +11,7 @@
     "definition_sha256": "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce",
     "definition_hash_boundary": "UTF-8 bytes preceding the ## Approval record heading, including the immediately preceding blank line",
     "storage_contract": "specs/001-pico2-kes-agent/contracts/device-storage.md",
-    "storage_sha256": "21cdcb8d76f874efdcaff3c1149d35880ccf3dd63c35e258b19b792b46bfda14",
+    "storage_sha256": "2e8f615650cbd09f156827a4716e1411df25c91aff4f87e10ec324b34ede93c7",
     "storage_hash_boundary": "complete UTF-8 file bytes",
     "effect": "Satisfies the current approval prerequisite. Functional software/device evidence remains required; environmental, endurance, repeated-cut and supplied-leadership campaigns are excluded."
   },

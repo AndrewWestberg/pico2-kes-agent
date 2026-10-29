@@ -8,6 +8,7 @@ mod load;
 mod native_regression;
 pub mod oracle;
 mod physical;
+mod security;
 mod tools;
 
 fn main() {
@@ -29,11 +30,12 @@ fn main() {
         [command, rest @ ..] if command == "hardware" => hardware::run(rest),
         [command] if command == "native-regression" => native_regression::run(),
         [command, rest @ ..] if command == "physical-context" => physical::run(rest),
+        [command, rest @ ..] if command == "security" => security::run(rest),
         [command, rest @ ..] if command == "gates" => gates::run(rest),
         [command] if command == "__foundation-memory-child" => foundation::memory_child(),
         _ => {
             eprintln!(
-                "usage: qualification tools|foundation|hardware|load|native-regression|physical-context --input INPUT.json|benchmarks --baseline REV|gates run SCOPE|gates validate REPORT --require SCOPE"
+                "usage: qualification tools|foundation|hardware|load|native-regression|physical-context --input INPUT.json|security --input INPUT.json|benchmarks --baseline REV|gates run SCOPE|gates validate REPORT --require SCOPE"
             );
             1
         }

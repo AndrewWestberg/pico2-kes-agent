@@ -173,6 +173,7 @@ struct Emulator {
     disconnected: bool,
     wrong_identity: bool,
     last_generation: Option<GenerationId>,
+    security: Option<kes_protocol::security::SecurityStatus>,
 }
 
 struct ContextInput {
@@ -199,6 +200,28 @@ impl Emulator {
             disconnected: false,
             wrong_identity: false,
             last_generation: None,
+            security: Some(kes_protocol::security::SecurityStatus {
+                chip_revision: 2,
+                rom_version: 2,
+                critical: 0,
+                boot_flags0: 0,
+                boot_flags1: 0,
+                bootkey0: [0; 32],
+                page2_lock0: 0,
+                page2_lock1: 0,
+                page63_lock0: 0,
+                page63_lock1: 0,
+                debugen: 0x10f,
+                debugen_lock: 0,
+                redundancy_ok: true,
+                jedec_id: [0xef, 0x40, 0x16],
+                sfdp_header: [
+                    0x53, 0x46, 0x44, 0x50, 0x0a, 1, 0, 0xff, 0, 8, 1, 0x17, 0x80, 0, 0, 0xff,
+                ],
+                density_bits_minus_one: 0x01ff_ffff,
+                usb_serial: *b"00afd9003906a634",
+                storage_blank_at_boot: true,
+            }),
         }
     }
 
@@ -648,6 +671,10 @@ impl DeviceTransport for Emulator {
         }
         match request {
             Request::Status { pool } => self.status(*pool),
+            Request::SecurityStatus => {
+                let report = self.security.ok_or(UsbError::Protocol)?;
+                self.encode(&Response::SecurityStatus(report))
+            }
             Request::Commission(mutation) => self.mutate(*mutation, true),
             Request::Mutate(mutation) => self.mutate(*mutation, false),
             Request::ReceiptAck {
@@ -817,6 +844,14 @@ impl TestRig {
     }
     pub fn certified_pool_at(timestamp: u64) -> Self {
         Self::new(true, true, timestamp)
+    }
+
+    pub fn security_report(&self) -> kes_protocol::security::SecurityStatus {
+        self.state.lock().unwrap().usb.security.unwrap()
+    }
+
+    pub fn set_security_report(&mut self, report: Option<kes_protocol::security::SecurityStatus>) {
+        self.state.lock().unwrap().usb.security = report;
     }
 
     fn new(with_pool: bool, certified: bool, timestamp: u64) -> Self {

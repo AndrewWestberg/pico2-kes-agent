@@ -58,7 +58,7 @@ fn bad_crc_and_header_are_rejected_without_resynchronizing() {
     assert!(matches!(d.feed(&bytes), Err(Error::Major)));
     d.reconnect();
     bytes[4..6].copy_from_slice(&1u16.to_be_bytes());
-    bytes[6..8].copy_from_slice(&11u16.to_be_bytes());
+    bytes[6..8].copy_from_slice(&12u16.to_be_bytes());
     assert!(matches!(d.feed(&bytes), Err(Error::Kind)));
 }
 
@@ -79,7 +79,7 @@ fn canonical_cbor_rejections() {
 
 #[test]
 fn all_kinds_and_surplus_input() {
-    for n in 1..=10 {
+    for n in 1..=11 {
         let kind = Kind::try_from(n).unwrap();
         let bytes = frame(kind, u64::from(n), &[0xa0]);
         let mut combined = bytes.clone();
@@ -92,6 +92,148 @@ fn all_kinds_and_surplus_input() {
         assert_eq!(used, bytes.len());
         assert_eq!(result.unwrap().request_number, u64::from(n));
     }
+}
+
+#[test]
+fn security_status_roundtrip_and_schema_rejection() {
+    use kes_protocol::{
+        security::SecurityStatus,
+        usb::{Request, Response},
+    };
+    let status = SecurityStatus {
+        chip_revision: 2,
+        rom_version: 2,
+        critical: 7,
+        boot_flags0: 0x2da180,
+        boot_flags1: 0xe01,
+        bootkey0: [7; 32],
+        page2_lock0: 0,
+        page2_lock1: 0x15,
+        page63_lock0: 0,
+        page63_lock1: 0x15,
+        debugen: 0,
+        debugen_lock: 0x10f,
+        redundancy_ok: true,
+        jedec_id: [0xef, 0x40, 0x16],
+        sfdp_header: [
+            0x53, 0x46, 0x44, 0x50, 0x0a, 1, 0, 0xff, 0, 8, 1, 0x17, 0x80, 0, 0, 0xff,
+        ],
+        density_bits_minus_one: 0x1ff_ffff,
+        usb_serial: *b"0123456789abcdef",
+        storage_blank_at_boot: true,
+    };
+    let mut locked = status;
+    locked.boot_flags0 = 0x200000 | 0x80000 | 0x40000 | 0x10000 | 0x8000 | 0x2000 | 0x100 | 0x80;
+    assert_eq!(locked.profile(Some(&[7; 32])), "rp2350-signed-msd-v1");
+    assert_eq!(locked.profile(None), "incomplete");
+    assert_eq!(locked.profile(Some(&[8; 32])), "incomplete");
+    for bit in [
+        0x200000, 0x80000, 0x40000, 0x10000, 0x8000, 0x2000, 0x100, 0x80,
+    ] {
+        let mut v = locked;
+        v.boot_flags0 &= !bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    for bit in [0x20000, 0x4000, 0x1000, 0x800, 0x40] {
+        let mut v = locked;
+        v.boot_flags0 |= bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    for bit in [2, 4] {
+        let mut v = locked;
+        v.critical &= !bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    for bit in [8, 0x10000] {
+        let mut v = locked;
+        v.critical |= bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    for bit in [1, 2, 4, 8, 0x100, 0x200, 0x400, 0x800] {
+        let mut v = locked;
+        v.boot_flags1 ^= bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    for lock in [0, 2, 3, 0x14, 0x19, 0x25, 0x95] {
+        let mut v = locked;
+        v.page2_lock1 = lock;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+        v = locked;
+        v.page63_lock1 = lock;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    for lock in [0x1d, 0x35, 0x3d] {
+        let mut v = locked;
+        v.page2_lock1 = lock;
+        v.page63_lock1 = lock;
+        assert_eq!(v.profile(Some(&[7; 32])), "rp2350-signed-msd-v1");
+    }
+    for bit in [1, 2, 4, 8, 0x100] {
+        let mut v = locked;
+        v.debugen |= bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+        v = locked;
+        v.debugen_lock &= !bit;
+        assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    }
+    let mut v = locked;
+    v.page2_lock0 = 1;
+    assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    v = locked;
+    v.jedec_id[0] ^= 1;
+    assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    v = locked;
+    v.sfdp_header[0] ^= 1;
+    assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    v = locked;
+    v.density_bits_minus_one ^= 1;
+    assert_eq!(v.profile(Some(&[7; 32])), "incomplete");
+    let mut bad_policy = locked;
+    bad_policy.boot_flags0 |= 0x20000;
+    assert_eq!(bad_policy.profile(Some(&[7; 32])), "incomplete");
+    bad_policy = locked;
+    bad_policy.page63_lock0 = 0x80;
+    assert_eq!(bad_policy.profile(Some(&[7; 32])), "incomplete");
+    bad_policy = locked;
+    bad_policy.redundancy_ok = false;
+    assert_eq!(bad_policy.profile(Some(&[7; 32])), "incomplete");
+    bad_policy = locked;
+    bad_policy.critical = 0;
+    assert_eq!(bad_policy.profile(Some(&[7; 32])), "unlocked");
+    bad_policy = locked;
+    bad_policy.rom_version = 4;
+    assert_eq!(bad_policy.stepping(), "A4");
+    assert_eq!(bad_policy.profile(Some(&[7; 32])), "rp2350-signed-msd-v1");
+    bad_policy.rom_version = 3;
+    assert_eq!(bad_policy.stepping(), "unsupported");
+    assert_eq!(bad_policy.profile(Some(&[7; 32])), "incomplete");
+    let mut out = [0; 4096];
+    let (kind, n) = usb::encode_request(&Request::SecurityStatus, &mut out).unwrap();
+    assert_eq!((kind, &out[..n]), (Kind::SecurityStatus, &[0xa0][..]));
+    assert!(matches!(
+        usb::decode_request(kind, &out[..n]),
+        Ok(Request::SecurityStatus)
+    ));
+    assert!(usb::decode_request(kind, &[0xa1, 1, 0]).is_err());
+    let (kind, n) = usb::encode_response(&Response::SecurityStatus(status), &mut out).unwrap();
+    assert!(
+        matches!(usb::decode_response(kind, &out[..n]), Ok(Response::SecurityStatus(v)) if v == status)
+    );
+    assert!(usb::decode_response(kind, &out[..n - 1]).is_err());
+    let mut bad = out[..n].to_vec();
+    bad[1] = 2; // missing key 1 and duplicate key 2
+    assert!(usb::decode_response(kind, &bad).is_err());
+    let mut bad = out[..n].to_vec();
+    let key = bad.windows(3).position(|v| v == [6, 0x58, 0x20]).unwrap();
+    bad[key + 2] = 31;
+    assert!(usb::decode_response(kind, &bad).is_err());
+    let mut bad = out[..n].to_vec();
+    let boolean = bad.windows(2).position(|v| v == [13, 0xf5]).unwrap();
+    bad[boolean + 1] = 1;
+    assert!(usb::decode_response(kind, &bad).is_err());
+    let mut bad = out[..n].to_vec();
+    bad.push(0);
+    assert!(usb::decode_response(kind, &bad).is_err());
 }
 
 #[test]

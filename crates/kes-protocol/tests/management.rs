@@ -18,6 +18,52 @@ fn response(outcome: &str, result: &str, error: &str) -> String {
         "{{\"version\":1,\"request_id\":\"{ID}\",\"outcome\":\"{outcome}\",\"result\":{result},\"error\":{error}}}"
     )
 }
+
+#[test]
+fn security_reply_requires_complete_consistent_schema() {
+    let report = format!(
+        concat!(
+            "{{\"chip_revision\":2,\"rom_version\":2,\"critical\":0,",
+            "\"boot_flags0\":0,\"boot_flags1\":0,\"bootkey0\":\"{}\",",
+            "\"page2_lock0\":0,\"page2_lock1\":0,\"page63_lock0\":0,\"page63_lock1\":0,",
+            "\"debugen\":0,\"debugen_lock\":0,\"redundancy_ok\":true,",
+            "\"jedec_id\":\"ef4016\",\"sfdp_header\":\"534644500a0100ff00080117800000ff\",",
+            "\"density_bits_minus_one\":33554431,\"usb_serial\":\"0123456789abcdef\",",
+            "\"storage_blank_at_boot\":true,\"profile\":\"unlocked\",\"stepping\":\"A2\"}}"
+        ),
+        "00".repeat(32)
+    );
+    let valid = response("success", &report, "null");
+    assert!(Message::decode(valid.as_bytes()).is_ok());
+    for bad in [
+        report.replace("\"chip_revision\":2", "\"chip_revision\":256"),
+        report.replace("\"critical\":0", "\"critical\":4294967296"),
+        report.replace("\"redundancy_ok\":true", "\"redundancy_ok\":1"),
+        report.replace("\"jedec_id\":\"ef4016\"", "\"jedec_id\":\"EF4016\""),
+        report.replace(
+            "\"usb_serial\":\"0123456789abcdef\"",
+            "\"usb_serial\":\"00\"",
+        ),
+        report.replace("\"stepping\":\"A2\"", "\"stepping\":\"A4\""),
+        report.replace(
+            "\"profile\":\"unlocked\"",
+            "\"profile\":\"rp2350-signed-msd-v1\"",
+        ),
+        report.replace("\"chip_revision\":2,", ""),
+        report.replace(
+            "\"chip_revision\":2,",
+            "\"chip_revision\":2,\"chip_revision\":2,",
+        ),
+        report.replace("\"chip_revision\":2,", "\"unknown\":2,\"chip_revision\":2,"),
+    ] {
+        assert!(Message::decode(response("success", &bad, "null").as_bytes()).is_err());
+    }
+    assert!(
+        Message::decode(request("device.security", "{\"pool_id\":\"00\"}", false).as_bytes())
+            .is_err()
+    );
+    assert!(Message::decode(request("device.security", "{}", true).as_bytes()).is_err());
+}
 #[test]
 fn framing_fragmentation_limits_and_next_frame() {
     let json = request("device.status", "{}", false);
@@ -48,6 +94,12 @@ fn every_action_and_exact_argument_schema() {
     let generation = format!("{target},\"generation_id\":\"{ID}\"");
     let cases = [
         ("device.status", "{}".into(), false, Action::DeviceStatus),
+        (
+            "device.security",
+            "{}".into(),
+            false,
+            Action::DeviceSecurity,
+        ),
         (
             "device.commission",
             "{\"usb_serial\":\"board\"}".into(),
