@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-10-29T13:11:11Z",
+  "firmware": {
+    "sha256": "a045f9c10bb0847add3381633d9db0eb3a4b838f0c157909763df59700684afd",
+    "build_command": "cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf",
+    "install_command": "/tmp/pico2-picotool/build/picotool load -v -x target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware -t elf",
+    "install_readback_verified": true
+  },
+  "usb": {
+    "sysfs_path": "1-3.4.2",
+    "vendor_id": "1209",
+    "product_id": "4b45",
+    "manufacturer": "Pico2 KES Agent",
+    "product": "Pico2 KES Agent",
+    "serial": "00afd9003906a634",
+    "device_node_at_observation": "/dev/bus/usb/001/072",
+    "device_node_mode": "0660",
+    "device_node_owner": "root",
+    "device_node_group": "plugdev"
+  },
+  "startup": {
+    "mode": "normal pinned-device mode",
+    "device_id": "a8502bb6dd6114d187f9d36b3d36b932",
+    "commissioning_state": "committed",
+    "device_revision": 5,
+    "health": "ready",
+    "receipt_pending": false,
+    "interpretation": "Production startup completed fitted-flash identification, RP2350 TRNG startup health checks, authenticated state recovery, USB handshake, and exact identity-pin verification."
+  },
+  "result": "pass",
+  "limitations": [
+    "The /dev/bus/usb address is enumeration-local and is recorded only as the observed instance. Persistent authorization is keyed by production VID/PID and serial through udev, not by this path."
+  ]
+}

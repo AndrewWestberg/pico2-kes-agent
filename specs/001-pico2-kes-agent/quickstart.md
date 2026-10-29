@@ -2,13 +2,13 @@
 
 ## Execution status
 
-These commands define validation of the completed implementation. The repository currently contains only its initial Rust package and planning documents; the planned binaries, firmware, native changes and qualification targets do not yet exist here. The refined gate definition is explicitly maintainer-approved; its current approval record satisfies the definition-approval prerequisite for T001–T100 and supersedes proposal-time status labels in the unchanged definition. Do not report these planned commands as executed by this workflow. This guide is a run/validation contract, not implementation code or a substitute for the [quality gates](contracts/quality-gates.md).
+These commands validate the implemented firmware, daemon, CLI, host packaging, native integration, and qualification runners. Functional results must still be tied to the current revision and dirty-source digest; an older report is evidence only for its recorded candidate.
 
 Use only disposable credentials on an isolated controlled network for destructive scenarios. Mainnet, live cold keys and production backup recipients must not enter qualification fixtures. The backup host need not run a producer.
 
 ## 1. Prerequisites and setup
 
-Full campaigns require: accepted Pico2 A2 with identified qualified flash; controllable device/host power; Linux primary with systemd/USB access; a separate recipient host; offline cold-certificate workflow; independent Cardano decoder and validating peer; controlled network with predeclared leadership opportunities for all 64 pools within the G9 budget. Trusted host time and fresh local-node state are required for period advancement. Install Rust 1.99.1, pinned gate tools, GHC/Cabal for the research pins, and `jq`. The separately scoped foundation phase below needs no fixture, hardware or daemon. Verify the recorded definition approval and demonstrate gate sensitivity before accepting results.
+Required validation uses a Pico2 A2 with its fitted flash, Linux with USB access, Rust 1.99.1, and the pinned GHC/Cabal native-node environment. Use trusted host time and fresh local-node state when exercising period advancement. A recipient host and independent Cardano decoder are needed only for restore interoperability. Controlled leadership windows and laboratory power equipment are optional, not acceptance prerequisites.
 
 ### Host-only foundation phase
 
@@ -36,7 +36,15 @@ cargo clippy --locked -p pico2-kes-firmware --release --target thumbv8m.main-non
 
 Build the integrated node with its native `cabal build cardano-node`; separately build the unmodified pinned CLI/oracle. Capture all source/tool hashes and resolved native plans. Attended firmware installation must preserve the state partition; never perform an unreviewed whole-flash erase on an enrolled device. Inspect actual A2/flash identity and firmware/RAM bounds before commissioning.
 
-Install the two host binaries, supplied systemd unit and udev rule through the implementation's packaging. Create the daemon account/group and authorize the test operator/node under that common group. Disable core dumps, swap/hibernation and persistent host snapshots for secret-bearing daemon/node memory; do not count daemon-only protection as sufficient. Obtain the initial public device pin through the following attended procedure, not discovery during normal startup.
+Build and install both host binaries, the systemd unit, host check, and production udev rule:
+
+```sh
+cargo build --locked --release --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+sudo deploy/install.sh
+sudo usermod -aG pico2-kes-agent "$USER"
+```
+
+The installer preserves an existing `/etc/pico2-kes-agent/config.json` and `/var/lib/pico2-kes-agent`, and does not start the daemon before the device pin is configured. `sudo deploy/uninstall.sh` removes installed binaries/unit/rule while preserving configuration, host state, account/group, and enrolled device storage. Re-login after adding an operator or node account to the group. Disable core dumps, swap/hibernation and persistent host snapshots for secret-bearing daemon/node memory; do not count daemon-only protection as sufficient. Obtain the initial public device pin through the following attended procedure, not discovery during normal startup.
 
 ### First-device commissioning
 
@@ -82,13 +90,13 @@ Expected: active service, enrolled intended device identity, public capacity 64,
 
 ### Focused U1/U2/I1 validation
 
-Use disposable fixtures for the focused scenarios below. The attended-cut runner is implemented separately in section 5; absent `smoke`, full `power-loss`, `node`, or `operator` commands remain pending rather than passing by description.
+Use disposable fixtures for destructive focused scenarios. The deterministic recovery suite, `qualification hardware`, `qualification load`, and `qualification native-regression` are implemented; optional long-running diagnostics remain separate.
 
 - **U1:** begin on qualified blank state, then interrupt before first write, during a partial first write, after valid COMMIT before CLEAN, after CLEAN before reply, and before host pin installation. Observe the specified blank retry, explicit unavailable diagnosis, or same-identity recovery—not automatic formatting. Reject wrong serial, a second commissioning ID and corrupt/nonblank state; normal mode never initializes. Preserve public evidence and keep device-private identity/storage keys off the host.
 - **U2:** observe the stored public descriptor and actual V2 timestamp. Cut after publication COMMIT, after CLEAN before USB reply, and after send before confirmation. Repeated committed delivery must use the identical timestamp and bundle; a later visible state must be newer. Equal-period refresh, status polling and reconnect must not create publications. Exercise expiry Drop, direct replacement, explicit deletion without fresh period context, same-pool re-enrollment after restart with a lower valid host-time sample, different-pool slot reuse, and overflow rejection. Verify terminal deletion timestamp recovery from public receipts without retaining old key state.
 - **I1:** enroll two pools on the same network; persist different accepted floors, reboot, and submit a fresh but regressive context to each target. Each rejects below its own floor, independently of the other's health. Expiry/rotation/discard retain the floor; equal-period refresh does not write flash. Quarantine one pool and prove the other proceeds. Delete the last pool for the network and re-enroll: a new incarnation requires fresh context but inherits no period floor or old secret from the slot. Reconcile old operations without recreating a generation.
 
-These are required real-interface/fault scenarios, not checks performed by this planning command. T043/T093 must include any additional floor/commissioning/deletion writes in maximum-size and per-sector endurance qualification.
+These are required real-interface/fault scenarios, not checks performed by this planning command. T043/T093 include the additional floor, commissioning, and deletion writes in maximum-size and capacity qualification.
 
 ## 2. Shared recipient and one-pool lifecycle
 
@@ -142,37 +150,17 @@ pico2-kes-agent-cli --json pool status --pool "$POOL"
 
 Expected: future certificate remains staged; currently valid certificate activates automatically after cleanup. No activation approval command or backup receipt exists. Wrong-pool/vkey/signature, expired/regressive certificate and unavailable/regressive period context reject safely.
 
-## 3. Bulk node and offline-backup rotation
+## 3. Native node and offline-backup rotation
 
-Construct actual bulk JSON from complete certificate/VRF text envelopes, using the exact [bulk grammar](contracts/node-service.md). An agent entry uses `kesSource: {"type":"kes-agent","socketPath":"/run/pico2-kes-agent/<pool-id>.sock"}`. Do not put a KES signing-key file in that entry. Configure 64 independently enrolled/certified pools with unique identities/sockets, then a separate mixed-source scenario containing legacy files, versioned files and agent entries. The user removed predecessor forge changes from the consensus baseline; do not restore them for qualification. Test other source compatibility only if independently supported by the selected baseline; otherwise verify unsupported-source rejection. Do not reuse one pool identity across source kinds to fake coverage.
+Construct bulk JSON from complete certificate/VRF text envelopes using the [bulk grammar](contracts/node-service.md). An agent entry uses `kesSource: {"type":"kes-agent","socketPath":"/run/pico2-kes-agent/<pool-id>.sock"}` and contains no KES signing-key file.
 
-```sh
-"$NODE_BIN" run --config "$NODE_CONFIG" --topology "$TOPOLOGY" \
-  --database-path "$DATABASE" --socket-path "$NODE_SOCKET" \
-  --bulk-credentials-file "$BULK_CREDENTIALS"
-```
-
-Provide the fixture's leadership opportunities and observe peer-accepted blocks, not merely a successful launch. Stop the backup host; generate/export/certify a replacement while the active generation continues. At valid start it must publish automatically, with unchanged node process and other 63 generations. Export before retirement; retrieve twice across evolution/reboot and compare byte-identical ciphertext. Retire through replacement/expiry/discard/delete and verify retrieval now reports `artifact_retired`, with unrelated retained artifacts unchanged.
-
-### Controlled SIGHUP reload validation
-
-After T047 registers the actual native regression cases, and before T054's fix, execute the following to retain the expected failing-before result; repeat after the fix for corrected behavior. A missing native runner or unregistered case is unavailable, not a behavioral failure or pass:
+Run the pinned native compatibility gate:
 
 ```sh
-cargo run --locked -p qualification -- native-regression --fixture "$FIXTURE"
+cargo run --locked -p qualification -- native-regression
 ```
 
-The command validates the complete fixture and its local prerequisites before starting native cases. Until the receiver/finalizer cases are registered, it reports zero cases as inconclusive and exits nonzero; this is not a regression result.
-
-Use only the isolated disposable fixture and a node it launched; establish `NODE_PID` from that fixture's process record and verify its live PID, executable and command line against the fixture's node, configuration and bulk paths before signaling. Verify from fixture/node initialization evidence that the SIGHUP handler is installed and consensus initialization is complete; also confirm valid context and the applicable agents are ready for the post-initialization cases. Never signal an arbitrary or production process. Then:
-
-```sh
-kill -HUP "$NODE_PID"
-```
-
-The signal command alone proves only signal delivery, not completed reload. Observe the reload completion, unchanged PID, old receiver and socket retirement, replacement readiness and fresh pool-correct agent delivery, unchanged file-key bytes, current-period file signing, and independently peer-accepted blocks. For the early-initialization case, use a controlled fixture pause after handler installation but before consensus initialization, verify both states and the same disposable PID before sending SIGHUP, and observe the handler's not-effective result; never use an unverified generic process kill.
-
-Run the native receiver/finalizer cancellation regression with actual blocked service I/O and reconnect delay; prove awaited cancellation completes and cannot retry afterward. Run actual post-init reloads on the 64-agent topology and separate mixed file/agent and singleton topologies, with unchanged and changed valid credential contents; complete ten sequential reloads per valid topology, without crediting coalesced signals, alternating I/O and reconnect-delay cancellation cases where applicable. Exercise file-key catch-up, future-start and expired keys, malformed and missing credential files with the baseline-prescribed distinct outcomes, and an unavailable agent that returns while healthy pools continue. Use predeclared leadership windows within G9's unchanged eight-hour budget; missing leadership is inconclusive. Apply the approved bounds and retain nonsecret evidence as specified in the [SIGHUP qualification contract](contracts/quality-gates.md#sighup-reload-qualification); approval does not establish measured results.
+This builds the pinned node source and runs the exact node-service protocol regressions. Live SIGHUP and peer-accepted-block campaigns are optional integration diagnostics, not release gates.
 
 
 Exercise discard with exact generation ID and expected revision. Observe the warning, then confirm deliberately (`--yes` only for automated disposable qualification):
@@ -203,56 +191,46 @@ Compare derived public key with the expected KES vkey. This CLI conversion alone
 
 ## 5. Full qualification campaigns
 
-`FIXTURE` is an owner-controlled qualification JSON document naming the actual device pin, fitted-part qualification record, firmware/binary paths and hashes, 64 disposable pool/public identities, existing protected cold/VRF fixture locations, trusted network/genesis/node sockets, independent decoder/peer executables, recipient-host endpoint, power controller and evidence directory. Secrets are referenced only where the trusted fixture needs them and are never copied into evidence. For the attended cut runner, set `power_controller` to `manual-usb-hub` and add `attended` with absolute `management_socket`, `commissioning_config`, `normal_config`, and current-candidate `hardware_report` paths, a physical `usb_hub_label`, and exactly ten `cut_plan` entries. Every entry has `operation`, optional absolute `receipt`, and `expected_outcome` (`success` or `rejected`); the plan must cover generation, certification, evolution, activation, discard, deletion, and cleanup.
+`FIXTURE` is an owner-controlled disposable qualification document for native and independent interoperability checks. Secrets are referenced only by protected paths and never copied into evidence.
 
-First create the bounded physical-input worksheet without overwriting an existing file. Fill every value from measurements or traceable records: all 1,024 prior-wear and per-operation sector-cost rows, all 64 deployment network profiles, fitted-part rating/conditions, flash stall, stack/framework high-water values, and the three assessments. Each assessment requires `{"status":"pass","evidence":...}`; a placeholder, absent evidence, wrong dimensions, failed endurance margin, oversized image, or missing physical input remains non-passing.
-
-```sh
-cargo run --locked -p qualification -- hardware --write-template "$PHYSICAL_INPUT"
-# Perform the physical measurements and replace every incomplete/zero placeholder.
-cargo run --locked -p qualification -- hardware --input "$PHYSICAL_INPUT"
-```
-
-Keep deployment timing separate from accelerated disposable test-network timing; no production credentials or production-node connection are needed. Record the actual test-network schedule and count its physical campaign wear separately. The hardware report is candidate-bound: rebuild or source changes require a new report.
-
-After a passing current-candidate hardware report, start the pinned daemon in normal mode against the disposable fixture and confirm its management socket is live. In a second terminal, prepare each cut-plan operation against that same device. At each runner checkpoint: type `ARMED` only when the named operation is ready to execute, start that operation in the second terminal, immediately switch off the USB hub named by the runner, then type `OFF`. Switch the hub on only when prompted, wait for USB/daemon reconnect, and type `ON`. Do not disconnect host power, run production credentials, edit the receipt, or substitute an automated USB reset. The runner verifies reconnect identity/revision and reconciles each configured receipt. Repeat for exactly ten cuts; the resulting report explicitly covers only this attended-cut slice.
+Build and validate the production firmware, then run the full-capacity software scenario:
 
 ```sh
-cargo run --locked -p qualification -- attended-cuts --fixture "$FIXTURE" --cuts 10
-cargo run --locked -p qualification -- native-regression --fixture "$FIXTURE"
+cargo run --locked -p qualification -- hardware
+cargo run --locked -p qualification -- load
+cargo test --locked -p kes-core --test recovery
 ```
 
-`smoke`, `interop`, `load`, `node`, and `operator` remain separate full-campaign owners. Do not treat the attended-cut report as any of those results or as a complete G8/acceptance verdict.
+After firmware changes, preserve the state partition, install the production image, power-cycle the board once, and verify the pinned identity returns ready. Repeated attended cut campaigns are not required.
+
+When the pinned native fixture is available, run its receiver/finalizer compatibility regression:
+
+```sh
+cargo run --locked -p qualification -- native-regression
+```
 
 | Scenario | Required observed outcome |
 |---|---|
 | SC-001 capacity | All 64 pools correctly bound with 64 active+64 staged; 65th enrollment changes no existing pool |
-| SC-002/SC-009 faults/cleanup | 10 attended physical cuts plus every modeled persistent boundary; no acknowledged/released rollback; obsolete regions erased/read-verified; corrupt pool unavailable without reset; no primary plaintext persistent outputs |
-| SC-003 recovery | All 64 valid pools ready <=60 s after device, daemon, valid context and requesting nodes are available; period 5 outage resumes at 8 without a new certificate |
-| SC-004 normal burst | Every one of 64 concurrent requests usable <=10 s, including stalled/malformed-client pressure; zero cross-pool results |
-| SC-005 rotation | Offline backup does not block activation; lost replies/restart create no duplicate generation or superseded-key resurrection; other 63 pools unaffected |
-| SC-006 fidelity | Exact generation-time key0 equality and independent standard file decoding for each qualified generation across pools; all tamper/recipient/identity cases publish zero keys |
-| SC-007 primary producer | Independent peer accepts pool-correct blocks before/after evolution, real SIGHUP reload, rotation and complete power recovery; 64-agent, separate mixed and singleton reloads demonstrate fresh delivery, file catch-up, healthy operation during agent outage and recovery, and no receiver accumulation or cancellation hang. Missing leadership is inconclusive |
-| SC-008 operator | Installed CLI covers all required lifecycle/recipient/restore/reconciliation operations through daemon; denied, unavailable, rejected and uncertain outcomes have correct non-success exits |
-| P1 endurance | Five-year/1,827-day projection with the selected monthly maintenance workload and actual network timing; every sector satisfies `2 * (prior wear + projected service erases) <= guaranteed rating`. Record fitted-part rating/conditions, campaign wear, measured costs, workload counts and the limiting sector under the [storage endurance policy](contracts/device-storage.md#endurance-acceptance-policy); missing inputs are inconclusive |
+| SC-002/SC-009 faults/cleanup | Every modeled persistent boundary passes; obsolete regions are read-verified erased; one production-device power cycle returns the pinned identity ready |
+| SC-003 recovery | All 64 valid pools ready <=60 s after device, daemon, valid context and requesting nodes are available |
+| SC-004 normal burst | Every one of 64 concurrent requests usable <=10 s under stalled/malformed-client pressure; zero cross-pool results |
+| SC-005 rotation | Offline backup does not block activation; lost replies/restart create no duplicate or superseded resurrection; an unrelated pool is unchanged |
+| SC-006 fidelity | One device-generated key0 artifact restores byte-exactly through an independent decoder; tamper/recipient/identity failures publish no key |
+| SC-007 native compatibility | Pinned integrated native node builds and exact V2 node-service protocol regressions pass |
+| SC-008 operator | Installed CLI covers lifecycle/recipient/restore/reconciliation/restart paths; denied, unavailable, rejected and uncertain exits are distinct |
+| P1 capacity | One full 64-active+64-staged run meets <=10-second requests and <=60-second recovery |
 
 Also exercise stale/missing/future/regressive context, expired active and staged generations, failed entropy/erase, wrong USB device, live socket collision, startup/reconnect, deleted-pool slot reuse, 64-way boundary catch-up, 64 future-certified staged replacements, and uncertified staged keys remaining at period zero. Pause/disconnect one agent pool and prove healthy file/other pools keep operating; no implicit file fallback. Temporary USB loss must not emit key deletion or stop the node.
 
-### P0 microbenchmarks
+### Optional performance diagnostics
 
-After implementation, select the separately approved baseline revision and run the aggregate comparison under the recorded gate-definition approval:
+When a separately approved baseline is available, run:
 
 ```sh
 cargo run --locked -p qualification -- benchmarks --baseline "$BASELINE_REV"
 ```
 
-The runner measures both the `kes-core` lifecycle target (generation, evolution, certificate and artifact workloads) and the host target (framing and real public journal fsync/reconcile workloads), for baseline and candidate. It retains three separate runs with 100 samples, 5-second warmup and 10-second measurement per workload. A per-workload 95% runtime-ratio confidence interval wholly at or below 1.05 passes, wholly above fails, and one crossing the threshold is inconclusive; all workloads must fit the combined 30-minute budget. The individual measurements below are not an aggregate P0 verdict:
+Retain raw samples and environment details. Benchmark ratios, mutation scores and coverage percentages are diagnostics, not functional acceptance gates.
 
-```sh
-cargo bench --locked -p kes-core --bench lifecycle -- --save-baseline "$RUN_LABEL"
-cargo bench --locked -p pico2-kes-agent --bench host -- --save-baseline "$RUN_LABEL"
-```
-
-Retain baseline/candidate revisions, raw samples and per-workload verdicts under the [quality-gate contract](contracts/quality-gates.md); missing workloads or evidence cannot pass.
-
-Finally run all selected sensor and benchmark commands in [quality-gates.md](contracts/quality-gates.md), including activation defect probes. Retain revision-linked public evidence with actual counts/measurements and exclusions. Incomplete/failed/inconclusive campaigns block acceptance; do not weaken deadlines, omit a pool or replace physical trials with simulations. No new production plaintext-export interface may be added to simplify qualification.
+Run all functional commands selected in [quality-gates.md](contracts/quality-gates.md). Retain revision-linked public evidence; never add a production plaintext-export interface to simplify qualification.

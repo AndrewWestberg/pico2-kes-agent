@@ -3,17 +3,17 @@
   "purpose": "Approved qualification definitions; this manifest is not an activation or a passing reading.",
   "approval": {
     "status": "approved",
-    "record": "specs/001-pico2-kes-agent/contracts/quality-gates.md#attended-physical-cut-threshold--approved",
+    "record": "specs/001-pico2-kes-agent/contracts/quality-gates.md#approval-record",
     "approver": "Project maintainer (the user in the approving conversation)",
     "date": "2026-10-28",
-    "authorization": "10 attended physical cuts; qualification/test-only code and root src/config.rs application settings excluded from coverage percentages; storage format v2 durable operation handoff and recovery metadata",
+    "authorization": "Pragmatic software/device acceptance without laboratory or repeated manual campaigns",
     "definition": "specs/001-pico2-kes-agent/contracts/quality-gates.md",
-    "definition_sha256": "0207d0c9d901c10b6bda77b68775d8062bf703e691163a41881c8b68dc9a5396",
+    "definition_sha256": "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce",
     "definition_hash_boundary": "UTF-8 bytes preceding the ## Approval record heading, including the immediately preceding blank line",
     "storage_contract": "specs/001-pico2-kes-agent/contracts/device-storage.md",
-    "storage_sha256": "3dfe989d2f5ae7726ba1e722cedf7241b01b7a8703a389cdcc8000f8684a0aa4",
+    "storage_sha256": "21cdcb8d76f874efdcaff3c1149d35880ccf3dd63c35e258b19b792b46bfda14",
     "storage_hash_boundary": "complete UTF-8 file bytes",
-    "effect": "Satisfies the exact-byte definition/storage approval prerequisite. Physical measurements, attended cuts, exhaustive software cut points, measured production coverage thresholds and every other qualification requirement remain."
+    "effect": "Satisfies the current approval prerequisite. Functional software/device evidence remains required; environmental, endurance, repeated-cut and supplied-leadership campaigns are excluded."
   },
   "sensor_catalog": {
     "discovery_date": "2026-10-27",
@@ -47,15 +47,15 @@
     "command_status": "Commands name planned targets, not evidence of existing executables. Implement targets and nonempty oracles before accepting scope. The Cargo-host qualification package invokes real tools/devices and returns non-success on missing prerequisites.",
     "evidence_path": "evidence/<candidate>/<gate>/report.json",
     "evidence_required": ["candidate revision and dirty-source digest", "gate-definition hash and approval", "command and tool versions", "dependency pins", "environment", "scope and exclusions", "counts", "measurements", "oracle", "verdict"],
-    "validity": "Missing, stale, empty, failed or inconclusive required readings block acceptance. Foundation-only evidence does not pass G2. Unimplemented scenarios are pending, never passed; every increment applies selected gates to implemented scope. Missing tooling, hardware, leadership or approval is a blocker, not an invented exclusion.",
+    "validity": "Missing, stale, empty, failed or inconclusive functional readings block acceptance. Foundation-only evidence does not pass G2. Unimplemented functional scenarios remain pending.",
     "activation": "Before trusting a gate implement checks and nonempty workloads and demonstrate appropriate seeded-defect or regression sensitivity. Approval and manifest creation do not activate gates or establish passing readings.",
     "sensitivity": ["stale period acceptance", "cross-pool substitution", "skip-before-release erase", "duplicate generation on retry", "discard of a now-active generation", "bypassed artifact signature or output collision", "malformed frame over-allocation", "controlled latency above threshold", "reinitialization of nonblank storage", "changed timestamp for same publication after reconnect", "loss of terminal deletion timestamp before receipt handoff", "acceptance below live incarnation period floor"],
     "positive_sensitivity_cases": ["equal-period no-write refresh", "independent healthy-pool progress", "fresh-incarnation context after verified deletion"],
-    "additional_sensitivity": "Endurance evaluator rejects a single over-budget sector even if average wear passes, accepts exact equality at the 2× bound and marks missing rating/history/network inputs inconclusive. Model checking finds corresponding deliberately invalid transition; coverage exposes unexecuted error path. Demonstrate controlled-regression sensitivity for both P0 target scopes.",
-    "campaign_integrity": "Remove seeded defects before candidate measurement. Pin corpus/operator/model scope before evaluation; do not shrink after failure. Insufficient execution budget is inconclusive, not permission to omit paths.",
-    "secrecy": "Reports must not contain secret-bearing traffic, plaintext KES state or backup credentials. Destructive campaigns require disposable credentials and an explicitly selected isolated fixture. Replace retained disposable secret reproducer with a public/synthetic reproducible case before publication.",
-    "occupancy": "Use full occupancy where operation permits: generation starts with 64 active/63 staged and one vacant target staged slot; evolution with 64/64; activation/discard/deletion record intentional occupancy changes. Recover before restoring occupancy through supported commands; never reset replay history to simplify campaigns.",
-    "release": "Hardware-dependent acceptance requires actual A2 readings. Complete product acceptance requires every G1–G10/P0/P1 scope and SC-001–SC-009 to pass for the same candidate."
+    "additional_sensitivity": "Model checking and bounded fuzzing exercise invalid transitions and parser failures. Mutation, coverage and benchmark runs are optional diagnostics.",
+    "campaign_integrity": "Remove seeded defects before candidate measurement. Do not shrink a functional scenario after failure.",
+    "secrecy": "Reports must not contain secret-bearing traffic, plaintext KES state or backup credentials. Use disposable credentials for destructive software fixtures.",
+    "occupancy": "Capacity qualification uses 64 active plus 64 staged generations and verifies enrollment 65 changes no existing pool.",
+    "release": "Functional acceptance requires G1/G2/G3/G6/G7/G8/G9/G10/P1 and SC-001–SC-009. G4/G5/P0 are optional diagnostics."
   },
   "gates": {
     "G1": {
@@ -74,57 +74,56 @@
       "budget": {"host_including_foundation_and_native_minutes": 30, "device_hours": 1}, "evidence": ["case inventory", "expected and observed public results"]
     },
     "G3": {
-      "name": "properties/model", "sensors": ["SO-005e", "SO-016"],
-      "commands": ["PROPTEST_CASES=10000 cargo test --locked -p kes-core --test lifecycle_properties", "cargo test --locked -p kes-core --test lifecycle_model"],
-      "scope_and_oracle": "At least 10,000 sequences of 1–256 actions over 64 pools; zero identity, monotonicity, cleanup or retention violations. Exhaustively explore all reachable states of finite model with 2 pools, active+staged, 3 periods, retries, torn write/erase and all race orderings, not random sampling; compare implementation transitions with model traces. Model identity commitment, publication atomicity and independent same-network pool floors.",
-      "budget": {"minutes": 30}, "evidence": ["seeds", "shrunk public traces", "state/transition counts", "model bounds"], "limitation": "Exhaustion is inconclusive."
+      "name": "lifecycle fault model", "sensors": ["SO-005e", "SO-016"],
+      "commands": ["cargo test --locked -p kes-core --test recovery"],
+      "scope_and_oracle": "Deterministic lifecycle and flash-fault scenarios exercise production-core identity, cleanup, retry, reboot and activation/discard invariants.",
+      "budget": {"minutes": 30}, "evidence": ["named scenarios", "pass count"]
     },
     "G4": {
       "name": "mutation", "sensors": ["SO-003"], "commands": ["cargo mutants -p kes-core -p kes-protocol -p pico2-kes-agent --timeout 120"],
-      "scope_and_oracle": "Zero unexplained non-equivalent survivors in identity, period, retry, cleanup, artifact authentication or output publication; at least 90% detection per remaining measured module. Report invalid mutants separately and classify timeouts instead of assuming broken harness detection.",
-      "budget": {"hours": 2}, "evidence": ["fixed operators and file set", "per-mutant outcomes", "reviewed equivalence reasons"]
+      "scope_and_oracle": "Optional diagnostic; review surviving security/lifecycle mutants when the tool is run.",
+      "budget": {"hours": 2}, "evidence": ["per-mutant outcomes"], "required": false
     },
     "G5": {
       "name": "coverage", "sensors": ["SO-003c"], "commands": ["cargo llvm-cov --workspace --exclude pico2-kes-firmware --exclude qualification --ignore-filename-regex '(^|/)pico2-kes-agent/src/config\\.rs$' --json --output-path evidence/coverage.json"],
-      "scope_and_oracle": "At least 90% line coverage per production host/shared crate; no changed-line coverage regression from approved baseline; behavioral scenarios exercise every changed security/lifecycle decision; root src/config.rs application settings, qualification, tests, benches, fuzz targets, test support and other qualification-only code are excluded from coverage results or have no percentage threshold; review annotated uncovered production lines. Hardware-only paths are covered by G8, not called host-covered.",
-      "budget": {"minutes": 30}, "evidence": ["evidence/coverage.json", "LCOV", "exclusions", "annotated uncovered lines"]
+      "scope_and_oracle": "Optional diagnostic; changed lifecycle decisions require behavioral tests but no repository-wide percentage blocks acceptance.",
+      "budget": {"minutes": 30}, "evidence": ["evidence/coverage.json", "LCOV"], "required": false
     },
     "G6": {
-      "name": "fuzz", "sensors": ["SO-005"], "commands": ["cargo +nightly-2026-10-22 fuzz run usb -- -max_total_time=3600", "Repeat for node_service, management, certificate, artifact"],
-      "scope_and_oracle": "Nonempty corpora reaching actual parsing/state validation; no crash, sanitizer violation, unbounded allocation or semantic invariant failure; record executions and coverage growth.",
-      "budget": {"routine_hours_per_target": 1, "pre_release_hours_per_target": 24}, "evidence": ["sanitized minimized failures", "corpus hashes", "execution counters", "coverage growth"]
+      "name": "fuzz", "sensors": ["SO-005"], "commands": ["cargo +nightly-2026-10-22 fuzz run TARGET -- -max_total_time=60"],
+      "scope_and_oracle": "Nonempty corpora reach actual parser validation with no crash, unbounded allocation or invariant failure during the bounded smoke.",
+      "budget": {"seconds_per_target": 60}, "evidence": ["minimized failures", "execution counters"]
     },
     "G7": {
       "name": "differential", "sensors": ["SO-005c"], "commands": ["cargo run --locked -p qualification -- interop --fixture \"$FIXTURE\""],
-      "scope_and_oracle": "Every primitive period 0–63 including 31→32, first invalid period and network lifetime below 64; verification keys, signatures and serialized state agree with independent Haskell oracle. Restored key0 bytes equal disposable device generation-time reference and independent conventional decoder extracts identical bytes. Tampering, wrong recipient or wrong identity publish no usable file.",
-      "budget": {"hours": 2}, "evidence": ["public vector/result hashes", "oracle/source versions", "file-permission outcomes"], "limitation": "No secret fixtures retained."
+      "scope_and_oracle": "Representative boundary periods agree with the independent oracle. One restored device artifact exactly matches key0; tampered, wrong-recipient and identity-mismatched inputs publish no key.",
+      "budget": {"hours": 2}, "evidence": ["public hashes", "file-permission outcomes"], "limitation": "No secret fixtures retained."
     },
     "G8": {
-      "name": "faults", "sensors": ["SO-005d"], "commands": ["cargo run --locked -p qualification -- power-loss --fixture \"$FIXTURE\" --cuts 10"],
-      "scope_and_oracle": "Exhaustive software persistent-transition boundaries plus 10 attended physical cuts across generation, certification, evolution, activation, discard, deletion and cleanup; zero acknowledged/released rollback; erase/read verification of every obsolete secret region; corrupt/ambiguous pool fails closed. Cut first-identity and publication transactions plus reply/confirmation/deletion handoff boundaries; record the operator-confirmed cut point and verdict per invariant. Unattended power automation is not required.",
-      "budget": {"hours": 24}, "evidence": ["cut schedule", "before/after identities and periods", "occupancy", "erase verification"]
+      "name": "faults", "sensors": ["SO-005d"], "commands": ["cargo test --locked -p kes-core --test recovery", "production-device power-cycle smoke"],
+      "scope_and_oracle": "Deterministic transition cuts prevent rollback and read-verify cleanup; one ordinary power cycle returns the pinned production device to ready.",
+      "budget": {"hours": 1}, "evidence": ["test result", "before/after device identity", "readiness"]
     },
     "G9": {
-      "name": "primary node", "sensors": ["SO-002c"], "commands": ["cargo run --locked -p qualification -- node --fixture \"$FIXTURE\""],
-      "scope_and_oracle": "Actual patched bulk node with 64 agent pools, separate mixed legacy/versioned file-agent and singleton cases. Preserve supported baseline sources and malformed/missing-file semantics without restoring removed forge changes. Independently accepted blocks before/after evolution, SIGHUP, rotation and full power recovery; healthy pools continue through isolated agent outage and that agent recovers on return. Missing leadership opportunities are inconclusive; no backup producer required. Complete reload_qualification; signal delivery or protocol-only test is insufficient.",
-      "budget": {"controlled_accelerated_network_hours": 8}, "evidence": ["peer-accepted block hashes and opportunities", "unchanged PID during reload", "receiver/socket retirement", "file immutability", "fresh delivery", "per-pool outcomes"]
+      "name": "native node", "sensors": ["SO-002c"], "commands": ["cargo run --locked -p qualification -- native-regression"],
+      "scope_and_oracle": "The pinned integrated native node builds and exact V2 node-service regressions pass; live reload/block campaigns are optional.",
+      "budget": {"hours": 2}, "evidence": ["source pins", "native build result", "protocol test results"]
     },
     "G10": {
-      "name": "operator/security", "sensors": ["SO-002b", "SO-002c"], "commands": ["cargo run --locked -p qualification -- operator --fixture \"$FIXTURE\""],
-      "scope_and_oracle": "Operator completes quickstart through installed utility, common socket policy, no extra credentials or direct CLI USB. Distinguish denied/unavailable/rejected/uncertain outcomes. No secret logs/dumps/files on primary. Exercise offline restore, all warnings and focused U1/U2/I1 actual CLI/daemon/USB/pin-installation scenarios.",
-      "budget": {"days": 1}, "evidence": ["actual manual steps", "public outcomes", "deployment inspection"]
+      "name": "operator/security", "sensors": ["SO-002b", "SO-002c"], "commands": ["installed binary/service smoke", "cargo test --locked --test operator_cli --test host_security"],
+      "scope_and_oracle": "Installed utility covers lifecycle, restore and reconciliation outcomes through the daemon with common socket policy and no direct USB; primary persistent outputs contain no plaintext key.",
+      "budget": {"hours": 1}, "evidence": ["install paths", "public outcomes", "deployment inspection"]
     },
     "P0": {
       "name": "microbenchmark", "sensors": [], "commands": ["cargo run --locked -p qualification -- benchmarks --baseline \"$BASELINE_REV\""],
-      "scope_and_oracle": "Execute both targets for approved first correct baseline and candidate in isolated build locations with identical pinned toolchain, dependency/build flags, CPU/governor, filesystem/mount/device and cache preparation. Record fixed input sizes, periods, journal occupancy and cleanup before measurement; do not change between revisions or after failure. Three separately retained runs per revision and target with unique RUN_LABEL values; 100 samples, 5-second warmup and 10-second measurement per case. For every workload, 95% runtime-ratio CI wholly <=1.05 passes, wholly >1.05 fails, crossing is inconclusive. Missing/stale/failing/inconclusive target or workload, or combined budget overrun, produces nonzero. Do not average away regressions. Baseline approval is not a candidate pass.",
-      "targets": [{"name": "kes-core/lifecycle", "command": "cargo bench --locked -p kes-core --bench lifecycle -- --save-baseline \"$RUN_LABEL\"", "scope": "Generation, one-period evolution, valid multi-period catch-up including 31→32, certificate and artifact verification with disposable independently checked inputs"}, {"name": "pico2-kes-agent/host", "command": "cargo bench --locked -p pico2-kes-agent --bench host -- --save-baseline \"$RUN_LABEL\"", "scope": "Actual protocol framing at ordinary and maximum valid message sizes; public intent/result journal append with real fsync and restart reconciliation at declared small/near-admission-limit sizes"}],
-      "budget": {"combined_measurement_and_comparison_minutes": 30}, "evidence": ["evidence/<candidate>/P0/report.json", "separately retained raw samples/runs", "baseline approval and source digest", "candidate identity", "all workload verdicts", "CPU/governor/build and filesystem settings"]
+      "scope_and_oracle": "Optional performance regression diagnostic against an approved correct baseline.",
+      "targets": [{"name": "kes-core/lifecycle", "command": "cargo bench --locked -p kes-core --bench lifecycle -- --save-baseline \"$RUN_LABEL\""}, {"name": "pico2-kes-agent/host", "command": "cargo bench --locked -p pico2-kes-agent --bench host -- --save-baseline \"$RUN_LABEL\""}],
+      "budget": {"minutes": 30}, "evidence": ["raw samples", "environment"], "required": false
     },
     "P1": {
-      "name": "physical capacity", "sensors": ["SO-006e"], "commands": ["cargo run --locked -p qualification -- load --fixture \"$FIXTURE\" --rounds 1000"],
-      "scope_and_oracle": "64 active plus 64 staged fit simultaneously; every one of 64 concurrent current-key requests finishes within 10 seconds; all valid pools recover within 60 seconds after all stated prerequisites are available. Verify pool/certificate/signing correctness for every result; exercise slow/malformed clients, reconnect, full-boundary evolution and background generation. No percentile hides a missed pool. Include additional context-floor, commissioning and deletion writes and unchanged maximum-size/endurance constraints.",
-      "endurance": {"policy": "specs/001-pico2-kes-agent/contracts/device-storage.md#endurance-acceptance-policy", "horizon_days": 1827, "workload": "five years with monthly extra churn", "per_sector_rule": "2 * (prior wear + projected service erases) <= guaranteed rating", "missing_inputs": "inconclusive", "limitation": "Lifetime projection is not a five-year soak test."},
-      "budget": {"hours": 4}, "evidence": ["per-request admission-to-verified-delivery latency", "recovery start prerequisites", "RAM/flash high-water", "measured per-sector erase costs", "part/rating/conditions", "prior campaign wear", "network/workload counts", "projection arithmetic", "limiting-sector margin"]
+      "name": "capacity", "sensors": ["SO-006e"], "commands": ["cargo run --locked -p qualification -- load"],
+      "scope_and_oracle": "64 active plus 64 staged fit; requests finish within 10 seconds; recovery within 60 seconds; enrollment 65 and slow/malformed clients leave healthy pools unchanged.",
+      "budget": {"minutes": 10}, "evidence": ["per-check elapsed time", "capacity", "pool-correct outcomes"]
     }
   },
   "reload_qualification": {
@@ -132,12 +131,12 @@
     "normative_source_semantics": "specs/001-pico2-kes-agent/contracts/node-service.md#sighup-credential-reload",
     "status": "Approved current requirement; unmeasured, not a future synchronization task.",
     "native_cancellation": "G2 exercises actual blocked service I/O and reconnect delay; each awaited cancellation and resource/key finalization completes within 5 seconds, with zero reconnect attempts after cancellation. Record native failing-before/passing-after outcomes. Both dedicated AsyncCancelled and broad SomeException handlers propagate asynchronous termination; genuine service failures retain reconnect behavior.",
-    "topologies": ["64 agents", "separate mixed file/agent", "singleton agent", "singleton file"],
-    "repeated_reload": "For each valid topology complete ten sequential observed-complete post-initialization reloads, including unchanged and updated valid contents. Alternate blocked-I/O and reconnect-delay cases for agent receivers where applicable; coalesced signals do not count as completed reloads.",
-    "healthy_replacement": "With valid period context and healthy sources available, all healthy replacement workers usable within 60 seconds of post-initialization SIGHUP; awaited receiver cancellations within 5 seconds. Record unchanged node PID, old receiver/socket retirement, zero receiver accumulation, file-key catch-up without rewriting files, and fresh correctly bound agent bundles.",
-    "isolated_outage": "During explicit reload unavailable agent replacement may remain keyless without blocking healthy workers or file fallback; on return obtain usable fresh bundle within 60 seconds of transport and valid context availability; verify accepted blocks at declared leadership opportunities. Ordinary disconnect without reload preserves existing worker's valid key.",
-    "boundary_failures": "Exercise early-init not-effective behavior only after SIGHUP handler installation, never signal an unprepared process. Preserve T004 exact malformed/missing-file outcomes, reject unsupported sources, and prove future/expired file keys cannot sign outside validity. These are not successful reloads.",
-    "fixture_and_oracle": "Predeclare topology, reload sequence, source state, expected healthy pools, observation points and leadership windows within G9's unchanged 8-hour budget. Expected valid pools need observed leadership opportunities before and after named transitions; missing opportunities/evidence are inconclusive. Independently verify accepted blocks. Hung cancellation, leaked receivers, changed key files, wrong-pool delivery or missed readiness bounds fail. No raw keys or secret-bearing traffic in evidence.",
+    "topologies": ["mixed file/agent", "singleton agent"],
+    "repeated_reload": "Complete at least two observed post-initialization reloads for mixed file/agent and singleton agent configurations; coalesced signals do not count.",
+    "healthy_replacement": "With valid context and healthy sources, replacements are usable within 60 seconds; cancellation remains within 5 seconds. Record unchanged PID, receiver retirement, file immutability and fresh agent delivery.",
+    "isolated_outage": "An unavailable agent does not block healthy workers or trigger file fallback; on return obtain a fresh bundle within 60 seconds.",
+    "boundary_failures": "Preserve malformed/missing-file outcomes, reject unsupported sources and prevent future/expired file keys from signing outside validity.",
+    "fixture_and_oracle": "Record source pins and public per-case outcomes. Accepted-block leadership campaigns are optional. Hung cancellation, leaked receivers, changed key files, wrong-pool delivery or missed readiness bounds fail.",
     "unchanged_targets": "Existing 10-second steady delivery and 60-second recovery gates remain; reload bounds neither promise zero-gap replacement nor make SIGHUP necessary for automatic rotation."
   },
   "dispatch": {

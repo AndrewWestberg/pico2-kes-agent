@@ -4,7 +4,8 @@ use kes_core::{
     certificate::OperationalCertificate,
     identity::Digest32,
     lifecycle::{
-        Context, Error as LifecycleError, Publication as CorePublication,
+        Context, Error as LifecycleError, GenerationStatus as CoreGenerationStatus,
+        PoolStatus as CorePoolStatus, Publication as CorePublication,
         PublicationKind as CorePublicationKind,
     },
     operation::{
@@ -22,6 +23,10 @@ use crate::{
 };
 
 const HEALTHY: u8 = 0;
+const NOT_YET_VALID: u8 = 1;
+const EXPIRED: u8 = 2;
+const DELAYED_EVOLUTION: u8 = 3;
+const PERIOD_UNAVAILABLE: u8 = 4;
 const COMMISSIONED: u8 = 1;
 const CODE_INVALID: u16 = 1;
 
@@ -97,10 +102,34 @@ impl Operations for Runtime<'_> {
                     observed_us: now,
                     lease_us: u64::from(lease_seconds) * 1_000_000,
                 };
-                let result = self
+                let scheduled = self
                     .device_mut()
                     .accept_context(&context, now)
-                    .map_err(lifecycle_error_code);
+                    .and_then(|()| {
+                        self.device_mut()
+                            .pool_status(target.pool)
+                            .map(|status| status.slot)
+                    });
+                let result = match scheduled {
+                    Ok(slot) => {
+                        self.scheduler.enroll(slot);
+                        self.scheduler.request(slot);
+                        let mut selected = None;
+                        self.scheduler.run_one(|next| selected = Some(next));
+                        if selected == Some(slot) {
+                            match self.device_mut().catch_up(target.pool, now) {
+                                Ok(())
+                                | Err(LifecycleError::PeriodUnavailable)
+                                | Err(LifecycleError::GenerationUnavailable) => Ok(()),
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            Err(LifecycleError::StorageFailure)
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
+                .map_err(lifecycle_error_code);
                 let floor = self
                     .device_mut()
                     .pool_status(target.pool)
@@ -147,7 +176,10 @@ impl Operations for Runtime<'_> {
                             }
                         },
                         target: None,
-                        outcome: wire::PublicOutcome::Unknown,
+                        outcome: match self.handoff().next_sequence() {
+                            Some(next) if sequence < next => wire::PublicOutcome::Stale,
+                            _ => wire::PublicOutcome::Unknown,
+                        },
                     },
                     public_receipt,
                 );
@@ -273,22 +305,36 @@ impl Runtime<'_> {
             .ok_or(DispatchError::State)?
             .enrollment_record()
             .public();
-        let pool = pool.and_then(|pool_id| {
-            self.device_mut()
-                .pool_status(pool_id)
-                .ok()
-                .map(|status| wire::PoolStatus {
-                    target: PoolTarget {
-                        pool: status.pool_id,
-                        incarnation: status.incarnation_id,
-                    },
-                    revision: status.revision,
-                    health: HEALTHY,
-                    active: None,
-                    staged: None,
-                    publication: publication(status.publication),
-                })
-        });
+        let pool = match pool {
+            Some(pool_id) => {
+                let status = self.device_mut().pool_status(pool_id).ok();
+                let generations = self.device_mut().pool_generations(pool_id).ok();
+                match (status, generations) {
+                    (Some(status), Some(generations)) => {
+                        let active = generations
+                            .active
+                            .map(|generation| generation_status(generation, status, true));
+                        let staged = generations
+                            .staged
+                            .map(|generation| generation_status(generation, status, false));
+                        let health = pool_health(status, active, staged);
+                        Some(wire::PoolStatus {
+                            target: PoolTarget {
+                                pool: status.pool_id,
+                                incarnation: status.incarnation_id,
+                            },
+                            revision: status.revision,
+                            health,
+                            active,
+                            staged,
+                            publication: publication(status.publication),
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            None => None,
+        };
         let response = wire::StatusResponse {
             device: record.device(),
             revision: self.device().revision().map_err(|_| DispatchError::State)?,
@@ -725,6 +771,51 @@ fn rejected_receipt(mutation: &Mutation, code: u16) -> wire::PublicReceipt {
     }
 }
 
+fn generation_status(
+    generation: CoreGenerationStatus,
+    pool: CorePoolStatus,
+    active: bool,
+) -> wire::GenerationStatus {
+    let health = match (generation.certificate_start, pool.period_floor) {
+        (None, _) => NOT_YET_VALID,
+        (_, None) => PERIOD_UNAVAILABLE,
+        (Some(start), Some(floor)) if floor < start => NOT_YET_VALID,
+        (Some(start), Some(floor))
+            if floor.saturating_sub(start) >= u64::from(pool.kes_lifetime) =>
+        {
+            EXPIRED
+        }
+        (Some(start), Some(floor))
+            if !active || generation.period < floor.saturating_sub(start) =>
+        {
+            DELAYED_EVOLUTION
+        }
+        (Some(_), Some(_)) => HEALTHY,
+    };
+    wire::GenerationStatus {
+        generation: generation.generation,
+        revision: pool.revision,
+        role: u8::from(!active),
+        period: generation.period,
+        health,
+        artifact_digest: generation.artifact_digest,
+    }
+}
+
+fn pool_health(
+    status: CorePoolStatus,
+    active: Option<wire::GenerationStatus>,
+    staged: Option<wire::GenerationStatus>,
+) -> u8 {
+    if status.publication.kind == CorePublicationKind::Drop {
+        return EXPIRED;
+    }
+    if staged.is_some_and(|generation| generation.health == DELAYED_EVOLUTION) {
+        return DELAYED_EVOLUTION;
+    }
+    active.map_or(PERIOD_UNAVAILABLE, |generation| generation.health)
+}
+
 fn publication(value: CorePublication) -> wire::Publication {
     wire::Publication {
         revision: value.revision,
@@ -760,6 +851,7 @@ pub fn lifecycle_error_code(error: LifecycleError) -> u16 {
         LifecycleError::RecipientUnavailable => 18,
         LifecycleError::GenerationUnavailable => 19,
         LifecycleError::StagedOccupied => 20,
+        LifecycleError::TargetNotStaged => 27,
         LifecycleError::CertificateInvalid => 21,
         LifecycleError::CertificateRegressive => 22,
         LifecycleError::PeriodUnavailable => 23,

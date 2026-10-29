@@ -1,0 +1,51 @@
+[Unit]
+Description=Pico2 persistent KES agent
+After=local-fs.target
+
+[Service]
+Type=simple
+User=pico2-kes-agent
+Group=pico2-kes-agent
+RuntimeDirectory=pico2-kes-agent
+RuntimeDirectoryMode=0750
+StateDirectory=pico2-kes-agent
+StateDirectoryMode=0700
+UMask=0007
+ExecStartPre=/usr/libexec/pico2-kes-agent-host-check
+ExecStart=/usr/bin/pico2-kes-agentd --config /etc/pico2-kes-agent/config.json
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+LimitCORE=0
+LimitMEMLOCK=268435456
+MemorySwapMax=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=char-usb_device rw
+PrivateDevices=no
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+ReadWritePaths=/run/pico2-kes-agent /var/lib/pico2-kes-agent
+
+[Install]
+WantedBy=multi-user.target

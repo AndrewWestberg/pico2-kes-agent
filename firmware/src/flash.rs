@@ -199,7 +199,7 @@ struct Functions {
     boot2: RomFn,
 }
 
-fn identify() -> Result<Identity, IdentificationError> {
+pub(crate) fn identify() -> Result<Identity, IdentificationError> {
     let entry = rom_data::rom_data_lookup(*b"FD", 0x0040);
     if entry == 0 {
         return Err(IdentificationError::MissingRomData);

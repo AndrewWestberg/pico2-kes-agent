@@ -1,14 +1,7 @@
-//! Parsing is deliberately separate from prerequisite checks and campaign execution.
 //! Fixture documents contain public identifiers and paths, never credential contents.
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use std::collections::HashSet;
-use std::fmt;
-use std::fs::{self, File};
-use std::io::Read;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::path::Path;
+use std::{collections::HashSet, fmt, path::Path};
 
 pub const MAX_FIXTURE_BYTES: usize = 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 4096;
@@ -18,7 +11,6 @@ pub enum FixtureError {
     TooLarge,
     Malformed,
     Invalid(&'static str),
-    Prerequisite(&'static str),
 }
 
 impl fmt::Display for FixtureError {
@@ -27,7 +19,6 @@ impl fmt::Display for FixtureError {
             Self::TooLarge => f.write_str("fixture exceeds size limit"),
             Self::Malformed => f.write_str("malformed fixture"),
             Self::Invalid(reason) => write!(f, "invalid fixture: {reason}"),
-            Self::Prerequisite(reason) => write!(f, "fixture prerequisite unavailable: {reason}"),
         }
     }
 }
@@ -49,10 +40,7 @@ pub struct Fixture {
     pub pools: Vec<Pool>,
     pub network: Network,
     pub recipient_host: String,
-    pub power_controller: String,
     pub evidence_directory: String,
-    #[serde(default)]
-    pub attended: Option<Attended>,
 }
 
 #[derive(Deserialize)]
@@ -78,25 +66,6 @@ pub struct Network {
     pub disposable_credentials: bool,
     pub genesis: String,
     pub node_socket: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Attended {
-    pub management_socket: String,
-    pub commissioning_config: String,
-    pub normal_config: String,
-    pub hardware_report: String,
-    pub usb_hub_label: String,
-    pub cut_plan: Vec<CutStep>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CutStep {
-    pub operation: String,
-    pub receipt: Option<String>,
-    pub expected_outcome: String,
 }
 
 /// Reject malformed, oversized and semantically invalid documents without I/O.
@@ -180,130 +149,13 @@ impl Fixture {
         {
             return Err(FixtureError::Invalid("isolated disposable network"));
         }
-        if !text(&self.recipient_host)
-            || !text(&self.power_controller)
-            || !path(&self.evidence_directory)
-        {
+        if !text(&self.recipient_host) || !path(&self.evidence_directory) {
             return Err(FixtureError::Invalid(
-                "campaign endpoint or evidence directory",
+                "recipient endpoint or evidence directory",
             ));
         }
-        if let Some(attended) = &self.attended {
-            if !path(&attended.management_socket)
-                || !path(&attended.commissioning_config)
-                || !path(&attended.normal_config)
-                || !path(&attended.hardware_report)
-                || !text(&attended.usb_hub_label)
-                || attended.cut_plan.len() != 10
-            {
-                return Err(FixtureError::Invalid("attended campaign configuration"));
-            }
-            let mut required = HashSet::new();
-            for step in &attended.cut_plan {
-                if !matches!(
-                    step.operation.as_str(),
-                    "generation"
-                        | "certification"
-                        | "evolution"
-                        | "activation"
-                        | "discard"
-                        | "deletion"
-                        | "cleanup"
-                ) || !matches!(step.expected_outcome.as_str(), "success" | "rejected")
-                    || step
-                        .receipt
-                        .as_deref()
-                        .is_some_and(|receipt| !path(receipt))
-                {
-                    return Err(FixtureError::Invalid("attended cut plan"));
-                }
-                required.insert(step.operation.as_str());
-            }
-            if required.len() != 7 {
-                return Err(FixtureError::Invalid(
-                    "cut plan must cover every required operation",
-                ));
-            }
-        }
         Ok(())
     }
-
-    /// Check local prerequisites only after complete semantic validation. This
-    /// neither starts programs nor opens devices, sockets, or credential files.
-    pub fn validate_prerequisites(&self) -> Result<(), FixtureError> {
-        self.validate()?;
-        regular_file(&self.fitted_part_record, false)?;
-        regular_file(&self.network.genesis, false)?;
-        for pool in &self.pools {
-            protected_file(&pool.cold_key_path)?;
-            protected_file(&pool.vrf_key_path)?;
-        }
-        let socket = fs::metadata(&self.network.node_socket)
-            .map_err(|_| FixtureError::Prerequisite("node socket"))?;
-        if !socket.file_type().is_socket() {
-            return Err(FixtureError::Prerequisite("node socket"));
-        }
-        if !fs::metadata(&self.evidence_directory)
-            .map(|m| m.is_dir())
-            .unwrap_or(false)
-        {
-            return Err(FixtureError::Prerequisite("evidence directory"));
-        }
-        for (pinned, executable) in [
-            (&self.firmware, false),
-            (&self.daemon, true),
-            (&self.cli, true),
-            (&self.decoder, true),
-            (&self.peer, true),
-        ] {
-            regular_file(&pinned.path, executable)?;
-            let mut file =
-                File::open(&pinned.path).map_err(|_| FixtureError::Prerequisite("pinned file"))?;
-            let mut digest = Sha256::new();
-            let mut buffer = [0u8; 8192];
-            loop {
-                let n = file
-                    .read(&mut buffer)
-                    .map_err(|_| FixtureError::Prerequisite("pinned file"))?;
-                if n == 0 {
-                    break;
-                }
-                digest.update(&buffer[..n]);
-            }
-            let actual = format!("{:x}", digest.finalize());
-            if !actual.eq_ignore_ascii_case(&pinned.sha256) {
-                return Err(FixtureError::Prerequisite("pinned file digest"));
-            }
-        }
-        if let Some(attended) = &self.attended {
-            regular_file(&attended.commissioning_config, false)?;
-            regular_file(&attended.normal_config, false)?;
-            regular_file(&attended.hardware_report, false)?;
-            let socket = fs::metadata(&attended.management_socket)
-                .map_err(|_| FixtureError::Prerequisite("management socket"))?;
-            if !socket.file_type().is_socket() {
-                return Err(FixtureError::Prerequisite("management socket"));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn regular_file(path: &str, executable: bool) -> Result<(), FixtureError> {
-    let metadata = fs::metadata(path).map_err(|_| FixtureError::Prerequisite("regular file"))?;
-    if !metadata.is_file() || (executable && metadata.permissions().mode() & 0o111 == 0) {
-        return Err(FixtureError::Prerequisite("regular executable or file"));
-    }
-    Ok(())
-}
-
-fn protected_file(path: &str) -> Result<(), FixtureError> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|_| FixtureError::Prerequisite("protected credential file"))?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(FixtureError::Prerequisite("protected credential file"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -329,76 +181,13 @@ mod tests {
             "pools":pools, "network":{"name":"disposable", "isolated":true,
                 "disposable_credentials":true, "genesis":"/qualification/genesis",
                 "node_socket":"/qualification/node.socket"},
-            "recipient_host":"recipient.example:1234", "power_controller":"controller",
+            "recipient_host":"recipient.example:1234",
             "evidence_directory":"/qualification/evidence"
         })
     }
 
     fn parse(value: &Value) -> Result<Fixture, FixtureError> {
         parse_fixture(&serde_json::to_vec(value).unwrap())
-    }
-
-    fn attended() -> Value {
-        let operations = [
-            "generation",
-            "certification",
-            "evolution",
-            "activation",
-            "discard",
-            "deletion",
-            "cleanup",
-            "generation",
-            "evolution",
-            "cleanup",
-        ];
-        json!({
-            "management_socket":"/qualification/management.socket",
-            "commissioning_config":"/qualification/commission.json",
-            "normal_config":"/qualification/normal.json",
-            "hardware_report":"/qualification/hardware.json",
-            "usb_hub_label":"bench-hub",
-            "cut_plan": operations.iter().enumerate().map(|(index, operation)| json!({
-                "operation": operation,
-                "receipt": (!matches!(*operation, "evolution" | "activation" | "cleanup"))
-                    .then(|| format!("/qualification/receipt-{index}.json")),
-                "expected_outcome":"success"
-            })).collect::<Vec<_>>()
-        })
-    }
-
-    #[test]
-    fn attended_plan_requires_ten_cuts_covering_every_operation_class() {
-        let mut value = document();
-        value["attended"] = attended();
-        assert!(parse(&value).is_ok());
-
-        value["attended"]["cut_plan"][5]["operation"] = json!("generation");
-        assert!(matches!(
-            parse(&value),
-            Err(FixtureError::Invalid(
-                "cut plan must cover every required operation"
-            ))
-        ));
-    }
-
-    #[test]
-    fn prerequisite_check_revalidates_before_any_filesystem_check() {
-        let mut fixture = parse(&document()).unwrap();
-        fixture.network.isolated = false;
-        fixture.fitted_part_record = "/nonexistent-fixture-prerequisite".into();
-        assert_eq!(
-            fixture.validate_prerequisites(),
-            Err(FixtureError::Invalid("isolated disposable network"))
-        );
-    }
-
-    #[test]
-    fn valid_public_document_parses_without_prerequisites() {
-        assert!(parse(&document()).is_ok());
-        assert!(matches!(
-            parse(&document()).unwrap().validate_prerequisites(),
-            Err(FixtureError::Prerequisite(_))
-        ));
     }
 
     #[test]

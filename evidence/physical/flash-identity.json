@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-10-28T21:19:25Z",
+  "fixture": {
+    "rp2350_chip_id": "00AFD9003906A634",
+    "usb_path_at_observation": "1-3.4.2"
+  },
+  "probe": {
+    "firmware_sha256": "370a33b5d3eb1c61fb6890bed05e5b606fa7cbbb601924b8c92c81c7dcfb44c9",
+    "build_command": "cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf --features qualification-flash-id",
+    "install_command": "/tmp/pico2-picotool/build/picotool load -v -x target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware -t elf",
+    "install_verified": true,
+    "transport_vid": "1209",
+    "transport_pid": "4b46",
+    "manufacturer": "Pico2 KES Qualification"
+  },
+  "raw_product_descriptor_hex": "ef4016534644500a0100ff00080117800000ff01ffffff",
+  "decoded": {
+    "jedec_id_hex": "ef4016",
+    "sfdp_header_hex": "534644500a0100ff00080117800000ff",
+    "density_bits_minus_one_hex": "01ffffff",
+    "density_bytes": 4194304,
+    "matched_firmware_allowlist": true
+  },
+  "method": "The diagnostic read JEDEC ID twice and SFDP through the RP2350 QMI direct path while executing the transaction from SRAM, restored QMI state, then exposed the raw bytes in the USB product descriptor. The operation performed no flash program or erase.",
+  "limitations": [
+    "This observation identifies the fitted flash and geometry; it does not establish prior wear, operating voltage/temperature, entropy quality, workflow erase costs, or service-life endurance.",
+    "The diagnostic image is not a production firmware candidate and must be replaced before production USB qualification."
+  ]
+}

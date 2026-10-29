@@ -193,6 +193,22 @@ impl<C: Clock> ContextProvider<C> {
         self.session
     }
 
+    /// Invalidates all freshness after a USB reconnect. Session identifiers
+    /// are process-random at startup and monotonically changed thereafter so a
+    /// reconnected device can never accept context from the prior transport.
+    pub fn restart_session(&mut self) -> Result<u64, Error> {
+        self.session = self
+            .session
+            .checked_add(1)
+            .ok_or(Error::SequenceExhausted)?;
+        self.target_sequences.clear();
+        for state in self.networks.values_mut() {
+            state.observation = None;
+            state.last_refresh = None;
+        }
+        Ok(self.session)
+    }
+
     pub fn refresh(&mut self, name: &str) -> Result<Observation, Error> {
         if !self.clock.synchronized() {
             return Err(Error::UnsynchronizedClock);
@@ -423,5 +439,23 @@ mod tests {
         assert_eq!(time_at_slot(&history, 9).unwrap(), 1_180);
         assert_eq!(time_at_slot(&history, 10).unwrap(), 1_200);
         assert_eq!(slot_at_time(&history, 1_225).unwrap(), 15);
+    }
+
+    #[test]
+    fn reconnect_changes_session_and_resets_target_sequences() {
+        let target = (
+            PoolId::from_bytes([1; 28]),
+            IncarnationId::from_bytes([2; 16]),
+        );
+        let mut provider = ContextProvider {
+            clock: SystemClock,
+            session: 41,
+            networks: HashMap::new(),
+            target_sequences: HashMap::from([(target, 9)]),
+        };
+
+        assert_eq!(provider.restart_session().unwrap(), 42);
+        assert_eq!(provider.session(), 42);
+        assert!(provider.target_sequences.is_empty());
     }
 }

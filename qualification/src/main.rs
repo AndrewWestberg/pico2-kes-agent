@@ -1,12 +1,13 @@
-mod attended;
 mod benchmarks;
 mod evidence;
 mod fixture;
 mod foundation;
 mod gates;
 mod hardware;
+mod load;
 mod native_regression;
 pub mod oracle;
+mod physical;
 mod tools;
 
 fn main() {
@@ -24,16 +25,15 @@ fn main() {
         [command, flag, revision] if command == "benchmarks" && flag == "--baseline" => {
             benchmarks::run(revision)
         }
-        [command, rest @ ..] if command == "attended-cuts" => attended::run(rest),
+        [command] if command == "load" => load::run(),
         [command, rest @ ..] if command == "hardware" => hardware::run(rest),
-        [command, flag, path] if command == "native-regression" && flag == "--fixture" => {
-            native_regression::run(std::path::Path::new(path))
-        }
+        [command] if command == "native-regression" => native_regression::run(),
+        [command, rest @ ..] if command == "physical-context" => physical::run(rest),
         [command, rest @ ..] if command == "gates" => gates::run(rest),
         [command] if command == "__foundation-memory-child" => foundation::memory_child(),
         _ => {
             eprintln!(
-                "usage: qualification tools|foundation|hardware [--input PHYSICAL_INPUT.json|--write-template PATH]|attended-cuts --fixture FIXTURE --cuts 10|benchmarks --baseline REV|gates run SCOPE|gates validate REPORT --require SCOPE|native-regression --fixture PATH"
+                "usage: qualification tools|foundation|hardware|load|native-regression|physical-context --input INPUT.json|benchmarks --baseline REV|gates run SCOPE|gates validate REPORT --require SCOPE"
             );
             1
         }

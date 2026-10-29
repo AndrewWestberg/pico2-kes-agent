@@ -47,6 +47,7 @@ pub enum Error {
     RecipientUnavailable,
     GenerationUnavailable,
     StagedOccupied,
+    TargetNotStaged,
     CertificateInvalid,
     CertificateRegressive,
     PeriodUnavailable,
@@ -120,6 +121,7 @@ pub struct PoolStatus {
     pub slot: StorageSlot,
     pub revision: u64,
     pub period_floor: Option<u64>,
+    pub kes_lifetime: u8,
     pub publication: Publication,
 }
 
@@ -139,6 +141,20 @@ pub struct GenerationInfo {
     pub verification_key: [u8; 32],
     pub revision: u64,
     pub artifact_digest: Digest32,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationStatus {
+    pub generation: GenerationId,
+    pub number: u64,
+    pub period: u64,
+    pub certificate_start: Option<u64>,
+    pub artifact_digest: Digest32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolGenerations {
+    pub active: Option<GenerationStatus>,
+    pub staged: Option<GenerationStatus>,
 }
 
 struct GenerationState {
@@ -843,6 +859,17 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         Ok(result)
     }
 
+    pub fn pool_generations(&mut self, pool_id: PoolId) -> Result<PoolGenerations, Error> {
+        let index = self.find_pool(pool_id)?;
+        let pool = self.take_pool(index)?;
+        let result = PoolGenerations {
+            active: pool.active.as_ref().map(generation_status),
+            staged: pool.staged.as_ref().map(generation_status),
+        };
+        self.put_pool(index, pool);
+        Ok(result)
+    }
+
     pub fn generation_info(
         &mut self,
         pool_id: PoolId,
@@ -938,15 +965,13 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             .certificate = Some(*certificate);
         pool.highest_certificate_counter = Some(certificate.counter());
         pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
-        if pool
-            .active
-            .as_ref()
-            .is_some_and(|active| active.id == generation_id)
-            && pool.lease.is_some()
-        {
-            apply_active_context(&mut pool)?;
-        }
+        let cleanup = if pool.lease.is_some() {
+            apply_period_context(&mut pool)?
+        } else {
+            PeriodTransition::unchanged()
+        };
         pool = self.commit_pool_for(index, pool, None)?;
+        self.erase_retired_objects(pool.slot, cleanup)?;
         self.put_pool(index, pool);
         Ok(())
     }
@@ -962,11 +987,11 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         let index = self.find_pool(pool_id)?;
         let mut pool = self.take_pool(index)?;
         pool.target_matches(pool_id, incarnation)?;
-        let staged = pool.staged.take().ok_or(Error::GenerationUnavailable)?;
+        let staged = pool.staged.take().ok_or(Error::TargetNotStaged)?;
         if staged.id != generation_id {
             pool.staged = Some(staged);
             self.put_pool(index, pool);
-            return Err(Error::TargetMismatch);
+            return Err(Error::TargetNotStaged);
         }
         let region = staged.object_region;
         pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
@@ -991,9 +1016,10 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         let mut pool = self.take_pool(index)?;
         let lease = pool.lease.ok_or(Error::PeriodUnavailable)?;
         validate_context_time(&lease, now_us)?;
-        let changed = apply_active_context(&mut pool)?;
-        if changed {
+        let transition = apply_period_context(&mut pool)?;
+        if transition.changed {
             pool = self.commit_pool_for(index, pool, None)?;
+            self.erase_retired_objects(pool.slot, transition)?;
         }
         self.put_pool(index, pool);
         Ok(())
@@ -1080,6 +1106,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             slot: pool.slot,
             revision: pool.revision,
             period_floor: pool.period_floor,
+            kes_lifetime: pool.enrollment.network.lifetime(),
             publication: pool.publication,
         };
         self.put_pool(index, pool);
@@ -1375,6 +1402,22 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         Ok(())
     }
 
+    fn erase_retired_objects(
+        &mut self,
+        slot: StorageSlot,
+        transition: PeriodTransition,
+    ) -> Result<(), Error> {
+        if let Some(region) = transition.first_retired_region {
+            self.erase_object_if_needed(slot, region)?;
+        }
+        if let Some(region) = transition.second_retired_region
+            && Some(region) != transition.first_retired_region
+        {
+            self.erase_object_if_needed(slot, region)?;
+        }
+        Ok(())
+    }
+
     fn erase_object_if_needed(&mut self, slot: StorageSlot, region: u8) -> Result<(), Error> {
         let base = public_address(slot, region);
         self.erase_range_if_needed(base, PUBLIC_OBJECT_BYTES)
@@ -1469,41 +1512,119 @@ fn validate_context_time(context: &Context, now_us: u64) -> Result<(), Error> {
     }
 }
 
-fn apply_active_context(pool: &mut PoolState) -> Result<bool, Error> {
+#[derive(Clone, Copy)]
+struct PeriodTransition {
+    changed: bool,
+    first_retired_region: Option<u8>,
+    second_retired_region: Option<u8>,
+}
+
+impl PeriodTransition {
+    const fn unchanged() -> Self {
+        Self {
+            changed: false,
+            first_retired_region: None,
+            second_retired_region: None,
+        }
+    }
+
+    fn retire(&mut self, region: u8) {
+        if self.first_retired_region.is_none() {
+            self.first_retired_region = Some(region);
+        } else {
+            self.second_retired_region = Some(region);
+        }
+        self.changed = true;
+    }
+}
+
+fn apply_period_context(pool: &mut PoolState) -> Result<PeriodTransition, Error> {
     let context = pool.lease.ok_or(Error::PeriodUnavailable)?;
+    let lifetime = u64::from(pool.enrollment.network.lifetime());
+    let mut transition = PeriodTransition::unchanged();
+
+    if let Some(certificate) = pool
+        .staged
+        .as_ref()
+        .and_then(|generation| generation.certificate)
+        && let Some(relative) = context
+            .absolute_period
+            .checked_sub(certificate.start_period())
+    {
+        if relative >= lifetime {
+            let mut expired = pool.staged.take().expect("staged generation checked");
+            expired.key.erase();
+            transition.retire(expired.object_region);
+            pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
+        } else {
+            if pool
+                .staged
+                .as_ref()
+                .is_some_and(|generation| generation.key.period() > relative)
+            {
+                return Err(Error::PeriodRegressive);
+            }
+            let mut replacement = pool.staged.take().expect("staged generation checked");
+            replacement
+                .key
+                .evolve_to(relative)
+                .map_err(|_| Error::PeriodUnavailable)?;
+            if let Some(mut predecessor) = pool.active.take() {
+                predecessor.key.erase();
+                transition.retire(predecessor.object_region);
+            }
+            let kind = PublicationKind::Key {
+                generation: replacement.id,
+                relative_period: relative as u8,
+                certificate_digest: certificate.digest(),
+            };
+            pool.active = Some(replacement);
+            pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
+            publish(pool, kind, context.publication_time_us)?;
+            transition.changed = true;
+            return Ok(transition);
+        }
+    }
+
     let Some(active) = pool.active.as_mut() else {
-        return Err(Error::GenerationUnavailable);
+        return if transition.changed {
+            Ok(transition)
+        } else {
+            Err(Error::GenerationUnavailable)
+        };
     };
     let certificate = active.certificate.ok_or(Error::PeriodUnavailable)?;
     let relative = context
         .absolute_period
         .checked_sub(certificate.start_period())
         .ok_or(Error::PeriodUnavailable)?;
-    if relative >= u64::from(pool.enrollment.network.lifetime()) {
-        active.key.erase();
-        pool.active = None;
+    if relative >= lifetime {
+        let mut expired = pool.active.take().expect("active generation checked");
+        expired.key.erase();
+        transition.retire(expired.object_region);
         pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
         publish(pool, PublicationKind::Drop, context.publication_time_us)?;
-        return Ok(true);
+        return Ok(transition);
     }
-    if active.key.period() == relative {
-        if matches!(pool.publication.kind, PublicationKind::Key { .. }) {
-            return Ok(false);
-        }
-    } else {
-        active
-            .key
-            .evolve_to(relative)
-            .map_err(|_| Error::PeriodUnavailable)?;
+    if active.key.period() > relative {
+        return Err(Error::PeriodRegressive);
     }
     let kind = PublicationKind::Key {
         generation: active.id,
         relative_period: relative as u8,
         certificate_digest: certificate.digest(),
     };
+    if active.key.period() == relative && pool.publication.kind == kind {
+        return Ok(transition);
+    }
+    active
+        .key
+        .evolve_to(relative)
+        .map_err(|_| Error::PeriodUnavailable)?;
     pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
     publish(pool, kind, context.publication_time_us)?;
-    Ok(true)
+    transition.changed = true;
+    Ok(transition)
 }
 
 fn publish(pool: &mut PoolState, kind: PublicationKind, sample: u64) -> Result<(), Error> {
@@ -1519,6 +1640,19 @@ fn publish(pool: &mut PoolState, kind: PublicationKind, sample: u64) -> Result<(
         high_water_us: timestamp,
     };
     Ok(())
+}
+
+fn generation_status(generation: &GenerationState) -> GenerationStatus {
+    GenerationStatus {
+        generation: generation.id,
+        number: generation.number,
+        period: generation.key.period(),
+        certificate_start: generation
+            .certificate
+            .as_ref()
+            .map(Certificate::start_period),
+        artifact_digest: generation.artifact_digest,
+    }
 }
 
 fn find_generation(pool: &PoolState, id: GenerationId) -> Option<&GenerationState> {

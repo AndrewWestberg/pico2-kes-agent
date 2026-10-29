@@ -10,7 +10,7 @@ Observed integration baselines:
 
 | Source | Exact identity / observation |
 |---|---|
-| Local `cardano-node` | HEAD `7af71936a6164119a7a1446152b1ba2f7df54e07`; clean working tree at inspection |
+| Local `cardano-node` | HEAD `746f1b3cbdaada2c3ed2f702b0946643248dd30b`; pinned integrated native source used by the current build |
 | Local `ouroboros-consensus` | Recorded HEAD `6673fce255f12addb602b0ae2d0a20f51a2cd519`; user subsequently confirmed removal of old cardano-kes-forge changes. The earlier modified-file inventory is superseded and those changes must not be reintegrated. Capture the corrected source inventory with the implementation candidate. |
 | Local `cardano-kes-forge` | HEAD `871e795a7025976ac28bf7be8e0e9af5d1289a5a`; inspected working-tree source is reuse evidence, not a certified clean release |
 | Local `pico-hsm` | HEAD `0ab29de6ce3897a61d82132884c3d56a4aa0e22b`; prior plan is design evidence, not current qualification |
@@ -166,4 +166,4 @@ The earlier U1/U2/I1 refinements kept the existing crypto, tool pins, 64-pool ge
 
 Research consulted local predecessor plan/crypto/backup/restore sources, exact package archives, native node/consensus sources, installed Rust/tool versions, and Software Observatory MCP. Public reference: [upstream KES agent](https://github.com/IntersectMBO/kes-agent), [behavior/security FAQ](https://github.com/IntersectMBO/kes-agent/blob/master/doc/faq.markdown), [HPKE RFC 9180](https://www.rfc-editor.org/rfc/rfc9180).
 
-Before implementation acceptance: identify actual fitted flash geometry/endurance and A2 device, qualify entropy and erase/read behavior, record link/RAM high-water, verify all 64+64 generations fit and meet 10/60-second targets, build pinned native oracles, approve/activate gates and execute complete campaigns. None is an unresolved architecture choice or a completed measurement. No firmware flashing, fuse changes, native code changes or product runtime tests occurred during planning.
+Before implementation acceptance: identify the actual fitted flash geometry and A2 device, verify production firmware build/boot/USB identity, exercise erase/read failure behavior, verify all 64+64 generations fit and meet 10/60-second targets, build pinned native oracles, activate gates, and execute complete software/device campaigns. No voltage, temperature, or service-life qualification is required. None of these observations was completed during planning.

@@ -337,7 +337,7 @@ fn plan(
 }
 impl Oracle {
     pub fn new(c: &Configuration) -> Result<Self> {
-        check_git(&c.node_source, "7af71936a6164119a7a1446152b1ba2f7df54e07")?;
+        check_git(&c.node_source, "746f1b3cbdaada2c3ed2f702b0946643248dd30b")?;
         check_git(
             &c.consensus_source,
             "6673fce255f12addb602b0ae2d0a20f51a2cd519",

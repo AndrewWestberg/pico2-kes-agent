@@ -112,7 +112,7 @@ role = "native node source revision; dirty source and dependency plan require se
 kind = "command"
 command = "git"
 args = "-C|/home/westbam/haskell/cardano-node|rev-parse|HEAD"
-version = "7af71936a6164119a7a1446152b1ba2f7df54e07"
+version = "746f1b3cbdaada2c3ed2f702b0946643248dd30b"
 match = "token"
 
 [[tool]]

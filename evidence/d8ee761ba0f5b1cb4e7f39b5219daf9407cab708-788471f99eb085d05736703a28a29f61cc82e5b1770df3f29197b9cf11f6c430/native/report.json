@@ -1,0 +1,27 @@
+{
+  "acceptance_claim": true,
+  "candidate": {
+    "dirty_sha256": "788471f99eb085d05736703a28a29f61cc82e5b1770df3f29197b9cf11f6c430",
+    "revision": "d8ee761ba0f5b1cb4e7f39b5219daf9407cab708"
+  },
+  "checks": [
+    {
+      "elapsed_seconds": 1.198087311,
+      "executions": 1,
+      "name": "pinned-native-node-build",
+      "passed": true,
+      "pinned_consensus_source": true,
+      "pinned_node_source": true
+    },
+    {
+      "elapsed_seconds": 1.192947714,
+      "executions": 1,
+      "name": "node-service-protocol-regressions",
+      "passed": true
+    }
+  ],
+  "limitations": "Compilation and protocol regressions do not claim peer-accepted blocks or a supplied-leadership campaign.",
+  "schema_version": 1,
+  "scope": "pinned native build and node-service V2 compatibility",
+  "verdict": "pass"
+}

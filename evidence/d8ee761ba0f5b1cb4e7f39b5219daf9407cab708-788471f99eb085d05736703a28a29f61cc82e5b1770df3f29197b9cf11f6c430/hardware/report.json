@@ -1,0 +1,66 @@
+{
+  "candidate": {
+    "dirty_sha256": "788471f99eb085d05736703a28a29f61cc82e5b1770df3f29197b9cf11f6c430",
+    "revision": "d8ee761ba0f5b1cb4e7f39b5219daf9407cab708"
+  },
+  "checks": [
+    {
+      "name": "firmware image fits reserved image region",
+      "passed": true
+    },
+    {
+      "name": "linked static RAM fits owned budget",
+      "passed": true
+    },
+    {
+      "name": "fitted JEDEC/SFDP identity matches supported 4 MiB flash",
+      "passed": true
+    },
+    {
+      "name": "production firmware was readback-verified and reached ready over assigned USB identity",
+      "passed": true
+    }
+  ],
+  "command": "cargo run --locked -p qualification -- hardware",
+  "exclusions": [
+    "No voltage, temperature, lifetime, or per-sector endurance claim is made.",
+    "Operational erase verification covers software behavior; it is not a physical anti-extraction guarantee.",
+    "Physical extraction, invasive remanence, malicious replacement firmware, captured-storage rollback, and recipient-retained backups remain outside the threat boundary."
+  ],
+  "gate": {
+    "definition_approved": true,
+    "definition_sha256": "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce",
+    "name": "hardware",
+    "scope": "Pico2 A2 production firmware boots and communicates on the observed fitted device"
+  },
+  "measurements": {
+    "firmware": {
+      "bss_bytes": 548,
+      "data_bytes": 0,
+      "elf": "/home/westbam/Development/pico2-kes-agent/target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware",
+      "image_bytes": 350676,
+      "image_limit_bytes": 1048576,
+      "sha256": "a045f9c10bb0847add3381633d9db0eb3a4b838f0c157909763df59700684afd",
+      "static_ram_bytes": 548,
+      "static_ram_limit_bytes": 131072,
+      "text_bytes": 350676
+    },
+    "fitted_flash": {
+      "capacity_bytes": 4194304,
+      "evidence": "/home/westbam/Development/pico2-kes-agent/evidence/physical/flash-identity.json",
+      "jedec_id": "ef4016",
+      "passes": true,
+      "sfdp_header": "534644500a0100ff00080117800000ff"
+    },
+    "production_usb": {
+      "evidence": "/home/westbam/Development/pico2-kes-agent/evidence/physical/production-usb.json",
+      "health": "ready",
+      "passes": true,
+      "product_id": "4b45",
+      "serial": "00afd9003906a634",
+      "vendor_id": "1209"
+    }
+  },
+  "schema_version": 2,
+  "verdict": "pass"
+}

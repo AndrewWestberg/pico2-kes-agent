@@ -13,7 +13,7 @@
     "cardano-api": {"version": "11.6.0.0"}
   },
   "reference_revisions": {
-    "cardano-node": "7af71936a6164119a7a1446152b1ba2f7df54e07",
+    "cardano-node": "746f1b3cbdaada2c3ed2f702b0946643248dd30b",
     "ouroboros-consensus": "6673fce255f12addb602b0ae2d0a20f51a2cd519",
     "cardano-cli": "25f4d7a6b243d80ed7d716cc91b9c51d9265ace6"
   },

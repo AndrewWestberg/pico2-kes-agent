@@ -98,6 +98,35 @@ impl SocketRegistry {
         self.listeners.keys().map(PathBuf::as_path)
     }
 
+    pub fn bind_dynamic(&mut self, path: &Path, gid: u32) -> Result<&UnixListener, Error> {
+        if !self.listeners.contains_key(path) {
+            self.bind_one(path, gid)?;
+        }
+        self.listeners.get(path).ok_or_else(|| {
+            Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "dynamic socket was not retained",
+            ))
+        })
+    }
+
+    pub fn remove_dynamic(&mut self, path: &Path) -> Result<bool, Error> {
+        self.listeners.remove(path);
+        let Some(expected) = self.owned.remove(path) else {
+            return Ok(false);
+        };
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_socket()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.dev() != expected.device
+            || metadata.ino() != expected.inode
+        {
+            return Err(Error::UnsafeStaleEndpoint(path.to_path_buf()));
+        }
+        std::fs::remove_file(path)?;
+        Ok(true)
+    }
+
     fn bind_one(&mut self, path: &Path, gid: u32) -> Result<(), Error> {
         prepare_path(path)?;
         let listener = UnixListener::bind(path)?;
