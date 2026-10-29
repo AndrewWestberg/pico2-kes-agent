@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+policy=${PICO2_KES_HOST_POLICY:-/etc/pico2-kes-agent/host-security.env}
+swaps=${PICO2_KES_PROC_SWAPS:-/proc/swaps}
+systemctl_bin=${PICO2_KES_SYSTEMCTL:-systemctl}
+
+fail() {
+    printf '%s\n' "pico2-kes-agent host boundary: $1" >&2
+    exit 1
+}
+
+[ -f "$policy" ] || fail "missing $policy"
+grep -qx 'SNAPSHOT_POLICY=disabled-or-encrypted-off-host' "$policy" || fail "snapshot policy is not acknowledged"
+grep -qx 'NODE_MEMORY_POLICY=core-and-swap-disabled' "$policy" || fail "node memory policy is not acknowledged"
+grep -qx 'BACKUP_PRIVATE_POLICY=off-primary' "$policy" || fail "backup recipient private material is not declared off-primary"
+
+{
+    IFS= read -r _header || fail "cannot read swap status"
+    if IFS= read -r active && [ -n "$active" ]; then
+        fail "active swap is forbidden"
+    fi
+} < "$swaps"
+
+for target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+    state=$($systemctl_bin is-enabled "$target" 2>/dev/null || true)
+    [ "$state" = masked ] || fail "$target must be masked"
+done
+
+for unit in pico2-kes-agentd.service cardano-node.service; do
+    swap_max=$($systemctl_bin show "$unit" --property=MemorySwapMax --value 2>/dev/null || true)
+    [ "$swap_max" = 0 ] || fail "$unit must set MemorySwapMax=0"
+    core_limit=$($systemctl_bin show "$unit" --property=LimitCORE --value 2>/dev/null || true)
+    [ "$core_limit" = 0 ] || fail "$unit must set LimitCORE=0"
+done

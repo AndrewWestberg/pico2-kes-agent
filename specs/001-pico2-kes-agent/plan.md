@@ -26,29 +26,29 @@ C1 reuses cardano-node's existing post-initialization SIGHUP handler. File-backe
 
 **Storage**: Raw qualified NOR; paired authenticated pool/configuration snapshots with explicit COMMIT/CLEAN and physical sector erase/read verification; immutable per-generation public trees/artifacts. Nominal 4-MiB layout allocates 1 MiB firmware, 16 KiB config, 2 MiB pool regions, 1,008 KiB reserve. Host public append-only mutation/receipt journal (64-MiB admission bound); no primary plaintext key persistence.
 
-**Endurance Goal**: Five years (1,827 days) with a 2× per-physical-sector margin against the fitted part's guaranteed rating, including prior qualification wear. The operator-selected workload includes network-derived evolution/rotation plus monthly extra rotation and generate/discard cycles per pool, monthly device-wide recipient change and one pool delete/re-enrollment, and daily interrupted-operation recovery. The authoritative counts, projection formula and failure rules are in [the storage endurance policy](contracts/device-storage.md#endurance-acceptance-policy); P1/T093 owns final evidence. This is an unmeasured service-life target, not an API rate limit or approval of the entire quality gate.
+**Operational Storage Goal**: Fit the production image and 64 active plus 64 staged generations on the observed 4-MiB device. Read-verify committed writes and obsolete-region erasure. No voltage, temperature, or service-life endurance guarantee is part of acceptance.
 
-**Testing**: Cargo behavioral/integration tests, proptest 1.11.0, cargo-mutants 27.0.0, cargo-llvm-cov 0.9.1, cargo-fuzz 0.13.1 with nightly-2026-10-22, finite exhaustive Rust lifecycle model, Criterion 0.8.2, independent Haskell/Cardano decoders, actual A2 power/load/erasure campaigns and accepted primary blocks. See [quality gates](contracts/quality-gates.md).
+**Testing**: Cargo behavioral/integration tests, bounded parser fuzzing, finite lifecycle fault models, independent artifact decoding, native node compatibility, and one production-device install/reconnect smoke. See [quality gates](contracts/quality-gates.md).
 
-**Verification entrypoints**: `qualification foundation` exercises real codec/protection/fixture failure paths before daemon/CLI availability; `qualification native-regression --fixture` invokes actual native receiver/finalizer cases; `qualification node --fixture` proves real SIGHUP and accepted blocks. P0 uses `qualification benchmarks --baseline` to aggregate `kes-core/lifecycle` and `pico2-kes-agent/host`. Full Cargo commands, ownership, evidence and approved deadlines are in [quality gates](contracts/quality-gates.md); no command is claimed implemented by planning.
+**Verification entrypoints**: `qualification foundation` exercises codec/protection/fixture failure paths; `qualification load` covers full-capacity behavior; `qualification native-regression --fixture` invokes native receiver/finalizer cases. Hardware qualification builds and checks the production firmware against retained fitted-device evidence. Full commands and ownership are in [quality gates](contracts/quality-gates.md).
 
 **Target Platform**: Linux x86_64 systemd primary and Linux recipient host; RP2350 A2 Cortex-M33 `thumbv8m.main-none-eabihf`, one daemon/device, USB bulk. Do not inherit an A4 requirement. Firmware target is not installed on the planning host; cross-build and physical execution remain implementation work.
 
 **Project Type**: Embedded firmware + Unix service + operator CLI + native Cardano integration; no web UI/general HSM.
 
-**Performance Goals**: Every healthy pool in a concurrent 64-pool current-key burst within 10 seconds; all 64 valid pools recovered within 60 seconds after device/service/fresh context/requesting nodes are available; 10 attended physical power interruptions plus exhaustive software persistent cut points. Targets are unmeasured.
+**Performance Goals**: Every healthy pool in a concurrent 64-pool current-key burst within 10 seconds; all 64 valid pools recovered within 60 seconds after device/service/fresh context/requesting nodes are available. Deterministic software transition cuts cover persistence; one production-device power cycle covers ordinary reconnect.
 
 **Constraints**: 64 active +64 staged generations; fixed device buffers/no avoidable copies; 128-KiB planned owned RAM budget plus measured framework overhead and >=32-KiB spare SRAM. Common socket authority, no runtime PIN, no secret import, cold signing external, one shared backup recipient private key off-primary, no plaintext primary cache/dumps/swap. No full-system forward-security, physical extraction resistance, captured-flash rollback resistance or producer-fencing claim.
 
-**Scale/Scope**: 64 pool subscriptions (one per pool guaranteed), 128 generations/artifacts; one USB request in flight, bounded per-pool scheduling and management queue. Rust root package retained; new small no_std libraries and firmware/qualification members. Recorded native revision pins are node `7af71936a6164119a7a1446152b1ba2f7df54e07` and consensus `6673fce255f12addb602b0ae2d0a20f51a2cd519`; the user subsequently corrected the consensus working-tree baseline by removing old cardano-kes-forge changes. Those changes are not part of this integration target. Use pinned kes-agent 1.3.0.0/crypto 1.1.0.0 source archives and capture the corrected native source inventory before implementation acceptance.
+**Scale/Scope**: 64 pool subscriptions, 128 active/staged generations, one USB request in flight, bounded per-pool scheduling and management queue. Current native revision pins are node `746f1b3cbdaada2c3ed2f702b0946643248dd30b` and consensus `6673fce255f12addb602b0ae2d0a20f51a2cd519`; removed cardano-kes-forge changes are not part of this integration.
 
 ## Constitution Check
 
 **Pre-research gate:** PASS for this documentation refinement. Scope is verification-contract completeness and metadata correction, not a new product capability or constitutional exception. Existing technical choices and model remain applicable; full MCP entries for the affected behavioral/integration sensors were reconsulted before finalizing their checks. Implementation remains subject to recorded approval and executable evidence.
 
-**Post-design gate:** PASS for design consistency; no constitutional exception is required. Foundation smoke has an executable owner before US1, P0 covers both no_std-compatible core and host-only workloads, and C1 semantics/scenarios are synchronized across plan, node contract, tasks and quickstart. **Implementation definition-approval prerequisite: SATISFIED** by the explicit maintainer approval recorded against the unchanged reviewed definition digest. Historical U1/U2/I1 authorization is retained separately. Existing sensor/tool selection, aggregate budgets, original 10/60-second targets, endurance policy and physical evidence requirements remain; C1 scenario bounds are approved but unmeasured. Neither design completion nor approval is a passing sensor reading.
+**Post-design gate:** PASS for design consistency. The current acceptance scope prioritizes deterministic software/device behavior, full-capacity checks, native compatibility, and one ordinary device restart; repeated manual cut, supplied-leadership, endurance, and environmental campaigns are excluded.
 
-**Approval boundary:** The maintainer explicitly confirmed "approved quality-gate definition." The current approval record identifies the reviewed definition digest, approver and date; T005 verifies and translates those approved bytes. The definition is preserved byte-for-byte, with its proposal-time status labels superseded by the dated approval record. Approval satisfies this prerequisite only; implementation, tool activation, baseline approval and candidate evidence remain required. Further substantive definition changes need renewed approval.
+**Approval boundary:** The maintainer explicitly approved the current simplified gate scope in this conversation. Approval establishes the definition only; implementation, tool activation, and candidate evidence remain required. Further substantive definition changes need renewed approval.
 
 | Principle / constraint | Design evidence | Acceptance boundary |
 |---|---|---|
@@ -56,7 +56,7 @@ C1 reuses cardano-node's existing post-initialization SIGHUP handler. File-backe
 | II. Verifiable behavior | Quickstart public-interface scenarios; independent decoder/node; 64+64 and power campaigns | Hardware, timings and accepted blocks must actually be measured; documentation validation does not replace them |
 | III. Stable interfaces | Management/USB/storage/artifact/node contracts; identity-bound retries and native source migration | Pin combined candidate; migrate every affected native caller; no silent legacy reinterpretation |
 | IV. Trust boundaries | Common socket permissions, recipient off-primary, erase-before-release, accepted A2 exclusions | Deployment and secret-output review; independent crypto vectors; no stronger admin credential |
-| V. Maintainable Rust/bounds | Shared no_std core, fixed flash/RAM geometry, serialized flash ownership, bounded queues | Link/RAM/load qualification and five-year/2× per-sector endurance projection under the storage policy; isolated pool failure and unsupported storage fail closed |
+| V. Maintainable Rust/bounds | Shared no_std core, fixed flash/RAM geometry, serialized flash ownership, bounded queues | Link/RAM/load qualification on the actual device; isolated pool failure and unsupported storage fail closed |
 | VI. Observatory quality gate | MCP full entries inspected; selected IDs, gaps, pinned tools, executable gate definitions and sensitivity probes | Maintainer approval of the definition before implementation; demonstrated gate sensitivity before trusting readings; missing/stale/failing/inconclusive readings block acceptance |
 | Technical/workflow constraints | Rust 2024 preserved; device+host targets; only requested docs changed | Native/firmware smoke and mandatory checks occur during implementation; no inherited A4/provisioning machinery |
 
@@ -76,9 +76,9 @@ Baseline correction: the user reports that old cardano-kes-forge changes have be
 
 `HotKey.mkHotKeyWith` finalizes an agent-backed key with `cancel keyThreadAsync >> unset`. The inspected `runKESAgentClient` catches `AsyncCancelled` inside `forever`, then retries after ten seconds; its broad `SomeException` handler also requires cancellation-aware treatment. Cancellation must propagate out of both handlers, while genuine recoverable service failures retain their reconnect behavior. Reproduce the native receiver/finalizer failure before fixing it, then verify termination, socket/resource cleanup and key cleanup before replacement. Do not suppress errors, detach old receivers, or merely remove the dedicated catch while leaving the broad handler to swallow cancellation.
 
-T047/T054/T055 own native behavioral regression and integration; T058/T059/T094 own actual SIGHUP runs and accepted-block evidence. Exercise cancellation during connected/blocked service I/O and reconnect delay, repeated reloads, 64 agent pools, separate mixed file/agent and singleton cases, unchanged and updated valid credential contents, malformed/missing files, future/expired file keys, and an agent that is unavailable then returns. The synchronized [SIGHUP qualification contract](contracts/quality-gates.md#sighup-reload-qualification) fixes approved deadlines, repeat counts and evidence within the existing budgets. Record unchanged node PID, receiver/connection retirement, file-key immutability, current-period signing and per-pool outcomes. A hung teardown or unavailable required evidence cannot pass; provider notifications alone are not a SIGHUP test.
+T047/T054/T055 own native receiver/finalizer regression and integration. Exercise cancellation during blocked service I/O and reconnect delay, repeated reloads, mixed file/agent and singleton configurations, malformed/missing files, and an agent outage/return. Record unchanged node PID, receiver retirement, file-key immutability, and correctly bound agent delivery.
 
-The existing SC-003/SC-004 recovery/delivery targets remain mandatory; this refinement does not claim zero-gap credential replacement or change those targets. Actual SIGHUP completion and native cancellation safety remain unmeasured until the implementation campaigns.
+The SC-003/SC-004 recovery/delivery targets remain mandatory. Native cancellation and reload behavior require executable compatibility tests; accepted-block production at predeclared leadership opportunities is optional integration evidence.
 
 
 ## Project Structure
@@ -100,9 +100,9 @@ specs/001-pico2-kes-agent/
     └── quality-gates.md
 ```
 
-`tasks.md` was generated by the separate Phase 2 workflow. This refinement updates only affected task contracts and proof obligations; task IDs and the 100-task delivery scope remain intact.
+`tasks.md` records the implemented delivery and the maintainer-approved pragmatic acceptance cutover. Earlier laboratory and campaign-scale tasks are superseded rather than left as product blockers.
 
-### Source code (planned, not created by planning)
+### Implemented source layout
 
 ```text
 Cargo.toml                         # retain root pico2-kes-agent package; workspace/default host members
@@ -140,7 +140,7 @@ Verification ownership: T014/T016 provide `qualification/src/foundation.rs` and 
 2. Implement attended blank-device commissioning and verify pin installation/reconciliation before normal startup. Implement device generation/artifact/evolution and verified two-bank cleanup. Prove single-pool recovery then 64+64 flash/RAM fit and boundary workload before assuming scaling.
 3. Implement daemon public receipts, device reconnection/identity/time context, common sockets and CLI lifecycle. Exercise commissioning cuts, publication commit/reply/confirmation cuts, per-incarnation floors, lost replies, staged conflict/discard race, recipient change and retirement. Same-pool re-enrollment uses the retained public deletion timestamp floor, never a retired network-period floor.
 4. Integrate exact V2 stream and native mixed file/agent bulk selection/receive validation; fix cancellation-safe receiver teardown and exercise SIGHUP through the actual node. Demonstrate all 64 pool bindings, file-key catch-up, fresh agent delivery, outage isolation and rotation without node restart or mandatory SIGHUP. Preserve legacy file and singleton-agent semantics and baseline malformed/missing-file diagnostics; do not restore removed forge integration.
-5. Implement recipient-host-only restoration and independent conventional decoding. Complete real systemd/operator path, full A2 power/load/erasure campaign and primary accepted blocks. No backup producer runtime requirement.
+5. Implement recipient-host-only restoration and independent conventional decoding. Complete the installed systemd/operator path, one actual A2 power-cycle/reconnect smoke, native-node compatibility, and focused performance checks. No backup producer runtime or supplied-leadership campaign is required.
 
 These are design sequencing constraints, not Phase 2 task generation. No phase may be accepted on scaffolds or empty readings.
 
@@ -156,7 +156,7 @@ These are design sequencing constraints, not Phase 2 task generation. No phase m
 | FR-010, FR-011, FR-012, FR-017 | Immutable KESBKP01, recipient custody/local restore, exact retention; G7/G10/SC-006 |
 | FR-013, FR-014, FR-015 | systemd/reconnect/socket identity, memory/queue/deployment limits; G2/G10/P1 |
 | FR-016, FR-020 | Full management/CLI surface and common access, offline restore; G10/SC-008 |
-| FR-019 | Accepted A2 storage/entropy qualification and explicit threat exclusions; G8/G10 |
+| FR-019 | Production firmware operation on the accepted A2 and explicit threat exclusions; G8/G10 |
 | FR-021 | Generation-bound staged discard and activation serialization; G2/G3/G8 |
 | SC-001–SC-009 | Full scenarios in quickstart and G1–G10/P0/P1 gate definition; final qualification requires all |
 

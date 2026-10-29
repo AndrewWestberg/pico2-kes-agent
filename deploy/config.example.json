@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "device": {
+    "id": "00000000000000000000000000000000",
+    "identity_public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+    "usb_serial": "0000000000000000"
+  },
+  "socket_directory": "/run/pico2-kes-agent",
+  "socket_group": "pico2-kes-agent",
+  "socket_mode": "0660",
+  "management_socket": "/run/pico2-kes-agent/management.sock",
+  "state_directory": "/var/lib/pico2-kes-agent",
+  "networks": {},
+  "pools": []
+}

@@ -1,0 +1,83 @@
+{
+  "candidate": {
+    "dirty_sha256": "43ffa83a80d670d8cff6afe7a7087d5ab884c7f93c9e4fe7dfa0ac358f6d07e4",
+    "revision": "cfc1eaec2d1c060338931f73031d70646c27e371"
+  },
+  "command": "cargo run --locked -p qualification -- hardware [--input PHYSICAL_INPUT.json]",
+  "endurance_policy": {
+    "arithmetic": "checked u128 intermediate arithmetic; no sector averaging",
+    "horizon_days": 1827,
+    "horizon_seconds": 157852800,
+    "margin_rule": "2 * (prior wear + projected service erases) <= guaranteed minimum rating for every sector",
+    "monthly_events": 61
+  },
+  "enrollment_acceptance": "blocked",
+  "environment": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "size": "GNU size (GNU Binutils for Ubuntu) 2.46\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) any later version.\nThis program has absolutely no warranty.",
+    "target": "thumbv8m.main-none-eabihf"
+  },
+  "exclusions": [
+    "No simulated flash operation is treated as physical evidence.",
+    "The preliminary result does not include later lifecycle costs required by T093.",
+    "No commissioning, erase, flash programming, or irreversible device action is performed by this command."
+  ],
+  "gate": {
+    "definition_sha256": "459d6cf02020e7ee7c4249d6b0fa208de9693829f1d1cd56e4603678d48cf85f",
+    "name": "hardware",
+    "scope": "T043 preliminary implemented-scope resource and endurance qualification"
+  },
+  "input_error": "no physical measurement input supplied",
+  "measurements": {
+    "encoding_bounds": {
+      "allocated_state_end": 3162112,
+      "allocated_state_start": 1048576,
+      "artifact_max_bytes": 2048,
+      "configuration_bank_capacity_bytes": 7408,
+      "configuration_payload_bytes": 7400,
+      "identity_integrity_overhead_bytes": 2080,
+      "pool_count": 64,
+      "pool_snapshot_payload_capacity_bytes": 3312,
+      "public_object_bytes": 8192,
+      "tree_bytes": 4064,
+      "two_canonical_kes_states_bytes": 1216
+    },
+    "endurance_projection": null,
+    "firmware": {
+      "bss_bytes": 548,
+      "data_bytes": 0,
+      "elf": "/home/westbam/Development/pico2-kes-agent/target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware",
+      "image_bytes": 326716,
+      "image_limit_bytes": 1048576,
+      "linked_static_ram_bytes": 548,
+      "passes_image_limit": true,
+      "text_bytes": 326716
+    },
+    "physical": null,
+    "ram_budget": {
+      "measured_framework_overhead_bytes": null,
+      "measured_stack_runtime_high_water_bytes": null,
+      "owned_budget_bytes": 131072,
+      "required_spare_bytes": 32768,
+      "total_sram_bytes": 532480
+    }
+  },
+  "missing_prerequisites": [
+    "direct fitted-part JEDEC/SFDP identity and applicable rating conditions",
+    "per-sector prior-wear upper bounds",
+    "measured per-sector workflow erase costs and 64 deployment network profiles",
+    "stack/runtime high-water and framework RAM overhead",
+    "flash-stall and erase/read-verification observations",
+    "entropy assessment and fault-injection observations",
+    "state-preserving attended installation observation"
+  ],
+  "oracle": {
+    "endurance": "every physical sector satisfies the five-year 2x rule",
+    "image": "text plus data <= 1 MiB",
+    "missing_input": "inconclusive and enrollment blocked",
+    "ram": "128-KiB owned budget plus measured framework/runtime leaves >=32 KiB SRAM"
+  },
+  "schema_version": 1,
+  "verdict": "inconclusive"
+}

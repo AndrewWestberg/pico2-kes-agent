@@ -97,6 +97,7 @@ enum Kind {
     DeviceRequest = 2,
     Terminal = 3,
     Acknowledged = 4,
+    Declined = 5,
 }
 
 impl Kind {
@@ -106,6 +107,7 @@ impl Kind {
             2 => Some(Self::DeviceRequest),
             3 => Some(Self::Terminal),
             4 => Some(Self::Acknowledged),
+            5 => Some(Self::Declined),
             _ => None,
         }
     }
@@ -292,6 +294,33 @@ impl Journal {
         Ok(())
     }
 
+    /// Closes a rejection produced before device admission. The durable result
+    /// remains reconcilable, but the sequence is reused because the device did
+    /// not advance its handoff counter.
+    pub fn append_declined(
+        &mut self,
+        key: MutationKey,
+        result_digest: [u8; 32],
+    ) -> Result<(), Error> {
+        let pending = self.pending.as_ref().ok_or(Error::NoPending)?;
+        if pending.key != key {
+            return Err(Error::Conflict);
+        }
+        let terminal = pending.terminal.as_ref().ok_or(Error::InvalidTransition)?;
+        if terminal.result_digest != result_digest {
+            return Err(Error::Conflict);
+        }
+        self.append(Kind::Declined, key, &result_digest)?;
+        let pending = self.pending.take().expect("pending checked");
+        self.completed.push(CompletedMutation {
+            key,
+            intent: pending.intent,
+            device_request: pending.device_request.expect("device request checked"),
+            terminal: pending.terminal.expect("terminal checked"),
+        });
+        Ok(())
+    }
+
     fn append(&mut self, kind: Kind, key: MutationKey, payload: &[u8]) -> Result<(), Error> {
         let encoded = encode_record(kind, key, payload)?;
         let new_length = self
@@ -387,6 +416,31 @@ impl Journal {
                     offset,
                     reason: "sequence exhausted",
                 })?;
+            }
+            Kind::Declined => {
+                let pending = self.pending.take().ok_or(Error::Corrupt {
+                    offset,
+                    reason: "decline without terminal result",
+                })?;
+                let Some(terminal) = pending.terminal else {
+                    return Err(Error::Corrupt {
+                        offset,
+                        reason: "decline before terminal result",
+                    });
+                };
+                if pending.key != record.key || record.payload.as_slice() != terminal.result_digest
+                {
+                    return Err(Error::Corrupt {
+                        offset,
+                        reason: "decline result mismatch",
+                    });
+                }
+                self.completed.push(CompletedMutation {
+                    key: record.key,
+                    intent: pending.intent,
+                    device_request: pending.device_request.expect("device request checked"),
+                    terminal,
+                });
             }
         }
         Ok(())
@@ -587,6 +641,37 @@ mod tests {
         bytes[72] ^= 1;
         std::fs::write(&path, bytes).unwrap();
         assert!(matches!(Journal::open(&path), Err(Error::Corrupt { .. })));
+    }
+
+    #[test]
+    fn declined_pre_admission_result_is_reconcilable_without_consuming_sequence() {
+        let dir = TestDir::new();
+        let path = dir.0.join("journal");
+        let mut journal = Journal::open(&path).unwrap();
+        journal.append_intent(key(0), b"first").unwrap();
+        journal.append_device_request(key(0), b"wire").unwrap();
+        journal
+            .append_terminal(key(0), [9; 32], b"revision conflict")
+            .unwrap();
+        journal.append_declined(key(0), [9; 32]).unwrap();
+        assert_eq!(journal.next_sequence(), 0);
+        assert_eq!(journal.completed().len(), 1);
+        journal
+            .append_intent(
+                MutationKey {
+                    sequence: 0,
+                    operation_id: [7; 16],
+                    request_digest: [8; 32],
+                },
+                b"retry",
+            )
+            .unwrap();
+        drop(journal);
+
+        let journal = Journal::open(&path).unwrap();
+        assert_eq!(journal.next_sequence(), 0);
+        assert_eq!(journal.completed().len(), 1);
+        assert_eq!(journal.pending().unwrap().intent, b"retry");
     }
 
     #[test]

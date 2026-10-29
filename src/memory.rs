@@ -6,6 +6,20 @@ use rustix::process::{DumpableBehavior, Resource, Rlimit, set_dumpable_behavior,
 use std::io;
 use std::ptr::NonNull;
 use zeroize::Zeroize;
+/// Disables process dumps before USB can return an operational key. Long-lived
+/// key material uses `SecretBuffer`; failure is fatal and has no pageable
+/// fallback.
+pub fn protect_process() -> io::Result<()> {
+    set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
+    setrlimit(
+        Resource::Core,
+        Rlimit {
+            current: Some(0),
+            maximum: Some(0),
+        },
+    )?;
+    Ok(())
+}
 
 /// A unique anonymous mapping, locked before any secret can be written.
 /// It deliberately implements neither formatting, cloning nor serialization.
@@ -34,6 +48,12 @@ pub struct SecretBuffer {
     ptr: NonNull<u8>,
     len: usize,
 }
+// SAFETY: the mapping is uniquely owned, has process-wide lifetime independent
+// of a thread, and mutation requires `&mut SecretBuffer`.
+unsafe impl Send for SecretBuffer {}
+// SAFETY: shared access exposes only immutable bytes; unmapping requires unique
+// ownership during `Drop`.
+unsafe impl Sync for SecretBuffer {}
 
 impl SecretBuffer {
     /// Disable process dumps and establish a nonempty locked mapping. Failure is
@@ -78,6 +98,11 @@ impl SecretBuffer {
             return Err(io::Error::other("null secret mapping"));
         };
         Ok(Self { ptr, len })
+    }
+    pub fn copy_from_slice(bytes: &[u8]) -> io::Result<Self> {
+        let mut secret = Self::new(bytes.len())?;
+        secret.as_mut_slice().copy_from_slice(bytes);
+        Ok(secret)
     }
 
     pub fn as_slice(&self) -> &[u8] {

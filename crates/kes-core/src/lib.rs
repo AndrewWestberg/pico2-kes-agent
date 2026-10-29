@@ -3,6 +3,7 @@
 pub mod backup;
 pub mod certificate;
 pub mod device;
+pub mod directory;
 pub mod generation;
 pub mod identity;
 pub mod kes;

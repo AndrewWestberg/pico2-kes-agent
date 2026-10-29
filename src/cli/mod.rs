@@ -1,13 +1,17 @@
 pub mod client;
 pub mod receipt;
+pub mod status;
 
-use crate::files::{open_owner_controlled_file, publish_no_clobber};
+use crate::{
+    backup::{recipient, recover},
+    files::{open_owner_controlled_file, publish_no_clobber},
+};
 use kes_core::identity::OperationId;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    fs::File,
-    io::{self, Read, Write},
+    fs::{File, OpenOptions},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -18,6 +22,21 @@ pub const EXIT_UNAVAILABLE: i32 = 4;
 pub const EXIT_REJECTED: i32 = 5;
 pub const EXIT_UNCERTAIN: i32 = 6;
 pub const EXIT_FAILURE: i32 = 7;
+
+const USAGE: &str = "\
+pico2-kes-agent-cli [--socket PATH] [--json] COMMAND
+
+Commands:
+  status
+  device commission
+  pool list|status|enroll|delete
+  key generate|verification-key|export|discard
+  certificate install
+  recipient create|set
+  operation reconcile
+  restore
+
+Run service commands through the daemon management socket. No direct USB mode exists.";
 
 pub fn run(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
     match execute(args) {
@@ -55,6 +74,15 @@ impl CliError {
             class: EXIT_INVOCATION,
         }
     }
+    fn failure(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            class: EXIT_FAILURE,
+        }
+    }
+    fn backup(message: impl Into<String>) -> Self {
+        Self::failure(message)
+    }
     fn io(error: io::Error) -> Self {
         let class = match error.kind() {
             io::ErrorKind::PermissionDenied => EXIT_PERMISSION,
@@ -80,6 +108,13 @@ impl std::fmt::Display for CliError {
 }
 
 fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
+    if matches!(args, [argument] if matches!(argument.as_str(), "--help" | "-h" | "help")) {
+        return Ok(ResultOutput {
+            exit: EXIT_SUCCESS,
+            output: Some(USAGE.to_owned()),
+            diagnostic: None,
+        });
+    }
     let mut index = 0;
     let mut socket = PathBuf::from("/run/pico2-kes-agent/management.sock");
     let mut machine = false;
@@ -105,7 +140,7 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
         .ok_or_else(|| CliError::invocation("missing command"))?;
     index += 1;
     let subcommand = match command.as_str() {
-        "status" => None,
+        "status" | "restore" => None,
         "device" | "pool" | "key" | "certificate" | "recipient" | "operation" => {
             let sub = args
                 .get(index)
@@ -116,6 +151,13 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
         _ => return Err(CliError::invocation("unsupported command")),
     };
     let options = parse_options(&args[index..])?;
+    validate_options(command, subcommand, &options)?;
+    if command == "recipient" && subcommand == Some("create") {
+        return create_recipient(&options, machine);
+    }
+    if command == "restore" {
+        return restore_backup(&options, machine);
+    }
     if command == "operation" && subcommand == Some("reconcile") {
         let receipt_path = PathBuf::from(required(&options, "receipt")?);
         let saved = receipt::load(&receipt_path).map_err(CliError::io)?;
@@ -162,7 +204,9 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
     let response_bytes = match client::request(&socket, &bytes) {
         Ok(response) => response,
         Err(error) => {
-            if let Some(path) = &receipt_path {
+            if let Some(path) = &receipt_path
+                && error.outcome_uncertain()
+            {
                 let advice = format!(
                     "outcome uncertain; retain {} and run: pico2-kes-agent-cli operation reconcile --receipt {}",
                     path.display(),
@@ -174,15 +218,21 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
                     diagnostic: Some(advice),
                 });
             }
-            return Err(CliError::io(error));
+            return Err(CliError::io(error.into_io()));
         }
     };
     let response: Value = serde_json::from_slice(&response_bytes)
-        .map_err(|_| CliError::invocation("daemon returned invalid JSON"))?;
+        .map_err(|_| CliError::failure("daemon returned invalid JSON"))?;
     if let Some(path) = &receipt_path {
         receipt::update(path, response.clone()).map_err(CliError::io)?;
     }
-    let (exit, human) = classify_response(&response, receipt_path.as_deref());
+    let (exit, mut human) = classify_response(&response, receipt_path.as_deref());
+    if exit == EXIT_SUCCESS
+        && matches!(specification.action, "device.status" | "pool.status")
+        && let Some(status) = status::human(&response)
+    {
+        human = status;
+    }
     if exit == EXIT_SUCCESS {
         write_requested_output(&specification, &options, &response)?;
     }
@@ -203,6 +253,100 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
         exit,
         output,
         diagnostic,
+    })
+}
+
+fn create_recipient(
+    options: &HashMap<String, String>,
+    machine: bool,
+) -> Result<ResultOutput, CliError> {
+    let private_path = Path::new(required(options, "out")?);
+    let public_path = Path::new(required(options, "public-out")?);
+    if std::fs::symlink_metadata(private_path).is_ok()
+        || std::fs::symlink_metadata(public_path).is_ok()
+    {
+        return Err(CliError::backup("recipient output already exists"));
+    }
+    let (public, private) = recipient::create_interactive()
+        .map_err(|_| CliError::backup("recipient creation failed"))?;
+    let public_bytes = public
+        .json()
+        .map_err(|_| CliError::backup("recipient public encoding failed"))?;
+    publish_no_clobber(public_path, &public_bytes, 0o600).map_err(CliError::io)?;
+    if let Err(error) = publish_no_clobber(private_path, private.encoded(), 0o600) {
+        let _ = std::fs::remove_file(public_path);
+        return Err(CliError::io(error));
+    }
+    Ok(ResultOutput {
+        exit: EXIT_SUCCESS,
+        output: Some(if machine {
+            json!({
+                "outcome": "success",
+                "recipient_key": private_path,
+                "public_key": public_path,
+                "recipient_id": public.recipient_id_hex(),
+            })
+            .to_string()
+        } else {
+            format!(
+                "created protected recipient {} and public recipient {}",
+                private_path.display(),
+                public_path.display()
+            )
+        }),
+        diagnostic: None,
+    })
+}
+
+fn restore_backup(
+    options: &HashMap<String, String>,
+    machine: bool,
+) -> Result<ResultOutput, CliError> {
+    let expected_device = recover::decode_hex::<16>(required(options, "device")?)
+        .ok_or_else(|| CliError::invocation("invalid --device"))?;
+    let expected = recover::Expectations {
+        device: expected_device,
+        pool: recover::decode_hex(required(options, "pool")?)
+            .ok_or_else(|| CliError::invocation("invalid --pool"))?,
+        incarnation: recover::decode_hex(required(options, "incarnation")?)
+            .ok_or_else(|| CliError::invocation("invalid --incarnation"))?,
+        generation: recover::decode_hex(required(options, "generation")?)
+            .ok_or_else(|| CliError::invocation("invalid --generation"))?,
+        verification_key: recover::parse_verification_key_file(Path::new(required(
+            options,
+            "verification-key",
+        )?))
+        .map_err(|_| CliError::backup("invalid verification-key file"))?,
+        identity_public_key: recover::load_identity(
+            Path::new(required(options, "device-identity")?),
+            expected_device,
+        )
+        .map_err(|_| CliError::backup("invalid device identity or binding"))?,
+    };
+    let artifact = recover::read_file(
+        Path::new(required(options, "artifact")?),
+        false,
+        kes_core::backup::MAX_BACKUP_BYTES as u64,
+    )
+    .map_err(|_| CliError::backup("invalid backup artifact input"))?;
+    let recipient_bytes =
+        recover::read_file(Path::new(required(options, "recipient-key")?), true, 16_384)
+            .map_err(|_| CliError::backup("invalid recipient-key input"))?;
+    let recipient = recipient::RecipientKeyFile::parse(recipient_bytes)
+        .map_err(|_| CliError::backup("invalid recipient-key format"))?;
+    let passphrase = recipient::prompt_existing_passphrase()
+        .map_err(|_| CliError::backup("recipient passphrase input failed"))?;
+    let output = Path::new(required(options, "out")?);
+    recover::restore_to_file(&artifact, &recipient, &passphrase, expected, output)
+        .map_err(|_| CliError::backup("backup restoration rejected"))?;
+    Ok(ResultOutput {
+        exit: EXIT_SUCCESS,
+        output: Some(if machine {
+            json!({"outcome":"success", "restored_key":output}).to_string()
+        } else {
+            format!("restored conventional KES signing key {}", output.display())
+        }),
+        diagnostic: None,
     })
 }
 
@@ -309,12 +453,29 @@ fn command_spec(
             mutation: true,
             output: Output::Commission,
         },
-        ("pool", Some("list")) => CommandSpec {
-            action: "pool.list",
-            arguments: json!({}),
-            mutation: false,
-            output: Output::None,
-        },
+        ("pool", Some("list")) => {
+            let page_size = options
+                .get("page-size")
+                .map(|value| {
+                    value
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|size| (1..=16).contains(size))
+                        .ok_or_else(|| CliError::invocation("--page-size must be 1..=16"))
+                })
+                .transpose()?
+                .unwrap_or(16);
+            let mut arguments = json!({"page_size": page_size});
+            if let Some(cursor) = options.get("cursor") {
+                arguments["cursor"] = Value::String(cursor.clone());
+            }
+            CommandSpec {
+                action: "pool.list",
+                arguments,
+                mutation: false,
+                output: Output::None,
+            }
+        }
         ("pool", Some("status")) => CommandSpec {
             action: "pool.status",
             arguments: json!({ "pool_id": required(options, "pool")? }),
@@ -331,7 +492,14 @@ fn command_spec(
             output: Output::None,
         },
         ("pool", Some("delete")) => {
-            require_confirmation(options)?;
+            require_confirmation(
+                options,
+                format!(
+                    "deleting pool {} incarnation {} permanently removes all device-side operational keys and retained artifacts for that pool; external copies are unaffected",
+                    required(options, "pool")?,
+                    required(options, "incarnation")?
+                ),
+            )?;
             CommandSpec {
                 action: "pool.delete",
                 arguments: pool_target()?,
@@ -345,20 +513,32 @@ fn command_spec(
             mutation: true,
             output: Output::None,
         },
-        ("key", Some("verification-key")) => CommandSpec {
-            action: "generation.public_key",
-            arguments: generation_target()?,
-            mutation: false,
-            output: Output::VerificationKey,
-        },
-        ("key", Some("export")) => CommandSpec {
-            action: "generation.artifact",
-            arguments: generation_target()?,
-            mutation: false,
-            output: Output::Artifact,
-        },
+        ("key", Some("verification-key")) => {
+            required(options, "out")?;
+            CommandSpec {
+                action: "generation.public_key",
+                arguments: generation_target()?,
+                mutation: false,
+                output: Output::VerificationKey,
+            }
+        }
+        ("key", Some("export")) => {
+            required(options, "out")?;
+            CommandSpec {
+                action: "generation.artifact",
+                arguments: generation_target()?,
+                mutation: false,
+                output: Output::Artifact,
+            }
+        }
         ("key", Some("discard")) => {
-            require_confirmation(options)?;
+            require_confirmation(
+                options,
+                format!(
+                    "discarding staged generation {} permanently ends device-side artifact retrieval for that generation; the active generation and external copies are unaffected",
+                    required(options, "generation")?
+                ),
+            )?;
             CommandSpec {
                 action: "generation.discard",
                 arguments: generation_target()?,
@@ -381,7 +561,7 @@ fn command_spec(
         },
         ("recipient", Some("set")) => CommandSpec {
             action: "recipient.set",
-            arguments: json!({ "public_key": public_hex_file(Path::new(required(options, "public-key")?), 32)? }),
+            arguments: json!({ "public_key": recipient_public_hex_file(Path::new(required(options, "public-key")?))? }),
             mutation: true,
             output: Output::None,
         },
@@ -438,13 +618,123 @@ fn parse_options(args: &[String]) -> Result<HashMap<String, String>, CliError> {
     Ok(options)
 }
 
-fn require_confirmation(options: &HashMap<String, String>) -> Result<(), CliError> {
+fn validate_options(
+    command: &str,
+    subcommand: Option<&str>,
+    options: &HashMap<String, String>,
+) -> Result<(), CliError> {
+    let allowed: &[&str] = match (command, subcommand) {
+        ("status", None) => &[],
+        ("device", Some("commission")) => &[
+            "usb-serial",
+            "operation-id",
+            "expected-revision",
+            "receipt",
+            "out",
+        ],
+        ("pool", Some("list")) => &["page-size", "cursor"],
+        ("pool", Some("status")) => &["pool"],
+        ("pool", Some("enroll")) => &[
+            "cold-vkey",
+            "network",
+            "operation-id",
+            "expected-revision",
+            "receipt",
+        ],
+        ("pool", Some("delete")) => &[
+            "pool",
+            "incarnation",
+            "operation-id",
+            "expected-revision",
+            "receipt",
+            "yes",
+        ],
+        ("key", Some("generate")) => &[
+            "pool",
+            "incarnation",
+            "operation-id",
+            "expected-revision",
+            "receipt",
+        ],
+        ("key", Some("verification-key" | "export")) => {
+            &["pool", "incarnation", "generation", "out"]
+        }
+        ("key", Some("discard")) => &[
+            "pool",
+            "incarnation",
+            "generation",
+            "operation-id",
+            "expected-revision",
+            "receipt",
+            "yes",
+        ],
+        ("certificate", Some("install")) => &[
+            "pool",
+            "incarnation",
+            "generation",
+            "certificate",
+            "operation-id",
+            "expected-revision",
+            "receipt",
+        ],
+        ("recipient", Some("set")) => {
+            &["public-key", "operation-id", "expected-revision", "receipt"]
+        }
+        ("recipient", Some("create")) => &["out", "public-out"],
+        ("operation", Some("reconcile")) => &["receipt", "out"],
+        ("restore", None) => &[
+            "device",
+            "pool",
+            "incarnation",
+            "generation",
+            "verification-key",
+            "device-identity",
+            "artifact",
+            "recipient-key",
+            "out",
+        ],
+        _ => return Err(CliError::invocation("unsupported command")),
+    };
+    if let Some(option) = options
+        .keys()
+        .find(|option| !allowed.contains(&option.as_str()))
+    {
+        return Err(CliError::invocation(format!(
+            "unsupported option --{option}"
+        )));
+    }
+    Ok(())
+}
+
+fn require_confirmation(
+    options: &HashMap<String, String>,
+    warning: String,
+) -> Result<(), CliError> {
     if options.contains_key("yes") {
+        return Ok(());
+    }
+    let mut terminal = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| {
+            CliError::invocation(format!(
+                "{warning}; pass --yes when no interactive terminal is available"
+            ))
+        })?;
+    writeln!(
+        terminal,
+        "{warning}\nType yes to confirm this exact target:"
+    )
+    .map_err(CliError::io)?;
+    let mut response = String::new();
+    BufReader::new(terminal.try_clone().map_err(CliError::io)?)
+        .read_line(&mut response)
+        .map_err(CliError::io)?;
+    if response.trim() == "yes" {
         Ok(())
     } else {
-        Err(CliError::invocation(
-            "destructive command requires confirmation; review the target and retention warning, then pass --yes",
-        ))
+        Err(CliError::invocation("confirmation declined"))
     }
 }
 
@@ -463,6 +753,18 @@ fn random_id() -> Result<OperationId, CliError> {
     Ok(OperationId::from_bytes(bytes))
 }
 
+fn recipient_public_hex_file(path: &Path) -> Result<String, CliError> {
+    let mut file = open_owner_controlled_file(path).map_err(CliError::io)?;
+    if file.metadata().map_err(CliError::io)?.len() > 16 * 1024 {
+        return Err(CliError::invocation("recipient public file exceeds 16 KiB"));
+    }
+    let mut encoded = Vec::new();
+    file.read_to_end(&mut encoded).map_err(CliError::io)?;
+    let public = recipient::parse_public_json(&encoded)
+        .map_err(|_| CliError::invocation("invalid recipient public file"))?;
+    Ok(public.public_key_hex())
+}
+
 fn public_hex_file(path: &Path, max_bytes: usize) -> Result<String, CliError> {
     let mut file = open_owner_controlled_file(path).map_err(CliError::io)?;
     if file.metadata().map_err(CliError::io)?.len() > 16 * 1024 {
@@ -473,10 +775,15 @@ fn public_hex_file(path: &Path, max_bytes: usize) -> Result<String, CliError> {
     let value = if text.trim_start().starts_with('{') {
         let json: Value = serde_json::from_str(&text)
             .map_err(|_| CliError::invocation("invalid public envelope"))?;
-        json.get("cborHex")
+        let encoded = json
+            .get("cborHex")
             .and_then(Value::as_str)
-            .ok_or_else(|| CliError::invocation("public envelope has no cborHex"))?
-            .to_owned()
+            .ok_or_else(|| CliError::invocation("public envelope has no cborHex"))?;
+        if max_bytes == 32 && encoded.len() == 68 && encoded.starts_with("5820") {
+            encoded[4..].to_owned()
+        } else {
+            encoded.to_owned()
+        }
     } else {
         text.trim().to_owned()
     };
@@ -548,7 +855,18 @@ fn classify_response(response: &Value, receipt: Option<&Path>) -> (i32, String) 
             }
             (EXIT_SUCCESS, response.to_string())
         }
-        "rejected" => (EXIT_REJECTED, response.to_string()),
+        "rejected" => {
+            let code = response
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let exit = match code {
+                "permission_denied" => EXIT_PERMISSION,
+                "busy" | "device_unavailable" | "socket_conflict" => EXIT_UNAVAILABLE,
+                _ => EXIT_REJECTED,
+            };
+            (exit, response.to_string())
+        }
         "pending" | "uncertain" => (
             EXIT_UNCERTAIN,
             receipt.map_or_else(
@@ -724,6 +1042,32 @@ mod tests {
             receipt::load(&receipt_path).unwrap().response.unwrap()["result"]["revision"],
             2
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn standard_verification_key_envelope_yields_raw_key_bytes() {
+        let directory = std::env::temp_dir().join(format!(
+            "pico2-cli-vkey-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("cold.vkey");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "type": "StakePoolVerificationKey_ed25519",
+                "description": "disposable",
+                "cborHex": format!("5820{}", "ab".repeat(32)),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(public_hex_file(&path, 32).unwrap(), "ab".repeat(32));
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

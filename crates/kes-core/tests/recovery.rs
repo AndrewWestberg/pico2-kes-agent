@@ -200,6 +200,297 @@ fn discard_operation_identity_survives_reboot_for_exact_receipt_recovery() {
 }
 
 #[test]
+fn activation_wins_race_and_late_discard_is_target_not_staged() {
+    let (mut device, old_active) = ready(2);
+    let pool = enrollment(2);
+    let replacement = device
+        .generate(pool.pool_id, OperationId::from_bytes([40; 16]))
+        .unwrap();
+    let vkey = device.public_key(pool.pool_id, replacement).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&vkey, 2, 5))
+        .to_bytes();
+    device
+        .install_certificate(
+            pool.pool_id,
+            replacement,
+            &Certificate::new(vkey, 2, 5, signature),
+        )
+        .unwrap();
+
+    assert_eq!(current(&mut device, 2).generation_id, replacement);
+    assert_eq!(
+        device.discard(
+            pool.pool_id,
+            pool.incarnation_id,
+            replacement,
+            OperationId::from_bytes([41; 16]),
+        ),
+        Err(Error::TargetNotStaged)
+    );
+    assert_eq!(current(&mut device, 2).generation_id, replacement);
+    assert_eq!(
+        device.generation_info(pool.pool_id, old_active),
+        Err(Error::GenerationUnavailable)
+    );
+}
+
+#[test]
+fn discard_wins_race_and_stale_retry_preserves_later_staged_generation() {
+    let (mut device, active) = ready(3);
+    let pool = enrollment(3);
+    let discarded = device
+        .generate(pool.pool_id, OperationId::from_bytes([42; 16]))
+        .unwrap();
+    let discard_operation = OperationId::from_bytes([43; 16]);
+    device
+        .discard(
+            pool.pool_id,
+            pool.incarnation_id,
+            discarded,
+            discard_operation,
+        )
+        .unwrap();
+    let committed_revision = device
+        .discarded_by_operation(pool.pool_id, discarded, discard_operation)
+        .unwrap()
+        .unwrap();
+
+    let later = device
+        .generate(pool.pool_id, OperationId::from_bytes([44; 16]))
+        .unwrap();
+    assert_eq!(
+        device.discard(
+            pool.pool_id,
+            pool.incarnation_id,
+            discarded,
+            OperationId::from_bytes([45; 16]),
+        ),
+        Err(Error::TargetNotStaged)
+    );
+    assert_eq!(current(&mut device, 3).generation_id, active);
+    assert!(device.generation_info(pool.pool_id, later).is_ok());
+    assert_eq!(
+        device.discarded_by_operation(pool.pool_id, discarded, discard_operation),
+        Ok(Some(committed_revision))
+    );
+
+    let mut restarted = reboot(device);
+    recovery(&mut restarted);
+    restarted
+        .accept_context(&context(3, 5, 3_000, 2), 100)
+        .unwrap();
+    assert_eq!(current(&mut restarted, 3).generation_id, active);
+    assert!(restarted.generation_info(pool.pool_id, later).is_ok());
+    assert_eq!(
+        restarted.discarded_by_operation(pool.pool_id, discarded, discard_operation),
+        Ok(Some(committed_revision))
+    );
+}
+
+#[test]
+fn discard_reboot_cuts_preserve_active_and_choose_exactly_old_or_discarded_staged() {
+    let (mut device, active) = ready(4);
+    let pool = enrollment(4);
+    let staged = device
+        .generate(pool.pool_id, OperationId::from_bytes([46; 16]))
+        .unwrap();
+    let operation = OperationId::from_bytes([47; 16]);
+    let image = device.into_flash();
+
+    let mut probe = boot(copy_image(&image));
+    recovery(&mut probe);
+    let start = probe.flash().trace.len();
+    probe
+        .discard(pool.pool_id, pool.incarnation_id, staged, operation)
+        .unwrap();
+    let trace = probe.flash().trace[start..].to_vec();
+
+    for (offset, fault) in cuts(&trace) {
+        let mut candidate = boot(copy_image(&image));
+        recovery(&mut candidate);
+        let at = candidate.flash().trace.len() + offset;
+        candidate.flash_mut().fault = Some((at, fault));
+        let _ = candidate.discard(pool.pool_id, pool.incarnation_id, staged, operation);
+
+        let mut restarted = reboot(candidate);
+        recovery(&mut restarted);
+        restarted
+            .accept_context(&context(4, 5, 3_000, 2), 100)
+            .unwrap();
+        assert_eq!(
+            current(&mut restarted, 4).generation_id,
+            active,
+            "cut {offset} {fault:?}"
+        );
+        let staged_exists = restarted.generation_info(pool.pool_id, staged).is_ok();
+        let recorded = restarted
+            .discarded_by_operation(pool.pool_id, staged, operation)
+            .unwrap();
+        assert_eq!(recorded.is_some(), !staged_exists, "cut {offset} {fault:?}");
+    }
+}
+
+#[test]
+fn full_capacity_keeps_pool_delivery_isolated_and_recovers_within_budget() {
+    use std::{
+        sync::{Arc, Mutex},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let mut device = commissioned();
+    device.set_recipient([3; 32]).unwrap();
+    let mut expected = Vec::with_capacity(64);
+    for n in 1..=64 {
+        let pool = enrollment(n);
+        device.enroll(&pool).unwrap();
+        device
+            .accept_context(&context(n, 5, 1_000, 1), 100)
+            .unwrap();
+        let active = device
+            .generate(pool.pool_id, OperationId::from_bytes([n; 16]))
+            .unwrap();
+        let vkey = device.public_key(pool.pool_id, active).unwrap();
+        let signature = cold(n)
+            .sign(&Certificate::signing_bytes(&vkey, 1, 0))
+            .to_bytes();
+        device
+            .install_certificate(
+                pool.pool_id,
+                active,
+                &Certificate::new(vkey, 1, 0, signature),
+            )
+            .unwrap();
+        let staged = device
+            .generate(
+                pool.pool_id,
+                OperationId::from_bytes([n.wrapping_add(64); 16]),
+            )
+            .unwrap();
+        expected.push((pool, active, staged));
+    }
+    assert_eq!(device.enroll(&enrollment(65)), Err(Error::CapacityExceeded));
+
+    let shared = Arc::new(Mutex::new(device));
+    let mut clients = Vec::with_capacity(expected.len());
+    for (pool, active, _) in expected.iter().copied() {
+        let shared = Arc::clone(&shared);
+        clients.push(thread::spawn(move || {
+            let started = Instant::now();
+            let current = shared
+                .lock()
+                .unwrap()
+                .current(pool.pool_id, pool.incarnation_id, 100)
+                .unwrap();
+            assert!(started.elapsed() < Duration::from_secs(10));
+            assert_eq!(current.generation_id, active);
+        }));
+    }
+    for client in clients {
+        client.join().unwrap();
+    }
+
+    let device = match Arc::try_unwrap(shared) {
+        Ok(device) => device.into_inner().unwrap(),
+        Err(_) => panic!("all load clients must release the device"),
+    };
+    let started = Instant::now();
+    let mut restarted = reboot(device);
+    recovery(&mut restarted);
+    assert!(started.elapsed() < Duration::from_secs(60));
+    for (pool, active, staged) in expected {
+        assert!(restarted.generation_info(pool.pool_id, active).is_ok());
+        assert!(restarted.generation_info(pool.pool_id, staged).is_ok());
+    }
+    assert_eq!(
+        restarted.enroll(&enrollment(65)),
+        Err(Error::CapacityExceeded)
+    );
+}
+
+#[test]
+fn rotating_one_pool_leaves_unrelated_pool_publication_unchanged() {
+    let (mut device, _) = ready(2);
+    let other = enrollment(3);
+    device.enroll(&other).unwrap();
+    device
+        .accept_context(&context(3, 5, 1_000, 1), 100)
+        .unwrap();
+    let other_generation = device
+        .generate(other.pool_id, OperationId::from_bytes([50; 16]))
+        .unwrap();
+    let other_vkey = device.public_key(other.pool_id, other_generation).unwrap();
+    let other_signature = cold(3)
+        .sign(&Certificate::signing_bytes(&other_vkey, 1, 0))
+        .to_bytes();
+    device
+        .install_certificate(
+            other.pool_id,
+            other_generation,
+            &Certificate::new(other_vkey, 1, 0, other_signature),
+        )
+        .unwrap();
+    let before = current(&mut device, 3);
+
+    let rotating = enrollment(2);
+    let replacement = device
+        .generate(rotating.pool_id, OperationId::from_bytes([51; 16]))
+        .unwrap();
+    let vkey = device.public_key(rotating.pool_id, replacement).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&vkey, 2, 5))
+        .to_bytes();
+    device
+        .install_certificate(
+            rotating.pool_id,
+            replacement,
+            &Certificate::new(vkey, 2, 5, signature),
+        )
+        .unwrap();
+
+    assert_eq!(current(&mut device, 2).generation_id, replacement);
+    assert_eq!(current(&mut device, 3), before);
+}
+#[test]
+fn certified_staged_generation_activates_at_start_and_survives_reboot() {
+    let (mut device, active) = ready(2);
+    let pool = enrollment(2);
+    let staged = device
+        .generate(pool.pool_id, OperationId::from_bytes([34; 16]))
+        .unwrap();
+    let vkey = device.public_key(pool.pool_id, staged).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&vkey, 2, 8))
+        .to_bytes();
+    device
+        .install_certificate(
+            pool.pool_id,
+            staged,
+            &Certificate::new(vkey, 2, 8, signature),
+        )
+        .unwrap();
+    assert_eq!(current(&mut device, 2).generation_id, active);
+
+    device
+        .accept_context(&context(2, 8, 2_000, 2), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    assert_eq!(current(&mut device, 2).generation_id, staged);
+    assert_eq!(
+        device.generation_info(pool.pool_id, active),
+        Err(Error::GenerationUnavailable)
+    );
+
+    let mut restarted = reboot(device);
+    recovery(&mut restarted);
+    restarted
+        .accept_context(&context(2, 8, 2_000, 3), 100)
+        .unwrap();
+    assert_eq!(current(&mut restarted, 2).generation_id, staged);
+}
+
+#[test]
 fn deletion_terminal_publication_survives_reboot_for_receipt_recovery() {
     let mut device = enrolled(2);
     let target = kes_core::operation::PoolTarget {
@@ -745,4 +1036,35 @@ fn failed_cleanup_prevents_acknowledgment_and_key_release_until_verified() {
     let now = current(&mut d, 2);
     assert_eq!(now.relative_period, 8);
     assert!(erased(d.flash(), trace[cleanup].address, BANK));
+}
+
+#[test]
+fn full_directory_retains_64_active_and_64_staged_generations() {
+    let mut device = commissioned();
+    device.set_recipient([3; 32]).unwrap();
+    let mut generations = [(
+        GenerationId::from_bytes([0; 16]),
+        GenerationId::from_bytes([0; 16]),
+    ); 64];
+    for n in 1..=64u8 {
+        let enrollment = enrollment(n);
+        device.enroll(&enrollment).unwrap();
+        let active = device
+            .generate(enrollment.pool_id, OperationId::from_bytes([n; 16]))
+            .unwrap();
+        let staged = device
+            .generate(
+                enrollment.pool_id,
+                OperationId::from_bytes([n.wrapping_add(64); 16]),
+            )
+            .unwrap();
+        generations[usize::from(n - 1)] = (active, staged);
+    }
+    assert_eq!(device.enroll(&enrollment(65)), Err(Error::CapacityExceeded));
+    for n in 1..=64u8 {
+        let pool = enrollment(n).pool_id;
+        let (active, staged) = generations[usize::from(n - 1)];
+        assert!(device.generation_info(pool, active).is_ok());
+        assert!(device.generation_info(pool, staged).is_ok());
+    }
 }

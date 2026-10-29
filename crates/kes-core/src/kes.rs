@@ -147,6 +147,15 @@ impl Drop for Sum6Kes {
     }
 }
 
+pub fn verification_key_from_state(
+    state: &[u8; STATE_BYTES],
+    period: u8,
+) -> Result<[u8; 32], KesError> {
+    adapted::SigningState::from_canonical(state, period)?
+        .verification_key()
+        .map_err(Into::into)
+}
+
 pub fn verify(
     verification_key: &[u8; 32],
     period: u8,

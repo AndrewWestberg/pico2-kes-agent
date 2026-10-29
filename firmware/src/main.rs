@@ -3,6 +3,7 @@
 
 mod entropy;
 mod flash;
+mod scheduler;
 mod service;
 mod usb;
 
@@ -11,6 +12,7 @@ use core::{panic::PanicInfo, str};
 use cortex_m_rt::entry;
 use embassy_futures::{block_on, join::join};
 use embassy_rp::{flash::Flash as HalFlash, otp};
+use embassy_usb::UsbVersion;
 use entropy::HealthCheckedEntropy;
 use flash::{Admission, FLASH_BYTES, FittedFlash, Identity};
 use hkdf::Hkdf;
@@ -20,6 +22,7 @@ use kes_core::{
     lifecycle::{Device as LifecycleDevice, Error as LifecycleError},
     operation::{Handoff, MAX_HANDOFF_BYTES, UsbSerial},
 };
+use scheduler::Scheduler;
 use service::Service;
 use sha2::{Digest, Sha256};
 use usb::VendorBulk;
@@ -57,6 +60,7 @@ pub struct Runtime<'d> {
     device: Device<'d>,
     serial: UsbSerial,
     handoff: Handoff,
+    scheduler: Scheduler,
     handoff_buffer: [u8; MAX_HANDOFF_BYTES],
 }
 
@@ -105,6 +109,7 @@ impl<'d> Runtime<'d> {
             device,
             serial,
             handoff,
+            scheduler: Scheduler::new(),
             handoff_buffer: [0; MAX_HANDOFF_BYTES],
         };
         if !had_persisted && identity.is_some() {
@@ -224,6 +229,10 @@ fn main() -> ! {
         Ok(serial) => serial,
         Err(_) => halt(),
     };
+    let serial_text = match str::from_utf8(&serial_bytes) {
+        Ok(serial_text) => serial_text,
+        Err(_) => halt(),
+    };
     let flash = match FittedFlash::new(HalFlash::<_, _, FLASH_BYTES>::new_blocking(
         peripherals.FLASH,
     )) {
@@ -239,11 +248,8 @@ fn main() -> ! {
         Err(_) => halt(),
     };
 
-    let serial_text = match str::from_utf8(&serial_bytes) {
-        Ok(serial_text) => serial_text,
-        Err(_) => halt(),
-    };
     let mut config = embassy_usb::Config::new(0x1209, 0x4b45);
+    config.bcd_usb = UsbVersion::Two;
     config.manufacturer = Some("Pico2 KES Agent");
     config.product = Some("Pico2 KES Agent");
     config.serial_number = Some(serial_text);

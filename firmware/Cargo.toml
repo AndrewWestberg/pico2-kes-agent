@@ -11,6 +11,7 @@ path = "src/main.rs"
 test = false
 bench = false
 
+
 [dependencies]
 kes-core = { version = "=0.1.0", path = "../crates/kes-core" }
 kes-protocol = { version = "=0.1.0", path = "../crates/kes-protocol" }

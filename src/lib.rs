@@ -1,6 +1,8 @@
 //! Host-side security and durable publication primitives.
 
 #[cfg(target_os = "linux")]
+pub mod backup;
+#[cfg(target_os = "linux")]
 pub mod cli;
 #[cfg(target_os = "linux")]
 pub mod config;

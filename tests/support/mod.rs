@@ -16,7 +16,9 @@ use kes_core::{
         OperationError, PoolTarget, Receipt, ReceiptOutcome, UsbSerial,
     },
     platform::{Entropy, EntropyError, Flash, FlashError, Geometry, SECTOR_SIZE},
+    public_object::MAX_ARTIFACT_LEN,
 };
+use kes_protocol::management::MAX_FRAME as MAX_MANAGEMENT_FRAME;
 use kes_protocol::usb::{self as wire, PublicOutcome, Request, Response};
 use pico2_kes_agent::{
     cli,
@@ -28,6 +30,7 @@ use pico2_kes_agent::{
         node_service::{PoolSubscription, PublicationKind, PublicationUpdate},
         usb::{DeviceTransport, Error as UsbError, IdentityPin, Reply, UsbSelection},
     },
+    memory::SecretBuffer,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -164,6 +167,7 @@ struct Emulator {
     serial: UsbSerial,
     outstanding: Option<(u64, Digest32)>,
     lose_next_reply: bool,
+    lose_next_ack_reply: bool,
     commission_cut: Option<Cut>,
     unavailable: bool,
     disconnected: bool,
@@ -189,6 +193,7 @@ impl Emulator {
             serial: UsbSerial::new(serial).unwrap(),
             outstanding: None,
             lose_next_reply: false,
+            lose_next_ack_reply: false,
             commission_cut: None,
             unavailable: false,
             disconnected: false,
@@ -419,7 +424,7 @@ impl Emulator {
     }
 
     fn rejected_without_handoff(
-        &self,
+        &mut self,
         mutation: Mutation,
         code: u16,
         commission: bool,
@@ -446,6 +451,7 @@ impl Emulator {
                 result_digest: Digest32::from_bytes(hash.finalize().into()),
             },
         };
+        self.outstanding = Some((mutation.sequence(), mutation.usb_digest()));
         self.encode(&if commission {
             Response::Commission(receipt)
         } else {
@@ -652,11 +658,20 @@ impl DeviceTransport for Emulator {
                     .handoff
                     .acknowledge(*sequence, *result_digest)
                     .map_err(operation_code);
-                self.encode(&Response::ReceiptAck(wire::ReceiptAckResponse {
+                let response = self.encode(&Response::ReceiptAck(wire::ReceiptAckResponse {
                     sequence: *sequence,
                     result_digest: *result_digest,
                     result,
-                }))
+                }))?;
+                if self.lose_next_ack_reply {
+                    self.lose_next_ack_reply = false;
+                    let (_, digest) = self.outstanding.ok_or(UsbError::Protocol)?;
+                    return Err(UsbError::Uncertain {
+                        sequence: *sequence,
+                        digest,
+                    });
+                }
+                Ok(response)
             }
             Request::Reconcile {
                 sequence,
@@ -686,7 +701,10 @@ impl DeviceTransport for Emulator {
                             }
                         },
                         target: None,
-                        outcome: PublicOutcome::Unknown,
+                        outcome: match self.handoff.next_sequence() {
+                            Some(next) if *sequence < next => PublicOutcome::Stale,
+                            _ => PublicOutcome::Unknown,
+                        },
                     });
                 self.encode(&Response::Reconcile(receipt))
             }
@@ -708,6 +726,28 @@ impl DeviceTransport for Emulator {
                 publication_time_us: *publication_time_us,
             }),
             Request::Current { target } => self.current(*target),
+            Request::Artifact { target } => {
+                let mut artifact = [0; MAX_ARTIFACT_LEN];
+                let result = match self.device_mut().artifact(
+                    target.pool.pool,
+                    target.generation,
+                    &mut artifact,
+                ) {
+                    Ok((len, digest, _)) => wire::ArtifactResult::Retained {
+                        artifact: &artifact[..len],
+                        digest,
+                        retention_policy: 1,
+                    },
+                    Err(LifecycleError::GenerationUnavailable) => wire::ArtifactResult::Retired,
+                    Err(error) => wire::ArtifactResult::Unavailable {
+                        code: lifecycle_code(error),
+                    },
+                };
+                self.encode(&Response::Artifact(wire::ArtifactResponse {
+                    target: *target,
+                    result,
+                }))
+            }
             Request::PublicKey { target } => {
                 let result = self
                     .device_mut()
@@ -914,6 +954,19 @@ impl TestRig {
     pub fn receipt_path(&self) -> &Path {
         &self.receipt
     }
+    pub fn certificate_receipt_path(&self) -> PathBuf {
+        self.root.join("certificate-receipt.json")
+    }
+    pub fn remove_receipt(&self) {
+        let _ = std::fs::remove_file(&self.receipt);
+    }
+    pub fn journal_state(&self) -> (u64, bool) {
+        let state = self.state.lock().unwrap();
+        (
+            state.journal.next_sequence(),
+            state.journal.pending().is_some(),
+        )
+    }
 
     fn run_cli(&self, mut args: Vec<String>) -> CliResult {
         let mut prefixed = vec![
@@ -996,6 +1049,22 @@ impl TestRig {
         }
         self.run_cli(args)
     }
+    pub fn reconcile_receipt_cli(&self, receipt: &Path) -> CliResult {
+        self.run_cli(vec![
+            "operation".into(),
+            "reconcile".into(),
+            "--receipt".into(),
+            receipt.display().to_string(),
+        ])
+    }
+    pub fn reconcile_pending_unattended(&self) -> Result<Option<Value>, RigError> {
+        let mut state = self.state.lock().unwrap();
+        let config = state.config.clone();
+        let SharedState { journal, usb, .. } = &mut *state;
+        Management::new(&config, journal, usb)
+            .reconcile_pending()
+            .map_err(|_| RigError("reconciliation_failed"))
+    }
 
     pub fn generate_cli(&self, operation: &str) -> CliResult {
         let target = self.target.unwrap();
@@ -1008,6 +1077,11 @@ impl TestRig {
             .pool_status(target.pool)
             .unwrap()
             .revision;
+        self.generate_cli_expected(operation, revision)
+    }
+
+    pub fn generate_cli_expected(&self, operation: &str, revision: u64) -> CliResult {
+        let target = self.target.unwrap();
         self.run_cli(vec![
             "key".into(),
             "generate".into(),
@@ -1025,7 +1099,11 @@ impl TestRig {
     }
 
     pub fn generate_with_cli(&mut self) -> Result<Generation, RigError> {
-        let result = self.generate_cli("00112233445566778899aabbccddeeff");
+        self.generate_with_operation("00112233445566778899aabbccddeeff")
+    }
+
+    pub fn generate_with_operation(&mut self, operation: &str) -> Result<Generation, RigError> {
+        let result = self.generate_cli(operation);
         if result.exit_code != 0 {
             return Err(RigError("generation_failed"));
         }
@@ -1039,6 +1117,12 @@ impl TestRig {
         self.generation = Some(raw);
         Ok(Generation { id, raw })
     }
+    pub fn generation_from_id(&self, id: &str) -> Generation {
+        Generation {
+            id: id.to_owned(),
+            raw: GenerationId::parse_hex(id).unwrap(),
+        }
+    }
 
     pub fn pool_status(&mut self) -> Value {
         json!({ "generation_id": self.generation.map(|id| id.to_string()) })
@@ -1046,8 +1130,140 @@ impl TestRig {
     pub fn staged_generation_count(&mut self) -> usize {
         usize::from(self.state.lock().unwrap().usb.last_generation.is_some())
     }
+    pub fn read_file(&self, name: &str) -> Vec<u8> {
+        fs::read(self.root.join(name)).unwrap()
+    }
+
+    pub fn export_cli(&self, generation: &Generation, name: &str) -> CliResult {
+        self.export_id_cli(&generation.id, name)
+    }
+    pub fn export_id_cli(&self, generation: &str, name: &str) -> CliResult {
+        let target = self.target.unwrap();
+        self.run_cli(vec![
+            "key".into(),
+            "export".into(),
+            "--pool".into(),
+            target.pool.to_string(),
+            "--incarnation".into(),
+            target.incarnation.to_string(),
+            "--generation".into(),
+            generation.into(),
+            "--out".into(),
+            self.root.join(name).display().to_string(),
+        ])
+    }
+    pub fn discard_cli(&self, generation: &Generation) -> CliResult {
+        self.discard_id_cli(&generation.id)
+    }
+    pub fn discard_id_cli(&self, generation: &str) -> CliResult {
+        let target = self.target.unwrap();
+        let revision = self
+            .state
+            .lock()
+            .unwrap()
+            .usb
+            .device_mut()
+            .pool_status(target.pool)
+            .unwrap()
+            .revision;
+        self.run_cli(vec![
+            "key".into(),
+            "discard".into(),
+            "--pool".into(),
+            target.pool.to_string(),
+            "--incarnation".into(),
+            target.incarnation.to_string(),
+            "--generation".into(),
+            generation.into(),
+            "--expected-revision".into(),
+            revision.to_string(),
+            "--receipt".into(),
+            self.root.join("discard-receipt.json").display().to_string(),
+            "--yes".into(),
+        ])
+    }
+
+    pub fn set_recipient_cli(&self, public_json: &[u8], operation_id: &str) -> CliResult {
+        let path = self.root.join("next-recipient.pub");
+        fs::write(&path, public_json).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let revision = self.state.lock().unwrap().usb.device().revision().unwrap();
+        self.run_cli(vec![
+            "recipient".into(),
+            "set".into(),
+            "--public-key".into(),
+            path.display().to_string(),
+            "--operation-id".into(),
+            operation_id.into(),
+            "--expected-revision".into(),
+            revision.to_string(),
+            "--receipt".into(),
+            self.root
+                .join(format!("recipient-{operation_id}.json"))
+                .display()
+                .to_string(),
+        ])
+    }
+
+    pub fn backup_expectations(
+        &mut self,
+        generation: &Generation,
+    ) -> pico2_kes_agent::backup::recover::Expectations {
+        let target = self.target.unwrap();
+        let mut state = self.state.lock().unwrap();
+        let record = *state
+            .usb
+            .device()
+            .identity()
+            .unwrap()
+            .enrollment_record()
+            .public();
+        let verification_key = state
+            .usb
+            .device_mut()
+            .public_key(target.pool, generation.raw)
+            .unwrap();
+        pico2_kes_agent::backup::recover::Expectations {
+            device: *record.device().as_bytes(),
+            pool: *target.pool.as_bytes(),
+            incarnation: *target.incarnation.as_bytes(),
+            generation: *generation.raw.as_bytes(),
+            verification_key,
+            identity_public_key: *record.identity_public_key(),
+        }
+    }
+
+    pub fn persisted_files(&self) -> Vec<Vec<u8>> {
+        fs::read_dir(&self.root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                entry
+                    .file_type()
+                    .ok()
+                    .filter(|kind| kind.is_file())
+                    .and_then(|_| fs::read(entry.path()).ok())
+            })
+            .collect()
+    }
+
+    pub fn recipient_public_key(&mut self) -> [u8; 32] {
+        self.state
+            .lock()
+            .unwrap()
+            .usb
+            .device_mut()
+            .recipient()
+            .unwrap()
+            .unwrap()
+            .0
+    }
+
     pub fn timeout_next_usb_reply(&mut self) {
         self.state.lock().unwrap().usb.lose_next_reply = true;
+    }
+    pub fn timeout_next_ack_reply(&mut self) {
+        self.state.lock().unwrap().usb.lose_next_ack_reply = true;
     }
     pub fn cut_next_commission(&mut self, cut: Cut) {
         if cut == Cut::BeforePinPublication {
@@ -1100,6 +1316,9 @@ impl TestRig {
     }
     pub fn replace_connected_device_with_different_identity(&mut self) {
         self.state.lock().unwrap().usb.wrong_identity = true;
+    }
+    pub fn disconnect_device(&self) {
+        self.state.lock().unwrap().usb.disconnected = true;
     }
 
     pub fn certificate_for_other_generation(&self) -> String {
@@ -1327,7 +1546,8 @@ impl TestRig {
                         generation,
                         relative_period: u32::from(relative_period),
                         certificate_digest,
-                        state: Box::new(current.state),
+                        state: SecretBuffer::copy_from_slice(&current.state)
+                            .map_err(|_| RigError("memory_protection"))?,
                         certificate: current.certificate.direct_bytes(),
                     },
                     CorePublicationKind::Drop => PublicationKind::Drop,
@@ -1392,38 +1612,49 @@ fn spawn_management(
             if stop.load(Ordering::Acquire) {
                 break;
             }
-            let Ok(mut stream) = connection else { break };
-            let mut header = [0; 4];
-            if stream.read_exact(&mut header).is_err() {
-                continue;
-            }
-            let mut request = vec![0; u32::from_be_bytes(header) as usize];
-            if stream.read_exact(&mut request).is_err() {
-                continue;
-            }
-            let request_id = serde_json::from_slice::<Value>(&request)
-                .ok()
-                .and_then(|v| v["request_id"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| "00000000000000000000000000000000".into());
-            let response = {
-                let mut state = state.lock().unwrap();
-                let SharedState {
-                    config,
-                    journal,
-                    usb,
-                } = &mut *state;
-                match Management::new(config, journal, usb).dispatch(&request) {
-                    Ok(response) => response,
-                    Err(error) => {
-                        let uncommissioned = config.mode == RunMode::Normal && config.pin.is_none();
-                        management_error(&request_id, error, uncommissioned)
-                    }
-                }
-            };
-            let _ = stream.write_all(&(response.len() as u32).to_be_bytes());
-            let _ = stream.write_all(&response);
+            let Ok(stream) = connection else { break };
+            let state = Arc::clone(&state);
+            thread::spawn(move || serve_test_management(stream, state));
         }
     })
+}
+
+fn serve_test_management(mut stream: UnixStream, state: Arc<Mutex<SharedState>>) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let mut header = [0; 4];
+    if stream.read_exact(&mut header).is_err() {
+        return;
+    }
+    let length = u32::from_be_bytes(header) as usize;
+    if length > MAX_MANAGEMENT_FRAME {
+        return;
+    }
+    let mut request = vec![0; length];
+    if stream.read_exact(&mut request).is_err() {
+        return;
+    }
+    let request_id = serde_json::from_slice::<Value>(&request)
+        .ok()
+        .and_then(|value| value["request_id"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "00000000000000000000000000000000".into());
+    let response = {
+        let mut state = state.lock().unwrap();
+        let SharedState {
+            config,
+            journal,
+            usb,
+        } = &mut *state;
+        match Management::new(config, journal, usb).dispatch(&request) {
+            Ok(response) => response,
+            Err(error) => {
+                let uncommissioned = config.mode == RunMode::Normal && config.pin.is_none();
+                management_error(&request_id, error, uncommissioned)
+            }
+        }
+    };
+    let _ = stream.write_all(&(response.len() as u32).to_be_bytes());
+    let _ = stream.write_all(&response);
 }
 
 fn spawn_pool(
@@ -1454,6 +1685,12 @@ fn management_error(
     let (outcome, code, digest) = match error {
         pico2_kes_agent::daemon::management::Error::ModeDenied => {
             ("rejected", "permission_denied", None)
+        }
+        pico2_kes_agent::daemon::management::Error::ArtifactRetired => {
+            ("rejected", "artifact_retired", None)
+        }
+        pico2_kes_agent::daemon::management::Error::GenerationUnknown => {
+            ("rejected", "generation_mismatch", None)
         }
         pico2_kes_agent::daemon::management::Error::Usb(
             UsbError::IdentityMismatch | UsbError::Signature,
@@ -1654,6 +1891,7 @@ fn lifecycle_code(error: LifecycleError) -> u16 {
         LifecycleError::RecipientUnavailable => 18,
         LifecycleError::GenerationUnavailable => 19,
         LifecycleError::StagedOccupied => 20,
+        LifecycleError::TargetNotStaged => 27,
         LifecycleError::CertificateInvalid => 21,
         LifecycleError::CertificateRegressive => 22,
         LifecycleError::PeriodUnavailable => 23,

@@ -380,12 +380,12 @@ fn fixture_checks() -> Vec<Check> {
             "pools": pools,
             "network": {"name": "testnet", "isolated": true, "disposable_credentials": true,
                 "genesis": "/disposable/genesis", "node_socket": "/disposable/socket"},
-            "recipient_host": "test-host", "power_controller": "test-controller",
+            "recipient_host": "test-host",
             "evidence_directory": "/disposable/evidence"
         });
         let valid = serde_json::to_vec(&document).unwrap();
         let valid_accepted = fixture::parse_fixture(&valid).is_ok();
-        document["network"]["name"] = serde_json::json!("mainnet");
+        document["network"]["isolated"] = serde_json::json!(false);
         let invalid = serde_json::to_vec(&document).unwrap();
         let mut side_effect = false;
         if fixture::parse_fixture(&invalid).is_ok() { side_effect = true; }

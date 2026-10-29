@@ -8,10 +8,23 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use kes_protocol::management::{FrameDecoder, MAX_FRAME, Message};
+use pico2_kes_agent::backup::{recipient, recover};
 use serde_json::{Value, json};
 use support::{Cut, TestRig};
 
 const ID: &str = "00112233445566778899aabbccddeeff";
+
+struct RecipientEntropy(u8);
+
+impl recipient::Entropy for RecipientEntropy {
+    fn fill(&mut self, output: &mut [u8]) -> Result<(), recipient::Error> {
+        for byte in output {
+            self.0 = self.0.wrapping_mul(17).wrapping_add(29);
+            *byte = self.0;
+        }
+        Ok(())
+    }
+}
 
 fn management(rig: &TestRig, request: Value) -> Value {
     let json = serde_json::to_vec(&request).unwrap();
@@ -131,6 +144,24 @@ fn commissioning_rejects_wrong_selection_and_nonblank_partial_state() {
 }
 
 #[test]
+fn status_distinguishes_disconnected_and_recovering_without_secret_fields() {
+    let rig = TestRig::commissioned_pool();
+    rig.disconnect_device();
+    let disconnected = status(&rig);
+    assert_eq!(disconnected["outcome"], "success");
+    assert_eq!(disconnected["result"]["health"], "disconnected");
+    assert!(disconnected["result"].get("state").is_none());
+
+    let mut recovering_rig = TestRig::commissioned_pool();
+    recovering_rig.timeout_next_usb_reply();
+    assert_eq!(recovering_rig.generate_cli(ID).exit_code, 6);
+    let recovering = status(&recovering_rig);
+    assert_eq!(recovering["outcome"], "success");
+    assert_eq!(recovering["result"]["health"], "recovering");
+    assert!(recovering["result"].get("state").is_none());
+}
+
+#[test]
 fn dispatched_timeout_is_uncertain_and_reconciles_same_generation() {
     let mut rig = TestRig::commissioned_pool();
     rig.timeout_next_usb_reply();
@@ -147,6 +178,222 @@ fn dispatched_timeout_is_uncertain_and_reconciles_same_generation() {
         again["result"]["generation_id"]
     );
     assert_eq!(rig.staged_generation_count(), 1);
+}
+
+#[test]
+fn unattended_recovery_reconciles_pending_result_before_resuming() {
+    let mut rig = TestRig::commissioned_pool();
+    rig.timeout_next_usb_reply();
+    assert_eq!(rig.generate_cli(ID).exit_code, 6);
+    assert!(rig.journal_state().1);
+
+    let reconciled = rig.reconcile_pending_unattended().unwrap().unwrap();
+    assert_eq!(reconciled["outcome"]["result"]["kind"], "generated");
+    assert!(!rig.journal_state().1);
+    assert_eq!(rig.staged_generation_count(), 1);
+}
+
+#[test]
+fn lost_acknowledgment_reply_reconciles_completed_mutation() {
+    let mut rig = TestRig::commissioned_pool();
+    rig.timeout_next_ack_reply();
+    let interrupted = rig.generate_cli(ID);
+    assert_eq!(interrupted.exit_code, 6);
+    assert!(rig.receipt_path().exists());
+
+    let reconciled = rig.reconcile_cli();
+    assert_eq!(reconciled.exit_code, 0);
+    assert_eq!(rig.staged_generation_count(), 1);
+}
+
+#[test]
+fn lost_generation_and_activation_replies_reconcile_with_stable_export() {
+    let mut rig = TestRig::commissioned_pool();
+    rig.timeout_next_usb_reply();
+    assert_eq!(rig.generate_cli(ID).exit_code, 6);
+    let generated: Value = serde_json::from_slice(&rig.reconcile_cli().stdout).unwrap();
+    let generation_id = generated["result"]["generation_id"].as_str().unwrap();
+    let generation = rig.generation_from_id(generation_id);
+    assert_eq!(rig.staged_generation_count(), 1);
+
+    let first_export = rig.export_cli(&generation, "artifact-first.bin");
+    assert_eq!(first_export.exit_code, 0);
+    let retried_export = rig.export_cli(&generation, "artifact-retried.bin");
+    assert_eq!(retried_export.exit_code, 0);
+    assert_eq!(
+        rig.read_file("artifact-first.bin"),
+        rig.read_file("artifact-retried.bin")
+    );
+
+    let certificate = rig.certificate_for(&generation);
+    rig.timeout_next_usb_reply();
+    assert_eq!(
+        rig.install_certificate_cli(&generation.id, &certificate)
+            .exit_code,
+        6
+    );
+    let receipt = rig.certificate_receipt_path();
+    assert_eq!(rig.reconcile_receipt_cli(&receipt).exit_code, 0);
+    rig.refresh_context().unwrap();
+    assert_eq!(rig.current_usb_generation(), generation.id);
+
+    rig.restart_device_and_refresh_context().unwrap();
+    assert_eq!(rig.current_usb_generation(), generation.id);
+}
+
+#[test]
+fn pre_admission_rejection_does_not_require_device_acknowledgment() {
+    let rig = TestRig::commissioned_pool();
+    let before = rig.journal_state();
+    let rejected = rig.generate_cli_expected(ID, u64::MAX);
+    assert_eq!(rejected.exit_code, 5);
+    assert_eq!(rig.journal_state(), before);
+    rig.remove_receipt();
+
+    let accepted = rig.generate_cli("ffeeddccbbaa99887766554433221100");
+    assert_eq!(
+        accepted.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+}
+
+#[test]
+fn retained_artifact_is_stable_and_retirement_is_distinct_from_unknown_generation() {
+    let mut rig = TestRig::commissioned_pool();
+    let generation = rig.generate_with_cli().unwrap();
+
+    let first = rig.export_cli(&generation, "artifact-first.bin");
+    let second = rig.export_cli(&generation, "artifact-second.bin");
+    assert_eq!(
+        first.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(second.exit_code, 0);
+    assert_eq!(
+        rig.read_file("artifact-first.bin"),
+        rig.read_file("artifact-second.bin")
+    );
+
+    rig.remove_receipt();
+    let replacement = rig.generate_cli("ffeeddccbbaa99887766554433221100");
+    assert_eq!(
+        replacement.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&replacement.stdout),
+        String::from_utf8_lossy(&replacement.stderr)
+    );
+    let replacement_value: Value = serde_json::from_slice(&replacement.stdout).unwrap();
+    let replacement_id = replacement_value["result"]["generation_id"]
+        .as_str()
+        .unwrap();
+    let discarded = rig.discard_id_cli(replacement_id);
+    assert_eq!(
+        discarded.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&discarded.stdout),
+        String::from_utf8_lossy(&discarded.stderr)
+    );
+
+    let retired = rig.export_id_cli(replacement_id, "artifact-retired.bin");
+    assert_eq!(retired.exit_code, 5);
+    assert!(String::from_utf8_lossy(&retired.stdout).contains("artifact_retired"));
+    assert_eq!(
+        rig.export_cli(&generation, "artifact-active.bin").exit_code,
+        0
+    );
+
+    let unknown = rig.export_id_cli("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "artifact-unknown.bin");
+    assert_eq!(unknown.exit_code, 5);
+    assert!(String::from_utf8_lossy(&unknown.stdout).contains("generation_mismatch"));
+}
+
+#[test]
+fn recipient_rotation_is_future_only_and_private_keys_stay_off_primary() {
+    const PASSPHRASE: &[u8] = b"correct horse battery staple";
+    let mut rig = TestRig::commissioned_pool();
+    let (public_a, private_a) = recipient::create(PASSPHRASE, &mut RecipientEntropy(7)).unwrap();
+    let (public_b, private_b) = recipient::create(PASSPHRASE, &mut RecipientEntropy(173)).unwrap();
+
+    let set_a = rig.set_recipient_cli(
+        &public_a.json().unwrap(),
+        "10000000000000000000000000000001",
+    );
+    assert_eq!(
+        set_a.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&set_a.stdout),
+        String::from_utf8_lossy(&set_a.stderr)
+    );
+    let generation_a = rig
+        .generate_with_operation("20000000000000000000000000000001")
+        .unwrap();
+    assert_eq!(
+        rig.export_cli(&generation_a, "artifact-a-before.bin")
+            .exit_code,
+        0
+    );
+    let artifact_a_before = rig.read_file("artifact-a-before.bin");
+    let expected_a = rig.backup_expectations(&generation_a);
+
+    let set_b = rig.set_recipient_cli(
+        &public_b.json().unwrap(),
+        "10000000000000000000000000000002",
+    );
+    assert_eq!(
+        set_b.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&set_b.stdout),
+        String::from_utf8_lossy(&set_b.stderr)
+    );
+    assert_eq!(rig.recipient_public_key(), public_b.public_key);
+    assert_eq!(
+        rig.export_cli(&generation_a, "artifact-a-after.bin")
+            .exit_code,
+        0
+    );
+    assert_eq!(artifact_a_before, rig.read_file("artifact-a-after.bin"));
+
+    rig.remove_receipt();
+    let generation_b = rig
+        .generate_with_operation("20000000000000000000000000000002")
+        .unwrap();
+    assert_eq!(rig.export_cli(&generation_b, "artifact-b.bin").exit_code, 0);
+    let artifact_b = rig.read_file("artifact-b.bin");
+    let expected_b = rig.backup_expectations(&generation_b);
+
+    assert!(recover::recover(&artifact_a_before, &private_a, PASSPHRASE, expected_a).is_ok());
+    assert!(matches!(
+        recover::recover(&artifact_a_before, &private_b, PASSPHRASE, expected_a),
+        Err(recover::Error::WrongRecipient)
+    ));
+    assert!(recover::recover(&artifact_b, &private_b, PASSPHRASE, expected_b).is_ok());
+    assert!(matches!(
+        recover::recover(&artifact_b, &private_a, PASSPHRASE, expected_b),
+        Err(recover::Error::WrongRecipient)
+    ));
+
+    for persisted in rig.persisted_files() {
+        assert!(
+            !persisted
+                .windows(private_a.encoded().len())
+                .any(|bytes| bytes == private_a.encoded())
+        );
+        assert!(
+            !persisted
+                .windows(private_b.encoded().len())
+                .any(|bytes| bytes == private_b.encoded())
+        );
+    }
 }
 
 #[test]

@@ -1,96 +1,48 @@
 {
-  "schema_version": 1,
-  "recorded_date": "2026-10-27",
-  "scope": "T007 read-only discovery; this record is not a hardware qualification or enrollment approval.",
-  "discovery": {
-    "commands": [
-      {"command": "lsusb"},
-      {"command": "udevadm info --query=property --name=/dev/bus/usb/001/034"},
-      {"command": "lsblk --output NAME,PATH,SIZE,MODEL,TRAN,SERIAL"},
-      {"command": "findmnt --source /dev/sda1 --output TARGET,SOURCE,FSTYPE,OPTIONS"},
-      {"command": "env LD_LIBRARY_PATH=/tmp/pico2-libusb-install/lib ./build/picotool version", "cwd": "/tmp/pico2-picotool"},
-      {"command": "env LD_LIBRARY_PATH=/tmp/pico2-libusb-install/lib ./build/picotool info -a", "cwd": "/tmp/pico2-picotool"},
-      {"command": "env LD_LIBRARY_PATH=/tmp/pico2-libusb-install/lib ./build/picotool info -a --debug", "cwd": "/tmp/pico2-picotool"}
-    ],
-    "file_read": {"path": "/run/media/westbam/RP2350/INFO_UF2.TXT", "method": "session file-read tool, not a shell command", "observed": {"bootloader": "UF2 Bootloader v1.0", "model": "Raspberry Pi RP2350", "board_id": "RP2350"}},
-    "actions_not_performed": ["flash or firmware programming", "erase", "reboot", "OTP or fuse programming", "JEDEC read", "SFDP read"],
-    "limitations": "Picotool info reports flash size and device information, not a direct JEDEC/SFDP identity or fitted-part marking. No state was intentionally modified by discovery."
-  },
-  "observed_device": {
-    "usb": {"vendor_id": "2e8a", "product_id": "000f", "description": "Raspberry Pi RP2350 Boot", "serial_chip_id": "00AFD9003906A634", "mode": "BOOTSEL"},
-    "picotool": {"version": "2.3.1", "source": "official Raspberry Pi picotool", "source_url": "https://github.com/raspberrypi/picotool", "executable": "/tmp/pico2-picotool/build/picotool", "installation": "temporary build in /tmp", "debug_info": {"chip": "RP2350", "revision": "A2", "package": "QFN60", "flash_devinfo": "0x0c00", "boot_type": "bootsel", "flash_size_bytes": 4194304, "secure_boot": 0, "debug_enabled": true}},
-    "qualification": "A2 revision and 4 MiB reported size are observed; silicon identification alone does not qualify the device."
-  },
-  "sources": {
-    "board_design": {"title": "Raspberry Pi Pico 2 Datasheet, board schematic", "url": "https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf", "evidence": "Pico 2 board design identifies W25Q32RV flash; a design document is not direct measurement of this board's fitted component."},
-    "flash_datasheet": {"title": "Winbond W25Q32RV SPI/QPI datasheet, Revision E, 2025-11-13", "url": "https://www.mouser.com/catalog/specsheets/Winbond%20Electronics%20Corporation_02-12-2026_W25Q32RV_SPI_QPI%20RevE%2011132025%20Plus.pdf", "manufacturer_product_page": "https://www.winbond.com/hq/product/code-storage-flash/qspi-nor/w25q-rv/?__locale=en"},
-    "rp2350_datasheet": "https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf",
-    "entropy_assessment": "https://csrc.nist.gov/pubs/sp/800/90/b/final",
-    "project_storage_policy": "specs/001-pico2-kes-agent/contracts/device-storage.md"
+  "schema_version": 2,
+  "recorded_date": "2026-10-28",
+  "scope": "Production software operation on the accepted Pico2 A2",
+  "device": {
+    "chip": "RP2350",
+    "revision": "A2",
+    "package": "QFN60",
+    "chip_id": "00AFD9003906A634",
+    "bootsel_usb": "2e8a:000f",
+    "production_usb": "1209:4b45",
+    "production_serial": "00afd9003906a634"
   },
   "flash": {
-    "direct_observation": {"reported_capacity_bytes": 4194304, "jedec_id": null, "sfdp": null, "fitted_part_identity": null, "physical_marking": null},
-    "expected_from_board_design": {"part_family": "W25Q32RV", "jedec_id_hex": "EF 40 16", "identity_status": "expected from board design and manufacturer datasheet, not directly read"},
-    "datasheet_properties_conditional_on_matching_fitted_part": {
-      "capacity_bytes": 4194304,
-      "sfdp_supported": true,
-      "erase_sector_bytes": 4096,
-      "program_page_bytes": 256,
-      "minimum_program_erase_cycles_per_sector": 100000,
-      "supply_voltage_min_v": 2.7,
-      "supply_voltage_max_v": 3.6,
-      "operating_temperature_min_c": -40,
-      "operating_temperature_max_c": 105,
-      "source": "flash_datasheet",
-      "applicability": "Guaranteed rating and limits are for the documented W25Q32RV under its datasheet conditions; they are not established for the specific fitted component until identity, exact ordering variant and operating conditions are verified."
-    },
-    "required_evidence": ["Read and retain actual JEDEC ID and SFDP using a verified non-destructive method; compare full identity and erase/program geometry to the qualified datasheet.", "Identify the actual fitted component and exact variant, using marking or traceable manufacturing evidence as necessary; do not treat board design or devinfo as proof.", "Measure or otherwise substantiate flash supply voltage and temperature across intended operating and qualification conditions and verify the exact part's rating applies.", "Physically qualify erase, program and read verification on an explicitly authorized disposable fixture before enrollment acceptance; account for all resulting wear."]
-  },
-  "planned_layout": {
-    "status": "arithmetic_only_not_qualified",
+    "fitted_family": "Winbond W25Q32RV",
+    "jedec_id_hex": "ef4016",
+    "sfdp_header_hex": "534644500a0100ff00080117800000ff",
     "capacity_bytes": 4194304,
-    "required_erase_sector_bytes": 4096,
-    "required_program_page_bytes": 256,
-    "regions": [
-      {"name": "firmware_image_header_and_boot_metadata", "start_inclusive": "0x000000", "end_exclusive": "0x100000", "bytes": 1048576, "sectors": 256, "pages": 4096},
-      {"name": "device_configuration", "start_inclusive": "0x100000", "end_exclusive": "0x104000", "bytes": 16384, "sectors": 4, "pages": 64},
-      {"name": "64_pool_regions", "start_inclusive": "0x104000", "end_exclusive": "0x304000", "bytes": 2097152, "sectors": 512, "pages": 8192, "pool_count": 64, "bytes_per_pool": 32768},
-      {"name": "durable_operation_handoff", "start_inclusive": "0x304000", "end_exclusive": "0x308000", "bytes": 16384, "sectors": 4, "pages": 64},
-      {"name": "unallocated_reserve", "start_inclusive": "0x308000", "end_exclusive": "0x400000", "bytes": 1015808, "sectors": 248, "pages": 3968}
+    "erase_sector_bytes": 4096,
+    "program_page_bytes": 256,
+    "observation": "evidence/physical/flash-identity.json"
+  },
+  "production_observation": "evidence/physical/production-usb.json",
+  "storage_layout": {
+    "firmware_end_exclusive": 1048576,
+    "state_start": 1048576,
+    "state_end": 3178496,
+    "pool_count": 64,
+    "active_and_staged_generations": 128
+  },
+  "acceptance": {
+    "required": [
+      "production firmware builds for thumbv8m.main-none-eabihf",
+      "image and linked static RAM fit their declared budgets",
+      "fitted JEDEC/SFDP identity matches the firmware allowlist",
+      "firmware installation is readback-verified",
+      "production USB identity and stable serial enumerate",
+      "normal pinned-device startup reaches ready"
     ],
-    "total_bytes": 4194304,
-    "total_sectors": 1024,
-    "total_pages": 16384,
-    "interpretation": "The ranges add to 4 MiB and align under the planned geometry; this conditional arithmetic does not establish fitted-part compatibility or a pass. Actual geometry and maximum-size firmware/state encodings must be qualified before enrollment."
-  },
-  "prior_wear": {"status": "unknown", "per_sector_upper_bound": null, "evidence_required": "Provide documented unused-part provenance or a conservative per-physical-sector upper bound including all prior programming, erase attempts, firmware flashing and qualification campaigns; elapsed age alone is insufficient."},
-  "operating_conditions": {"status": "not_measured", "flash_supply_voltage_v": null, "flash_temperature_c": null, "required": "Measure representative and worst-case operating conditions and verify they meet the identified part's datasheet conditions throughout the intended service and qualification envelope."},
-  "entropy_qualification": {
-    "status": "not_executed",
-    "measurements": null,
-    "procedure": [
-      "Before testing, identify the exact RP2350 silicon, the candidate firmware digest, the RP2350 hardware entropy source and its documented raw sampling, conditioning and health-test interfaces. Establish access to raw noise samples without weakening production firmware; if unavailable, qualification remains blocked rather than substituting conditioned-output statistics.",
-      "On authorized isolated representative A2 fixtures with disposable material, record source configuration, startup and sample method; collect at least 1,000,000 sequential raw samples per tested voltage/temperature corner and capture restart datasets according to NIST SP 800-90B. Use measured conditions spanning the intended envelope and justify representativeness and sample independence assumptions.",
-      "Apply the SP 800-90B entropy-source assessment, including the applicable IID or non-IID estimators and restart tests, and record the conservative min-entropy bound, conditioning input/output assumptions and a justified security-strength budget for every seed. Statistical tests alone do not prove cryptographic suitability.",
-      "Specify and exercise startup and continuous source health tests, including repetition-count and adaptive-proportion tests with thresholds derived from the assessed entropy bound and a documented false-alarm probability. Inject stuck, biased and unavailable source faults into the actual firmware path and verify failure is detected, no generation or weak fallback occurs, and an existing valid key is not revoked solely due to new entropy failure.",
-      "Review that device identity and KES generation use only health-checked on-device entropy, with no host-selected seed or plaintext secret import; verify failure reporting and wipe transient seeds. Retain candidate digest, source configuration, measured conditions, sample counts, analysis, thresholds and public outcomes without publishing secret-bearing data."
-    ],
-    "qualification_prerequisites": "Actual firmware entropy adapter, documented accessible source and qualified isolated fixture, instrumentation, approved conditions and independent review are required. No sampling, health-test validation or entropy estimate has been performed."
-  },
-  "physical_tools": {
-    "power_controller": {"status": "not_established", "identity": null, "required": "Identify and validate a physical controller capable of controlled and randomized power interruption for the prescribed fixture campaigns."},
-    "probe_rs": {"status": "not_established", "version": null, "probe": null, "required": "Record an actual usable probe and probe-rs version or documented equivalent debug instrumentation before relevant physical qualification."},
-    "physical_campaigns": {"status": "not_executed", "required": "Complete authorized erase/read, interruption, recovery, size/resource and load qualification on identified fixtures; record results and resulting wear."}
-  },
-  "usb_identity_boundary": {
-    "observed_bootsel_vid_pid": "2e8a:000f",
-    "use": "Legitimate Raspberry Pi boot-ROM identity for BOOTSEL discovery only.",
-    "production_vid_pid": null,
-    "production_status": "not established",
-    "restriction": "Product firmware and packaging must use an appropriately authorized USB identity and must not claim the Raspberry Pi BOOTSEL VID/PID as their own."
-  },
-  "verdicts": {
-    "enrollment": {"status": "blocked", "reason": "Actual flash identity and geometry, operating conditions, prior wear, entropy, power-control/probe and physical qualification prerequisites are not established; resource/encoding bounds and state-region blank admission must also be verified before commissioning."},
-    "endurance": {"status": "inconclusive", "acceptance": "blocked", "horizon_days": 1827, "rule": "For every physical sector s, 2 * (prior_wear_s + projected_service_erases_s) <= guaranteed_rating_s.", "reason": "The fitted-part guaranteed rating's applicability is unverified, conditions and prior wear are unknown, and per-sector physical operation costs and intended network/workload profiles have not been established. A conditional datasheet number or geometry sum is not a passing projection.", "required": "Identify the part and applicable guaranteed rating; establish operating envelope and conservative per-sector prior wear including all campaigns; measure worst-case physical erase costs for all policy workloads, supply network schedules, calculate each sector with checked arithmetic, and report the limiting sector and margin. Recalculate after additional wear."}
+    "excluded_claims": [
+      "voltage or temperature characterization",
+      "service-life or per-sector endurance guarantee",
+      "physical extraction or invasive remanence resistance",
+      "malicious replacement-firmware resistance",
+      "captured-storage rollback resistance"
+    ]
   }
 }

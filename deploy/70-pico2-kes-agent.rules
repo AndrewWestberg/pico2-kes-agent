@@ -1,0 +1,2 @@
+# USB access only; the daemon still authenticates the configured device pin.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1209", ATTR{idProduct}=="4b45", GROUP="pico2-kes-agent", MODE="0660", TAG+="systemd"

@@ -829,6 +829,10 @@ impl<'a> Parser<'a> {
             "retired",
             "cursor",
             "socket_path",
+            "role",
+            "action",
+            "artifact_retention",
+            "publication_revision",
         ];
         self.object_start()?;
         let (mut first, mut seen) = (true, 0);
@@ -857,7 +861,7 @@ impl<'a> Parser<'a> {
                 4 => {
                     self.id()?;
                 }
-                5..=7 | 19 | 20 | 22 | 23 | 33 | 36..=38 | 40 | 42 | 43 | 45 => {
+                5..=7 | 19 | 20 | 22 | 23 | 33 | 36..=38 | 40 | 42 | 43 | 45 | 52 => {
                     self.number()?;
                 }
                 8..=13 | 41 => self.text(|s| {
@@ -867,7 +871,7 @@ impl<'a> Parser<'a> {
                 })?,
                 14 => self.bounded_hex(MAX_ARTIFACT_BYTES)?,
                 24 => self.bounded_hex(MAX_CERTIFICATE_BYTES)?,
-                15..=18 | 21 | 25..=27 | 34 | 35 | 39 | 48 => self.text(|_| Ok(()))?,
+                15..=18 | 21 | 25..=27 | 34 | 35 | 39 | 48..=51 => self.text(|_| Ok(()))?,
                 28 => {
                     if nested {
                         return Err(Error::InvalidField);

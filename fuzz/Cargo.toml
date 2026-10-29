@@ -8,9 +8,9 @@ publish = false
 cargo-fuzz = true
 
 [package.metadata.qualification]
-active-targets = ["usb", "management"]
-pending-targets = ["node_service", "certificate", "artifact"]
-pending-policy = "Pending targets terminate non-successfully until wired to their production parser; compilation or an empty run is not evidence."
+active-targets = ["usb", "management", "node_service", "certificate", "artifact"]
+pending-targets = []
+pending-policy = "Every registered target invokes a production parser and asserts only parser safety and bounded structural invariants."
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"

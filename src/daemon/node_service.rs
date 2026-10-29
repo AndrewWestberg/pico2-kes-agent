@@ -1,5 +1,6 @@
 //! Per-pool Service V2 subscriptions with latest-only publication coalescing.
 
+use crate::memory::SecretBuffer;
 use kes_core::{
     identity::{Digest32, GenerationId},
     kes::STATE_BYTES,
@@ -19,25 +20,65 @@ use zeroize::Zeroize;
 pub const SERVICE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_SUBSCRIBERS_PER_POOL: usize = 2;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A retained node publication. Key state deliberately has no `Debug`,
+/// `Clone`, or serialization implementation.
+///
+/// ```compile_fail
+/// use pico2_kes_agent::daemon::node_service::PublicationUpdate;
+/// fn requires_debug<T: std::fmt::Debug>() {}
+/// requires_debug::<PublicationUpdate>();
+/// ```
 pub enum PublicationKind {
     Key {
         generation: GenerationId,
         relative_period: u32,
         certificate_digest: Digest32,
-        state: Box<[u8; STATE_BYTES]>,
+        state: SecretBuffer,
         certificate: [u8; DIRECT_CERTIFICATE_BYTES],
     },
     Drop,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct PublicationUpdate {
     pub target: PoolTarget,
     pub revision: u64,
     pub timestamp_us: u64,
     pub kind: PublicationKind,
 }
+
+impl PartialEq for PublicationKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Drop, Self::Drop) => true,
+            (
+                Self::Key {
+                    generation,
+                    relative_period,
+                    certificate_digest,
+                    state,
+                    certificate,
+                },
+                Self::Key {
+                    generation: other_generation,
+                    relative_period: other_period,
+                    certificate_digest: other_digest,
+                    state: other_state,
+                    certificate: other_certificate,
+                },
+            ) => {
+                generation == other_generation
+                    && relative_period == other_period
+                    && certificate_digest == other_digest
+                    && state.as_slice() == other_state.as_slice()
+                    && certificate == other_certificate
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PublicationKind {}
 
 #[derive(Debug)]
 pub enum Error {
@@ -178,8 +219,24 @@ impl PoolSubscription {
         self.shared.changed.notify_all();
     }
 
-    pub fn serve(&self, mut stream: UnixStream) -> Result<(), Error> {
-        let _guard = self.admit()?;
+    pub fn is_stopped(&self) -> bool {
+        self.shared
+            .state
+            .lock()
+            .expect("subscription mutex poisoned")
+            .stopped
+    }
+
+    pub fn serve(&self, stream: UnixStream) -> Result<(), Error> {
+        let permit = self.reserve()?;
+        self.serve_reserved(stream, permit)
+    }
+
+    pub(crate) fn serve_reserved(
+        &self,
+        mut stream: UnixStream,
+        _permit: SubscriberPermit,
+    ) -> Result<(), Error> {
         stream.set_read_timeout(Some(SERVICE_TIMEOUT))?;
         stream.set_write_timeout(Some(SERVICE_TIMEOUT))?;
         if !handshake(&mut stream)? {
@@ -228,7 +285,7 @@ impl PoolSubscription {
         }
     }
 
-    fn admit(&self) -> Result<SubscriberGuard<'_>, Error> {
+    pub(crate) fn reserve(&self) -> Result<SubscriberPermit, Error> {
         let mut state = self
             .shared
             .state
@@ -238,14 +295,16 @@ impl PoolSubscription {
             return Err(Error::Busy);
         }
         state.subscribers += 1;
-        Ok(SubscriberGuard { subscription: self })
+        Ok(SubscriberPermit {
+            subscription: self.clone(),
+        })
     }
 }
 
-struct SubscriberGuard<'a> {
-    subscription: &'a PoolSubscription,
+pub(crate) struct SubscriberPermit {
+    subscription: PoolSubscription,
 }
-impl Drop for SubscriberGuard<'_> {
+impl Drop for SubscriberPermit {
     fn drop(&mut self) {
         let mut state = self
             .subscription
@@ -293,14 +352,18 @@ fn encode_update(update: &PublicationUpdate, output: &mut [u8]) -> Result<usize,
             state,
             certificate,
             ..
-        } => Publication::Key {
-            timestamp_us: update.timestamp_us,
-            bundle: Bundle {
-                state,
-                relative_period: *relative_period,
-                certificate,
-            },
-        },
+        } => {
+            let state: &[u8; STATE_BYTES] =
+                state.as_slice().try_into().map_err(|_| Error::Protocol)?;
+            Publication::Key {
+                timestamp_us: update.timestamp_us,
+                bundle: Bundle {
+                    state,
+                    relative_period: *relative_period,
+                    certificate,
+                },
+            }
+        }
     };
     wire::encode_publication(&publication, output).map_err(|_| Error::Protocol)
 }
@@ -326,7 +389,7 @@ mod tests {
                 generation: GenerationId::from_bytes([byte; 16]),
                 relative_period: u32::from(byte),
                 certificate_digest: Digest32::from_bytes([byte; 32]),
-                state: Box::new([byte; STATE_BYTES]),
+                state: SecretBuffer::copy_from_slice(&[byte; STATE_BYTES]).unwrap(),
                 certificate: [byte; DIRECT_CERTIFICATE_BYTES],
             },
         }
@@ -346,6 +409,17 @@ mod tests {
             subscription.publish(key(3, 20, 3)),
             Err(Error::RegressiveTimestamp)
         ));
+    }
+
+    #[test]
+    fn subscriber_admission_is_bounded_before_worker_creation() {
+        let subscription = PoolSubscription::new(target());
+        let first = subscription.reserve().unwrap();
+        let second = subscription.reserve().unwrap();
+        assert!(matches!(subscription.reserve(), Err(Error::Busy)));
+        drop(first);
+        let replacement = subscription.reserve().unwrap();
+        drop((second, replacement));
     }
 
     #[test]

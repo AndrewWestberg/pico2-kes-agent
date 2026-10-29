@@ -3,7 +3,8 @@
 use crate::{
     config::{Config, PoolBinding, RunMode},
     daemon::{
-        journal::{Journal, MutationKey},
+        journal::{Journal, MutationKey, PendingMutation},
+        status,
         usb::{DeviceTransport, Error as UsbError},
     },
 };
@@ -11,7 +12,7 @@ use kes_core::{
     identity::{Digest32, GenerationId, IncarnationId, OperationId, PoolId},
     operation::{
         Action as DeviceAction, Binding, CertificateBytes, CommittedResult, GenerationTarget,
-        Mutation, PoolTarget, UsbSerial,
+        LiveTarget, Mutation, PoolTarget, UsbSerial,
     },
 };
 use kes_protocol::{
@@ -27,6 +28,8 @@ pub enum Error {
     Protocol,
     InvalidInput,
     ModeDenied,
+    ArtifactRetired,
+    GenerationUnknown,
     Journal(crate::daemon::journal::Error),
     Usb(UsbError),
 }
@@ -90,11 +93,11 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         }
 
         let result = match action {
-            Action::DeviceStatus => self.query(Request::Status { pool: None })?,
+            Action::DeviceStatus => self.status(None)?,
             Action::PoolStatus => {
                 let pool =
                     parse_id::<28, PoolId>(&envelope.arguments, "pool_id", PoolId::from_bytes)?;
-                self.query(Request::Status { pool: Some(pool) })?
+                self.status(Some(pool))?
             }
             Action::PoolList => self.pool_list(&envelope.arguments)?,
             Action::GenerationPublicKey => {
@@ -103,7 +106,10 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             }
             Action::GenerationArtifact => {
                 let target = generation_target(&envelope.arguments)?;
-                self.query(Request::Artifact { target })?
+                if !self.generation_was_created(target) {
+                    return Err(Error::GenerationUnknown);
+                }
+                self.artifact(target)?
             }
             Action::OperationReconcile => self.reconcile(&envelope.arguments)?,
             action if action.is_mutation() => {
@@ -132,6 +138,21 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             "error": error
         }))
         .map_err(|_| Error::Protocol)
+    }
+
+    fn status(&mut self, pool: Option<PoolId>) -> Result<Value, Error> {
+        let recovering = self.journal.pending().is_some();
+        match self.usb.request(&Request::Status { pool }) {
+            Ok(reply) => match reply.decode().map_err(|_| Error::Protocol)? {
+                Response::Status(response) => Ok(status::response(response, recovering)),
+                _ => Err(Error::Protocol),
+            },
+            Err(UsbError::NotFound | UsbError::Usb(_) | UsbError::Io(_) | UsbError::Interface) => {
+                Ok(status::unavailable(recovering, pool))
+            }
+            Err(UsbError::Busy) => Ok(status::unavailable(true, pool)),
+            Err(error) => Err(Error::Usb(error)),
+        }
     }
 
     fn query(&mut self, request: Request) -> Result<Value, Error> {
@@ -170,7 +191,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         Ok(json!({ "pools": pools, "cursor": next }))
     }
 
-    fn reconstructed_registry(&self) -> Result<Vec<PoolBinding>, Error> {
+    pub(crate) fn reconstructed_registry(&self) -> Result<Vec<PoolBinding>, Error> {
         let mut registry: HashMap<PoolId, PoolBinding> = self
             .config
             .pools
@@ -322,9 +343,12 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             Response::Mutate(receipt) | Response::Commission(receipt) => *receipt,
             _ => return Err(Error::Protocol),
         };
-        let result_digest = match receipt.outcome {
-            PublicOutcome::Committed { result_digest, .. }
-            | PublicOutcome::Rejected { result_digest, .. } => result_digest,
+        let (result_digest, retained_receipt) = match receipt.outcome {
+            PublicOutcome::Committed { result_digest, .. } => (result_digest, true),
+            PublicOutcome::Rejected {
+                code,
+                result_digest,
+            } => (result_digest, code < 100),
             PublicOutcome::Pending | PublicOutcome::Unknown | PublicOutcome::Stale => {
                 return response_value(response);
             }
@@ -335,6 +359,13 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         self.journal
             .append_terminal(key, result_digest.into_bytes(), &terminal)?;
         let value = response_value(response)?;
+        if !retained_receipt {
+            self.usb
+                .clear_outstanding(mutation.sequence(), mutation.usb_digest())?;
+            self.journal
+                .append_declined(key, result_digest.into_bytes())?;
+            return Ok(value);
+        }
 
         let ack = self.usb.request(&Request::ReceiptAck {
             sequence: mutation.sequence(),
@@ -352,6 +383,18 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         Ok(value)
     }
 
+    /// Reconciles the sole durable pending mutation without requiring an
+    /// operator-owned receipt file. Used by the unattended daemon before it
+    /// resumes context delivery and subscriptions after reconnect.
+    pub fn reconcile_pending(&mut self) -> Result<Option<Value>, Error> {
+        let Some(pending) = self.journal.pending().cloned() else {
+            return Ok(None);
+        };
+        let operation_id = OperationId::from_bytes(pending.key.operation_id);
+        let digest = Digest32::from_bytes(pending.key.request_digest);
+        self.reconcile_operation(operation_id, digest).map(Some)
+    }
+
     fn reconcile(&mut self, arguments: &Value) -> Result<Value, Error> {
         let operation_id = OperationId::parse_hex(string(arguments, "operation_id")?)
             .map_err(|_| Error::InvalidInput)?;
@@ -363,14 +406,19 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         }) {
             return decode_durable_response(&completed.terminal.public_result);
         }
-        let pending = self.journal.pending().ok_or(Error::InvalidInput)?;
+        self.reconcile_operation(operation_id, digest)
+    }
+
+    fn reconcile_operation(
+        &mut self,
+        operation_id: OperationId,
+        digest: Digest32,
+    ) -> Result<Value, Error> {
+        let pending = self.journal.pending().cloned().ok_or(Error::InvalidInput)?;
         if pending.key.operation_id != operation_id.into_bytes()
             || pending.key.request_digest != digest.into_bytes()
         {
             return Err(Error::InvalidInput);
-        }
-        if let Some(terminal) = &pending.terminal {
-            return decode_durable_response(&terminal.public_result);
         }
         let binding = self.config.pin.map_or_else(
             || {
@@ -384,11 +432,118 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             ReceiptBinding::Serial(serial) => wire::ReconcileBinding::Serial(serial),
             ReceiptBinding::Device(device) => wire::ReconcileBinding::Device(device),
         };
-        self.query(Request::Reconcile {
+        if let Some(terminal) = pending.terminal {
+            let result = decode_durable_response(&terminal.public_result)?;
+            let observed = self.usb.request(&Request::Reconcile {
+                sequence: pending.key.sequence,
+                operation_id,
+                digest,
+                binding,
+            })?;
+            let Response::Reconcile(observed) = observed.decode().map_err(|_| Error::Protocol)?
+            else {
+                return Err(Error::Protocol);
+            };
+            validate_reconciled_receipt(&observed, pending.key, operation_id, digest)?;
+            let observed_digest = match observed.outcome {
+                PublicOutcome::Committed { result_digest, .. }
+                | PublicOutcome::Rejected { result_digest, .. } => result_digest,
+                PublicOutcome::Stale => {
+                    self.usb.clear_outstanding(pending.key.sequence, digest)?;
+                    self.journal
+                        .append_acknowledged(pending.key, terminal.result_digest)?;
+                    return Ok(result);
+                }
+                PublicOutcome::Pending | PublicOutcome::Unknown => return Err(Error::Protocol),
+            };
+            if observed_digest.into_bytes() != terminal.result_digest {
+                return Err(Error::Protocol);
+            }
+            self.acknowledge_reconciled(pending.key, digest, observed_digest)?;
+            return Ok(result);
+        }
+
+        let reply = self.usb.request(&Request::Reconcile {
             sequence: pending.key.sequence,
             operation_id,
             digest,
             binding,
+        })?;
+        let Response::Reconcile(observed) = reply.decode().map_err(|_| Error::Protocol)? else {
+            return Err(Error::Protocol);
+        };
+        validate_reconciled_receipt(&observed, pending.key, operation_id, digest)?;
+        let result_digest = match observed.outcome {
+            PublicOutcome::Committed { result_digest, .. }
+            | PublicOutcome::Rejected { result_digest, .. } => result_digest,
+            PublicOutcome::Pending | PublicOutcome::Unknown => {
+                return Err(Error::Usb(UsbError::Busy));
+            }
+            PublicOutcome::Stale => return Err(Error::Protocol),
+        };
+        let original = original_terminal_response(&pending, observed)?;
+        let mut payload = [0; wire::MAX_PAYLOAD];
+        let (kind, length) =
+            wire::encode_response(&original, &mut payload).map_err(|_| Error::Protocol)?;
+        let value = response_value(original)?;
+        let mut durable = Vec::with_capacity(length + 2);
+        durable.extend_from_slice(&(kind as u16).to_be_bytes());
+        durable.extend_from_slice(&payload[..length]);
+        self.journal
+            .append_terminal(pending.key, result_digest.into_bytes(), &durable)?;
+        self.acknowledge_reconciled(pending.key, digest, result_digest)?;
+        Ok(value)
+    }
+
+    fn acknowledge_reconciled(
+        &mut self,
+        key: MutationKey,
+        digest: Digest32,
+        result_digest: Digest32,
+    ) -> Result<(), Error> {
+        let ack = self.usb.request(&Request::ReceiptAck {
+            sequence: key.sequence,
+            result_digest,
+        })?;
+        match ack.decode().map_err(|_| Error::Protocol)? {
+            Response::ReceiptAck(response) if response.result.is_ok() => {
+                self.usb.clear_outstanding(key.sequence, digest)?;
+                self.journal
+                    .append_acknowledged(key, result_digest.into_bytes())?;
+                Ok(())
+            }
+            _ => Err(Error::Protocol),
+        }
+    }
+
+    fn artifact(&mut self, target: GenerationTarget) -> Result<Value, Error> {
+        let reply = self.usb.request(&Request::Artifact { target })?;
+        match reply.decode().map_err(|_| Error::Protocol)? {
+            Response::Artifact(wire::ArtifactResponse {
+                result: wire::ArtifactResult::Retired,
+                ..
+            }) => Err(Error::ArtifactRetired),
+            response @ Response::Artifact(_) => response_value(response),
+            _ => Err(Error::Protocol),
+        }
+    }
+
+    fn generation_was_created(&self, target: GenerationTarget) -> bool {
+        self.journal.completed().iter().any(|completed| {
+            let Ok(Response::Mutate(receipt)) = decode_durable(&completed.terminal.public_result)
+            else {
+                return false;
+            };
+            matches!(
+                (receipt.target, receipt.outcome),
+                (
+                    Some(LiveTarget::Pool(pool)),
+                    PublicOutcome::Committed {
+                        result: CommittedResult::Generated { generation, .. },
+                        ..
+                    }
+                ) if pool == target.pool && generation == target.generation
+            )
         })
     }
 
@@ -432,16 +587,42 @@ fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_reconciled_receipt(
+    observed: &wire::PublicReceipt,
+    key: MutationKey,
+    operation_id: OperationId,
+    digest: Digest32,
+) -> Result<(), Error> {
+    if observed.sequence != key.sequence
+        || observed.operation_id != operation_id
+        || observed.request_digest != digest
+    {
+        return Err(Error::Protocol);
+    }
+    Ok(())
+}
+
+fn original_terminal_response<'a>(
+    pending: &PendingMutation,
+    observed: wire::PublicReceipt,
+) -> Result<Response<'a>, Error> {
+    let request = pending.device_request.as_deref().ok_or(Error::Protocol)?;
+    if request.len() < 2 {
+        return Err(Error::Protocol);
+    }
+    match wire::Kind::try_from(u16::from_be_bytes([request[0], request[1]]))
+        .map_err(|_| Error::Protocol)?
+    {
+        wire::Kind::Mutate => Ok(Response::Mutate(observed)),
+        wire::Kind::Commission => Ok(Response::Commission(observed)),
+        _ => Err(Error::Protocol),
+    }
+}
+
 fn response_value(response: Response<'_>) -> Result<Value, Error> {
     Ok(match response {
         Response::Hello(_) => return Err(Error::Protocol),
-        Response::Status(status) => json!({
-            "device_id": status.device.to_string(),
-            "revision": status.revision,
-            "health": health_name(status.health),
-            "commissioning_state": commissioning_state_name(status.commissioning_state),
-            "receipt_pending": status.receipt_pending,
-        }),
+        Response::Status(response) => status::response(response, false),
         Response::Context(_) | Response::Current(_) => return Err(Error::Protocol),
         Response::Mutate(receipt)
         | Response::Commission(receipt)
@@ -458,6 +639,7 @@ fn response_value(response: Response<'_>) -> Result<Value, Error> {
                 "artifact": hex(artifact),
                 "artifact_digest": digest.to_string(),
                 "retired": false,
+                "artifact_retention": "retrievable until replacement, expiry, explicit discard, or pool deletion; external copies are unaffected",
             }),
             wire::ArtifactResult::Retired => json!({ "retired": true }),
             wire::ArtifactResult::Unavailable { code } => json!({ "unavailable_code": code }),
@@ -573,22 +755,6 @@ fn normalize_result(value: Value) -> Result<(&'static str, Value, Value), Error>
     }
 }
 
-fn health_name(value: u8) -> &'static str {
-    match value {
-        0 => "ready",
-        13 => "entropy_failure",
-        _ => "storage_failure",
-    }
-}
-
-fn commissioning_state_name(value: u8) -> &'static str {
-    match value {
-        0 => "blank",
-        1 => "committed",
-        _ => "unavailable",
-    }
-}
-
 fn device_error_code(code: u16) -> &'static str {
     match code {
         10 => "uncommissioned",
@@ -608,6 +774,7 @@ fn device_error_code(code: u16) -> &'static str {
         24 => "period_regressive",
         25 => "period_unavailable",
         26 => "expired",
+        27 => "target_not_staged",
         101 => "operation_conflict",
         102 => "revision_conflict",
         105 => "busy",
@@ -653,6 +820,7 @@ fn committed_value(result: CommittedResult) -> Value {
             "generation_id": generation.to_string(),
             "revision": revision,
             "artifact_digest": artifact_digest.to_string(),
+            "artifact_retention": "retrievable until replacement, expiry, explicit discard, or pool deletion; external copies are unaffected",
         }),
         CommittedResult::Applied { revision } => json!({
             "kind": "applied",

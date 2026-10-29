@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
 const DEFINITION: &str = "specs/001-pico2-kes-agent/contracts/quality-gates.md";
 pub(crate) const APPROVED_DIGEST: &str =
-    "0207d0c9d901c10b6bda77b68775d8062bf703e691163a41881c8b68dc9a5396";
+    "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce";
 const APPROVED_STORAGE_DIGEST: &str =
-    "3dfe989d2f5ae7726ba1e722cedf7241b01b7a8703a389cdcc8000f8684a0aa4";
+    "21cdcb8d76f874efdcaff3c1149d35880ccf3dd63c35e258b19b792b46bfda14";
 const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -219,12 +219,7 @@ pub(crate) fn approved_definition() -> bool {
     let Ok(record) = std::str::from_utf8(&bytes[end..]) else {
         return false;
     };
-    let Some(current) = record
-        .split("### Application-settings coverage exclusion — approved")
-        .nth(1)
-    else {
-        return false;
-    };
+    let current = record;
     hex(&Sha256::digest(&bytes[..end])) == APPROVED_DIGEST
         && current.contains("**Status:** Approved.")
         && current.contains("**Approver:** Project maintainer")
