@@ -239,6 +239,8 @@ The [release workflow](../.github/workflows/release.yml) builds without the prod
 
 Tags containing `-`, including `v0.1.0-rc.1` and `vqualification-*`, are explicitly prereleases and not latest. Other `v*` tags retain the existing publication behavior. A completed historical release with a conflicting prerelease classification is an error, never silently edited. Observe the actual workflow run and independently verify every downloaded asset and its manifest commit/tag before relying on a release; the ROM verifies the authority's signature, not GitHub origin.
 
+Commit resolution retains only the GitHub response's SHA before enforcing the subprocess output bound; full commit responses can include large patches. A failed workflow does not authorize moving its tag or overwriting partial assets. Preserve the failed run and obtain an explicit maintainer version decision before publishing a corrected candidate.
+
 `verify` authenticates manifest metadata but does not resolve GitHub tags. `seal --commit` accepts a supplied commit identifier and cannot independently prove which source produced an ELF. Establish the source-to-build-to-manifest relationship; do not label an uncommitted build with an unrelated commit. A local tag label does not create a Git tag or establish cloud publication.
 
 Publication does not overwrite history. Identical completed releases are a no-op; different/partial assets or an existing draft require explicit maintainer handling. A failed upload may leave an unpublished draft. The publisher checks the triggering tag/commit and rechecks tag resolution before publishing; a locally verified bundle or checked-in workflow is not evidence that a cloud run succeeded.
