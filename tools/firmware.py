@@ -11,10 +11,21 @@ import struct
 import tempfile
 import stat
 import sys
+import time
+import signal
 from pathlib import Path
 
 PROFILE = "rp2350-signed-msd-v1"
 WRITES_ATTEMPTED = False
+ACTIVE_ACTION = None
+ACTIVE_CHECKPOINT = None
+BOUND_TOOL = None
+TRACE_HOOK = None
+OUTPUT_LIMIT = 65536
+EVIDENCE_OUTPUT_LIMIT = 4096
+MAX_ACTION_PROCESSES = 8
+MAX_RECORD = 8 * 1024 * 1024
+ACTION_RESERVE = 1024 * 1024
 FIRMWARE_START, FIRMWARE_END, STATE_END = 0x10000000, 0x10100000, 0x10308000
 PRIMARY = "9FF957E79B5D853544805F4725491F18087931B6"
 SIGNER = "78C0F32094CD02A4BAFA444C684E37A210480F82"
@@ -36,10 +47,11 @@ CLEAR_FIELDS = frozenset((
 ))
 
 class ToolError(ValueError):
-    def __init__(self, message, code=7, *, write_happened=False):
+    def __init__(self, message, code=7, *, write_happened=False, evidence=None):
         super().__init__(message)
         self.code = 6 if write_happened else code
         self.write_happened = write_happened
+        self.evidence = evidence
 
 
 
@@ -96,27 +108,84 @@ def validate_policy(policy):
     return policy
 
 
-def run(command, *, input=None, timeout=60, failure_code=7):
-    """Bound time and returned output; never echo command stdin or secret contents."""
+def run(command, *, input=None, timeout=60, failure_code=7, extra_env=None):
+    """Bound diagnostics; never expose stdin or outputs from unrelated commands."""
+    command = [str(arg) for arg in command]
+    if command[0] == "picotool" and BOUND_TOOL:
+        command[0] = BOUND_TOOL["path"]
+    public_device_info = len(command) > 1 and command[1] == "info"
+    public_pico_command = BOUND_TOOL is not None and command[0] == BOUND_TOOL["path"] and not public_device_info
+    captured = ACTIVE_ACTION is not None and public_pico_command
+    if captured:
+        require(len(ACTIVE_ACTION) < MAX_ACTION_PROCESSES, "action subprocess evidence budget exhausted")
+    if TRACE_HOOK and captured:
+        command = [TRACE_HOOK, *command]
+    isolated = public_pico_command or (TRACE_HOOK is not None and command[0] == TRACE_HOOK)
+    environment = {**os.environ, "LC_ALL": "C", **(extra_env or {})}
+    environment = {key: value for key, value in environment.items() if value is not None}
+    evidence, interrupted = None, None
+    started = time.time_ns()
     try:
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            result = subprocess.run([str(arg) for arg in command], input=input, stdout=stdout,
-                                    stderr=stderr, timeout=timeout,
-                                    env={**os.environ, "LC_ALL": "C"})
-            if stdout.tell() > 1024 * 1024 or stderr.tell() > 1024 * 1024:
-                raise ToolError("tool output exceeded limit")
+            with subprocess.Popen(command, stdin=subprocess.PIPE if input is not None else None,
+                                  stdout=stdout, stderr=stderr, env=environment,
+                                  start_new_session=isolated) as process:
+                try:
+                    process.communicate(input=input, timeout=timeout)
+                    status = process.returncode
+                except BaseException as error:
+                    status = "timeout" if isinstance(error, subprocess.TimeoutExpired) else "interrupted"
+                    interrupted = None if status == "timeout" else error
+                    try:
+                        if isolated:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                else:
+                    if isolated:
+                        # A trace supervisor must not leave a writer running after it exits.
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        else:
+                            status = "orphaned process group"
             stdout.seek(0)
             stderr.seek(0)
-            output, diagnostic = stdout.read(), stderr.read()
-    except subprocess.TimeoutExpired as error:
-        raise ToolError(f"{command[0]} timed out") from error
-    except FileNotFoundError as error:
-        raise ToolError(f"{command[0]} unavailable", 4) from error
-    except PermissionError as error:
-        raise ToolError(f"{command[0]} permission denied", 3) from error
-    if result.returncode != 0:
-        raise ToolError(f"{command[0]} failed (exit {result.returncode})", failure_code)
-    return output, diagnostic
+            output, diagnostic = stdout.read(OUTPUT_LIMIT + 1), stderr.read(OUTPUT_LIMIT + 1)
+        if captured:
+            evidence = {"command": command, "status": status,
+                        "started_ns": started, "finished_ns": time.time_ns(),
+                        "stdout": output[:EVIDENCE_OUTPUT_LIMIT].decode("utf-8", "replace"),
+                        "stderr": diagnostic[:EVIDENCE_OUTPUT_LIMIT].decode("utf-8", "replace"),
+                        "stdout_truncated": len(output) > EVIDENCE_OUTPUT_LIMIT,
+                        "stderr_truncated": len(diagnostic) > EVIDENCE_OUTPUT_LIMIT}
+            ACTIVE_ACTION.append(evidence)
+            if ACTIVE_CHECKPOINT:
+                ACTIVE_CHECKPOINT()
+        if interrupted is not None:
+            raise interrupted
+        if status == "timeout":
+            raise ToolError(f"{command[0]} timed out", evidence=evidence)
+        if len(output) > OUTPUT_LIMIT or len(diagnostic) > OUTPUT_LIMIT:
+            raise ToolError("tool output exceeded limit", evidence=evidence)
+        if status != 0:
+            raise ToolError(f"{command[0]} failed (exit {status})", failure_code, evidence=evidence)
+        return output, diagnostic
+    except OSError as error:
+        if captured and evidence is None:
+            ACTIVE_ACTION.append({"command": command, "status": type(error).__name__,
+                                  "started_ns": started, "finished_ns": time.time_ns(),
+                                  "stdout": "", "stderr": "", "stdout_truncated": False,
+                                  "stderr_truncated": False})
+            if ACTIVE_CHECKPOINT:
+                ACTIVE_CHECKPOINT()
+        raise ToolError(f"{command[0]} could not be executed",
+                        4 if isinstance(error, FileNotFoundError) else
+                        3 if isinstance(error, PermissionError) else 7) from error
 
 
 def bounded_file(path, maximum=1024 * 1024):
@@ -427,6 +496,47 @@ def check_picotool():
             and b"without libusb" not in output.lower()
             and b"without usb support" not in output.lower(),
             "picotool 2.3.1 with libusb is required")
+
+def tool_identity():
+    path = shutil.which("picotool")
+    require(path is not None, "picotool unavailable")
+    path = str(Path(path).resolve(strict=True))
+    hook = None
+    command = [path, "version"]
+    if TRACE_HOOK:
+        require(Path(TRACE_HOOK).is_file() and os.access(TRACE_HOOK, os.X_OK), "trace hook is not executable")
+        hook = {"path": TRACE_HOOK, "sha256": sha256(Path(TRACE_HOOK).read_bytes())}
+        command.insert(0, TRACE_HOOK)
+    version, loader_log = run(command, extra_env={"LD_DEBUG": "libs", "LD_DEBUG_OUTPUT": None})
+    require(version.startswith(b"picotool v2.3.1 (")
+            and b"without libusb" not in version.lower()
+            and b"without usb support" not in version.lower(),
+            "picotool 2.3.1 with libusb is required")
+    notes, _ = run(["readelf", "-n", path])
+    ids = re.findall(rb"Build ID:\s*([0-9a-fA-F]+)", notes)
+    require(len(ids) == 1, "picotool GNU build ID unavailable")
+    libraries = re.findall(rb"(?m)^\s*\d+:\s*calling init:\s*(/\S*/libusb-1\.0\.so[^\s]*)\s*$",
+                           loader_log)
+    require(len(libraries) == 1, "loaded libusb path unavailable")
+    library = str(Path(os.fsdecode(libraries[0])).resolve(strict=True))
+    package, _ = run(["dpkg-query", "-S", os.fsdecode(libraries[0])])
+    names = package.decode().split(": ", 1)
+    require(len(names) == 2 and "\n" not in names[0], "libusb package unavailable")
+    package_version, _ = run(["dpkg-query", "-W", "-f=${Version}", names[0]])
+    require(bool(package_version.strip()), "libusb package version unavailable")
+    return {"path": path, "sha256": sha256(Path(path).read_bytes()),
+            "build_id": ids[0].decode().lower(), "version": version.decode("utf-8"),
+            "provisioner_sha256": sha256(Path(__file__).read_bytes()), "trace_hook": hook,
+            "libusb": {"path": library, "sha256": sha256(Path(library).read_bytes()),
+                       "package": names[0], "version": package_version.decode().strip()}}
+
+
+def bind_tool(expected=None):
+    global BOUND_TOOL
+    identity = tool_identity()
+    require(expected is None or identity == expected, "picotool or libusb identity changed")
+    BOUND_TOOL = identity
+    return identity
 
 
 def verify_image(path, point):
@@ -753,18 +863,33 @@ class Board:
         info["selection"] = selection
         return info
 
-    def command(self, *arguments):
+    def command(self, *arguments, selectors=()):
         info = self.identify()
-        return run(["picotool", *arguments, *info["selection"]], failure_code=4)[0]
+        if ACTIVE_ACTION is not None and arguments[:2] == ("otp", "set") or (
+                ACTIVE_ACTION is not None and arguments[0] in ("load", "erase", "reboot")):
+            active = ACTIVE_ACTION
+            try:
+                globals()["ACTIVE_ACTION"] = None
+                bind_tool(BOUND_TOOL)
+            finally:
+                globals()["ACTIVE_ACTION"] = active
+        # OTP get's repeatable selectors consume trailing options in picotool
+        # 2.3.1, so device selection must precede those selectors.
+        return run(["picotool", *arguments, *info["selection"], *selectors], failure_code=4)[0]
+
+    def raw_row(self, row):
+        require(row in PUBLIC_ROWS and not 0x80 <= row < 0xc0, "non-public raw row")
+        return parse_public_rows(self.command("otp", "get", "-c", "1", "-r", "-n",
+                                              selectors=(hex(row),)), (row,))[row]
 
     def snapshot(self):
         # Whitelisted public rows only; never invoke otp dump or read RANDID.
         raw_rows = tuple(row for row in PUBLIC_ROWS if not 0x80 <= row < 0xc0)
-        raw = parse_public_rows(self.command("otp", "get", "-r", "-c", "1", "-n",
-                                            *(hex(row) for row in raw_rows)), raw_rows)
+        raw = parse_public_rows(self.command("otp", "get", "-c", "1", "-r", "-n",
+                                            selectors=tuple(hex(row) for row in raw_rows)), raw_rows)
         key_rows = tuple(range(0x80, 0xc0))
-        keys = parse_public_rows(self.command("otp", "get", "-e", "-c", "1", "-n",
-                                             *(hex(row) for row in key_rows)), key_rows)
+        keys = parse_public_rows(self.command("otp", "get", "-c", "1", "-e", "-n",
+                                             selectors=tuple(hex(row) for row in key_rows)), key_rows)
         require(all(value <= 0xffff for value in keys.values()), "invalid ECC boot key")
         info = self.identify()
         return {"stepping": info["stepping"], "secure_boot": info["secure_boot"],
@@ -813,15 +938,17 @@ def public_policy(snapshot, expected, stage):
     return rows
 
 
-def owner_record(path):
+def owner_record(path, *, expected_pending=None):
     metadata = Path(path).lstat()
     require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == os.geteuid()
             and metadata.st_mode & 0o077 == 0, "record must be an owner-only regular file")
-    record = read_json(path)
+    record = json.loads(bounded_file(path, MAX_RECORD), object_pairs_hook=unique_object)
     exact_keys(record, ("schema_version", "serial", "profile", "bundle_sha256", "bootkey_sha256",
-                        "tool_version", "completed_stage", "pending", "observations"))
-    require(record["schema_version"] == 1 and record["profile"] == PROFILE
-            and type(record["observations"]) is list and record["pending"] is None,
+                        "tool_identity", "completed_stage", "pending", "observations", "actions"))
+    require(record["schema_version"] == 2 and record["profile"] == PROFILE
+            and type(record["observations"]) is list and type(record["actions"]) is list
+            and (record["pending"] is None if expected_pending is None else
+                 type(record["pending"]) is dict and record["pending"].get("step") == expected_pending),
             "incomplete/uncertain record; diagnose fresh readback before any further writes")
     return record
 
@@ -830,6 +957,7 @@ def save_record(path, record, *, create=False):
     path = Path(path)
     require(path.parent.is_dir() and not path.is_symlink(), "invalid record path")
     payload = json.dumps(record, indent=2).encode() + b"\n"
+    require(len(payload) <= MAX_RECORD, "provisioning record exceeds evidence budget")
     fd, temp = tempfile.mkstemp(prefix=".provision-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as output:
@@ -851,21 +979,79 @@ def save_record(path, record, *, create=False):
             os.unlink(temp)
 
 
-def record_action(path, record, label, operation, observe):
-    global WRITES_ATTEMPTED
-    record["pending"] = label
+def record_action(path, record, label, operation, observe, expected, intended):
+    global WRITES_ATTEMPTED, ACTIVE_ACTION, ACTIVE_CHECKPOINT
+    require(record["pending"] is None, "uncertain operation cannot be replayed or overwritten")
+    require(len(json.dumps(record, indent=2).encode()) + ACTION_RESERVE <= MAX_RECORD,
+            "record evidence budget exhausted before action; preserve record")
+    bind_tool(record["tool_identity"])
+    action = {"step": label, "state": "pending", "started_ns": time.time_ns(),
+              "intended": intended, "expected": expected, "processes": []}
+    record["pending"] = action
     save_record(path, record)
     WRITES_ATTEMPTED = True
+    ACTIVE_ACTION = action["processes"]
+    ACTIVE_CHECKPOINT = lambda: save_record(path, record)
     try:
         operation()
         observation = observe()
+        action["observed"] = observation
+        require(observation == expected, "physical postcondition mismatch")
+        action["finished_ns"] = time.time_ns()
+        action["state"] = "verified"
         record["observations"].append({"step": label, "public": observation})
+        record["actions"].append(action)
         record["pending"] = None
         save_record(path, record)
         return observation
     except BaseException as error:
-        raise ToolError(f"{label}: potentially applied write; preserve record and diagnose, do not replay",
-                        write_happened=True) from error
+        record["pending"] = action
+        if record["actions"] and record["actions"][-1] is action:
+            record["actions"].pop()
+        if record["observations"] and record["observations"][-1].get("step") == label:
+            record["observations"].pop()
+        action["state"] = "uncertain"
+        action["finished_ns"] = time.time_ns()
+        action["error_type"] = type(error).__name__
+        try:
+            save_record(path, record)
+        finally:
+            raise ToolError(f"{label}: potentially applied write; preserve record and diagnose, do not replay",
+                            write_happened=True) from error
+    finally:
+        ACTIVE_ACTION = None
+        ACTIVE_CHECKPOINT = None
+
+
+def program_group(path, record, board, name, start, count, target):
+    before = board.snapshot()
+    values = [before["rows"][f"{start + i:04x}"] for i in range(count)]
+    require(len(set(values)) == 1, "unequal redundant group; no automatic repair")
+    require(values[0] & ~target == 0, "redundant group conflicts with policy")
+    for index in range(count):
+        row = start + index
+        wanted = {"row": row, "value": target}
+        record_action(path, record, f"{name}_{index}",
+                      lambda row=row: board.command("otp", "set", "-c", "1", "-r",
+                                                    hex(row), hex(target)),
+                      lambda row=row: {"row": row, "value": board.raw_row(row)},
+                      wanted, {"register": name, "row": row, "physical_copies": 1,
+                               "raw_target": target, "payload_le": struct.pack("<I", target).hex(),
+                               "postcondition": wanted})
+    expected_snapshot = {**before, "rows": dict(before["rows"])}
+    for index in range(count):
+        expected_snapshot["rows"][f"{start + index:04x}"] = target
+    expected = {"copies": [target] * count, "vote": target, "snapshot": expected_snapshot}
+    def observe_group():
+        snap = board.snapshot()
+        copies = [snap["rows"][f"{start + i:04x}"] for i in range(count)]
+        threshold = 3 if count == 8 else 2
+        vote = sum(1 << bit for bit in range(24)
+                   if sum(bool(value & (1 << bit)) for value in copies) >= threshold)
+        return {"copies": copies, "vote": vote, "snapshot": snap}
+    record_action(path, record, name + "_group_readback", lambda: None, observe_group, expected,
+                  {"operation": "independent redundant readback", "register": name,
+                   "start_row": start, "physical_copies": count, "raw_target": target})
 
 
 def bind_helper(original, configured, serial):
@@ -927,12 +1113,40 @@ def msd_copy(serial, bundle, *, picoboot_available):
     return {"uf2_sha256": sha256(source), "mounted_device": matches[0]}
 
 
-def provision(stage, serial, bundle, record_path, apply=False):
+def _prepare_resume_record(record_path, serial, bundle, manifest):
+    record = owner_record(record_path)
+    require(record["serial"] == serial
+            and record["bundle_sha256"] == sha256(bounded_file(Path(bundle) / "release.json"))
+            and record["bootkey_sha256"] == manifest["bootkey_sha256"],
+            "resume target, authority or bundle mismatch")
+    require(record["completed_stage"] is None and len(record["observations"]) == 2,
+            "resume is limited to completed firmware installation before any OTP write")
+    preflight, installed = record["observations"]
+    for observation in (preflight, installed):
+        exact_keys(observation, ("step", "public"))
+    require(preflight["step"] == "public_preparation_preflight"
+            and installed["step"] == "install_signed_firmware",
+            "resume refuses any OTP action or different preparation checkpoint")
+    elf_digest = next(item["sha256"] for item in manifest["artifacts"]
+                      if item["name"] == ARTIFACTS[0])
+    require(installed["public"] == {"elf_sha256": elf_digest},
+            "recorded firmware installation differs from the verified bundle")
+    before = preflight["public"]
+    public_policy(before, manifest["bootkey_sha256"], "prepare")
+    require(before["secure_boot"] is False, "resume requires pre-enable preparation")
+    bind_tool(record["tool_identity"])
+    return record, before
+
+
+def provision(stage, serial, bundle, record_path, apply=False, *, resume=False):
     global WRITES_ATTEMPTED
     WRITES_ATTEMPTED = False
+    if resume and (stage != "prepare" or not apply):
+        raise ToolError("--resume requires --stage prepare --apply", 2)
     manifest = verify_bundle(bundle)
     expected = manifest["bootkey_sha256"]
     policy = validate_policy(read_json(Path(bundle) / "otp-policy.json"))
+    checkpoint = _prepare_resume_record(record_path, serial, bundle, manifest) if resume else None
     if not apply:
         try:
             report = inspect_device(serial)
@@ -955,26 +1169,38 @@ def provision(stage, serial, bundle, record_path, apply=False):
                 "application_admission": "unobserved" if report["mode"] != "application" else "must-be-rechecked-before-writes"}
     attended(serial, f"IRREVERSIBLE {stage}: only {PROFILE}; never erase state automatically.")
     observed = inspect_device(serial)
+    if resume:
+        require(observed["mode"] == "application"
+                and observed["security"].get("profile") == "unlocked",
+                "resume requires the selected unlocked application and commissioning daemon")
     if observed["mode"] == "application" and observed["security"].get("profile") == PROFILE:
         report = application_report(serial, expected=expected)
         require(report["profile"] == PROFILE, "locked application policy differs")
         return {"already_provisioned": True, "security": report, "writes": False}
     if stage == "prepare":
-        require(not os.path.lexists(record_path), "preparation record exists; do not replay partial programming")
-        pause("Stop the daemon and physically enter BOOTSEL on the selected board.")
         board = Board(serial)
-        before = board.snapshot()
-        public_policy(before, expected, stage)
-        version, _ = run(["picotool", "version"])
-        record = {"schema_version": 1, "serial": serial, "profile": PROFILE,
-                  "bundle_sha256": sha256(bounded_file(Path(bundle) / "release.json")),
-                  "bootkey_sha256": expected, "tool_version": version.decode().strip(),
-                  "completed_stage": None, "pending": None,
-                  "observations": [{"step": "public_preparation_preflight", "public": before}]}
-        save_record(record_path, record, create=True)
-        record_action(record_path, record, "install_signed_firmware",
-                      lambda: board.command("load", "-v", "-x", Path(bundle) / ARTIFACTS[0], "-t", "elf"),
-                      lambda: {"elf_sha256": sha256(bounded_file(Path(bundle) / ARTIFACTS[0], MAX_ELF))})
+        if resume:
+            record, before = checkpoint
+        else:
+            require(not os.path.lexists(record_path), "preparation record exists; do not replay partial programming")
+            pause("Stop the daemon and physically enter BOOTSEL on the selected board.")
+            before = board.snapshot()
+            public_policy(before, expected, stage)
+            identity = bind_tool()
+            record = {"schema_version": 2, "serial": serial, "profile": PROFILE,
+                      "bundle_sha256": sha256(bounded_file(Path(bundle) / "release.json")),
+                      "bootkey_sha256": expected, "tool_identity": identity,
+                      "completed_stage": None, "pending": None, "actions": [],
+                      "observations": [{"step": "public_preparation_preflight", "public": before}]}
+            save_record(record_path, record, create=True)
+            elf_digest = next(item["sha256"] for item in manifest["artifacts"] if item["name"] == ARTIFACTS[0])
+            def observe_install():
+                board.command("verify", Path(bundle) / ARTIFACTS[0], "-t", "elf")
+                return {"elf_sha256": elf_digest}
+            record_action(record_path, record, "install_signed_firmware",
+                          lambda: board.command("load", "-v", Path(bundle) / ARTIFACTS[0], "-t", "elf"),
+                          observe_install, {"elf_sha256": elf_digest},
+                          {"operation": "load firmware", "elf_sha256": elf_digest})
         pause("Start the installed daemon in commissioning mode with the selected serial and empty pools; leave BOOTSEL and start the signed application. No commissioning mutation.")
         report = application_report(serial, blank=True)
         require(report["critical"] & 1 == 0, "secure boot unexpectedly enabled")
@@ -982,20 +1208,23 @@ def provision(stage, serial, bundle, record_path, apply=False):
         save_record(record_path, record)
         pause("Stop the commissioning daemon, then physically enter BOOTSEL again.")
         require(board.snapshot() == before, "public OTP changed since blank admission")
+        if resume:
+            board.command("verify", Path(bundle) / ARTIFACTS[0], "-t", "elf")
+            record["observations"].append({"step": "resume_signed_image_verified",
+                                           "public": record["observations"][1]["public"]})
+            save_record(record_path, record)
         digest = bytes.fromhex(expected)
         for index in range(16):
             value = int.from_bytes(digest[2 * index:2 * index + 2], "little")
-            def observe_key(index=index, value=value):
-                snap = board.snapshot()
-                require(snap["rows"][f"{0x80 + index:04x}"] == value, "slot-0 ECC readback mismatch")
-                return snap
+            wanted = {"row": 0x80 + index, "value": value}
             record_action(record_path, record, f"bootkey0_{index}",
                           lambda index=index, value=value: board.command("otp", "set", f"BOOTKEY0_{index}", hex(value)),
-                          observe_key)
-        for field, value in (("BOOT_FLAGS1.KEY_VALID", 1), ("BOOT_FLAGS1.KEY_INVALID", 14)):
-            record_action(record_path, record, field,
-                          lambda field=field, value=value: board.command("otp", "set", field, str(value)),
-                          board.snapshot)
+                          lambda index=index: {"row": 0x80 + index,
+                                               "value": board.snapshot()["rows"][f"{0x80 + index:04x}"]},
+                          wanted, {"register": f"BOOTKEY0_{index}", "row": 0x80 + index,
+                                   "physical_copies": 1, "raw_target": value, "postcondition": wanted})
+        flags1 = policy["fields"]["BOOT_FLAGS1.KEY_VALID"] | (policy["fields"]["BOOT_FLAGS1.KEY_INVALID"] << 8)
+        program_group(record_path, record, board, "BOOT_FLAGS1", 0x4b, 3, flags1)
         ready = board.snapshot()
         public_policy(ready, expected, "prepare")
         require(all(ready["rows"][f"{0x4b+i:04x}"] == 0xe01 for i in range(3)),
@@ -1003,15 +1232,19 @@ def provision(stage, serial, bundle, record_path, apply=False):
         with tempfile.TemporaryDirectory(prefix="pico2-bound-helper-") as temp:
             helper = Path(temp) / "permissions.elf"
             bind_helper(Path(bundle) / ARTIFACTS[2], helper, serial)
-            def observe_permissions():
-                snap = board.snapshot()
-                # The prepared profile differs from enable preconditions only in stage completion.
-                public_policy(snap, expected, "enable")
-                return snap
+            permissions_expected = {**ready, "rows": dict(ready["rows"])}
+            for row in ("0f85", "0fff"):
+                permissions_expected["rows"][row] = (lock_byte(ready["rows"][row]) | 0x15) * 0x010101
             record_action(record_path, record, "page2_page63_permissions",
-                          lambda: board.command("load", "-v", "-x", helper, "-t", "elf"), observe_permissions)
+                          lambda: board.command("load", "-v", "-x", helper, "-t", "elf"),
+                          board.snapshot, permissions_expected,
+                          {"operation": "permission helper", "rows": ["0f85", "0fff"],
+                           "physical_copies": 3, "helper_sha256": sha256(bounded_file(helper, MAX_ELF)),
+                           "raw_targets": {row: permissions_expected["rows"][row] for row in ("0f85", "0fff")},
+                           "postcondition": permissions_expected})
     else:
         record = owner_record(record_path)
+        bind_tool(record["tool_identity"])
         require(record["serial"] == serial and record["bootkey_sha256"] == expected
                 and record["bundle_sha256"] == sha256(bounded_file(Path(bundle) / "release.json")),
                 "record target, authority or bundle mismatch")
@@ -1026,40 +1259,45 @@ def provision(stage, serial, bundle, record_path, apply=False):
         public_policy(board.snapshot(), expected, stage)
         board.command("verify", Path(bundle) / ARTIFACTS[0], "-t", "elf")
         if stage == "enable":
-            record_action(record_path, record, "secure_boot_enable",
-                          lambda: board.command("otp", "set", "CRIT1.SECURE_BOOT_ENABLE", "1"), board.snapshot)
+            program_group(record_path, record, board, "CRIT1_ENABLE", 0x40, 8,
+                          policy["fields"]["CRIT1.SECURE_BOOT_ENABLE"])
+            startup = {}
+            def observe_startup():
+                pause("Start the commissioning daemon after signed application startup.")
+                startup.update(application_report(serial, blank=True, expected=expected))
+                return {"secure_boot": startup["critical"] & 1}
             record_action(record_path, record, "signed_boot_reboot",
-                          lambda: board.command("reboot", "-a"), lambda: {"reboot_command": "completed"})
-            pause("Start the commissioning daemon after signed application startup.")
-            report = application_report(serial, blank=True, expected=expected)
-            require(report["critical"] & 1 == 1, "signed startup under secure boot not observed")
-            record["observations"].append({"step": "secure_signed_startup", "public": report})
+                          lambda: board.command("reboot", "-a"), observe_startup,
+                          {"secure_boot": 1}, {"operation": "reboot", "postcondition": {"secure_boot": 1}})
+            record["observations"].append({"step": "secure_signed_startup", "public": dict(startup)})
             save_record(record_path, record)
+            startup.clear()
+            def observe_reinstall():
+                pause("Re-enter BOOTSEL on the selected board for read-only verification of the reinstalled image.")
+                board.command("verify", Path(bundle) / ARTIFACTS[0], "-t", "elf")
+                pause("Leave BOOTSEL, start the signed application and restart the commissioning daemon.")
+                startup.update(application_report(serial, blank=True, expected=expected))
+                return {"secure_boot": startup["critical"] & 1, "image_verified": True}
             record_action(record_path, record, "signed_msd_reinstall",
                           lambda: msd_copy(serial, bundle, picoboot_available=True),
-                          lambda: {"full_verified_uf2_copy": True})
-            pause("Wait for reboot; restart the commissioning daemon and confirm signed application startup.")
-            report = application_report(serial, blank=True, expected=expected)
-            require(report["critical"] & 1 == 1, "signed MSD reinstall did not boot")
-            record["observations"].append({"step": "signed_msd_reinstall_startup", "public": report})
+                          observe_reinstall, {"secure_boot": 1, "image_verified": True},
+                          {"operation": "MSD firmware copy",
+                           "uf2_sha256": sha256(bounded_file(Path(bundle) / ARTIFACTS[1], 4 * 1024 * 1024)),
+                           "postcondition": {"secure_boot": 1, "image_verified": True}})
+            record["observations"].append({"step": "signed_msd_reinstall_startup", "public": dict(startup)})
             save_record(record_path, record)
         else:
-            for name in FLAG0_BITS:
-                record_action(record_path, record, name,
-                              lambda name=name: board.command("otp", "set", "BOOT_FLAGS0." + name, "1"),
-                              board.snapshot)
-            for name in ("DEBUG_DISABLE", "SECURE_DEBUG_DISABLE"):
-                record_action(record_path, record, name,
-                              lambda name=name: board.command("otp", "set", "CRIT1." + name, "1"),
-                              board.snapshot)
-            final = board.snapshot()
-            rows = final["rows"]
-            require(all(rows[f"{0x40+i:04x}"] == 7 for i in range(8))
-                    and all(rows[f"{0x48+i:04x}"] == REQUIRED_FLAGS0 for i in range(3))
-                    and all(rows[f"{0x4b+i:04x}"] == 0xe01 for i in range(3)),
-                    "final public redundant readback mismatch")
-            record["observations"].append({"step": "final_rom_readback", "public": final})
-            save_record(record_path, record)
+            flags0 = sum((1 << bit) * policy["fields"]["BOOT_FLAGS0." + name]
+                         for name, bit in FLAG0_BITS.items())
+            critical = (policy["fields"]["CRIT1.SECURE_BOOT_ENABLE"]
+                        | (policy["fields"]["CRIT1.DEBUG_DISABLE"] << 2)
+                        | (policy["fields"]["CRIT1.SECURE_DEBUG_DISABLE"] << 1))
+            program_group(record_path, record, board, "BOOT_FLAGS0", 0x48, 3, flags0)
+            program_group(record_path, record, board, "CRIT1_LOCK", 0x40, 8, critical)
+            expected_final = record["observations"][-1]["public"]["snapshot"]
+            record_action(record_path, record, "final_rom_readback", lambda: None, board.snapshot,
+                          expected_final, {"operation": "independent final policy readback",
+                                           "postcondition": expected_final})
             pause("Cold power-cycle the exact board; do not use picotool again. Start the commissioning daemon and query the application.")
             report = application_report(serial, blank=True, expected=expected)
             require(report["profile"] == PROFILE, "final profile/debug locks not observed")
@@ -1086,18 +1324,83 @@ def erase_state(serial, record_path, apply):
     before = board.snapshot()
     require(before["secure_boot"] is False and all(before["rows"][f"{0x40+i:04x}"] == 0 for i in range(8)),
             "state erasure is permitted only while fully unlocked")
-    record = {"schema_version": 1, "serial": serial, "profile": PROFILE, "bundle_sha256": None,
-              "bootkey_sha256": None, "tool_version": run(["picotool", "version"])[0].decode().strip(),
-              "completed_stage": None, "pending": None,
+    record = {"schema_version": 2, "serial": serial, "profile": PROFILE, "bundle_sha256": None,
+              "bootkey_sha256": None, "tool_identity": bind_tool(),
+              "completed_stage": None, "pending": None, "actions": [],
               "observations": [{"step": "erase_preflight", "public": before}]}
     save_record(record_path, record, create=True)
-    record_action(record_path, record, "erase_state",
-                  lambda: board.command("erase", "-r", hex(FIRMWARE_END), hex(STATE_END)),
-                  lambda: {"erased_range": {"start": FIRMWARE_END, "end": STATE_END}})
+    erased = {"erased_range": {"start": FIRMWARE_END, "end": STATE_END}}
+    with tempfile.TemporaryDirectory(prefix="pico2-erased-") as directory:
+        image = Path(directory) / "erased.bin"
+        image.write_bytes(b"\xff" * (STATE_END - FIRMWARE_END))
+        def observe_erased():
+            board.command("verify", image, "-t", "bin", "-o", hex(FIRMWARE_END))
+            return erased
+        record_action(record_path, record, "erase_state",
+                      lambda: board.command("erase", "-r", hex(FIRMWARE_END), hex(STATE_END)),
+                      observe_erased, erased, {"operation": "erase", "postcondition": erased})
     record["completed_stage"] = "erase-state"
     save_record(record_path, record)
     print("Start the verified application with commissioning daemon; fresh blank-at-boot and uncommissioned reports remain mandatory before OTP preparation.")
     return record
+
+
+def _permission_reconciliation_record(record_path, serial, bundle, manifest):
+    record = owner_record(record_path, expected_pending="page2_page63_permissions")
+    require(record["completed_stage"] is None and record["serial"] == serial
+            and record["bootkey_sha256"] == manifest["bootkey_sha256"]
+            and record["bundle_sha256"] == sha256(bounded_file(Path(bundle) / "release.json")),
+            "permission reconciliation target, stage, authority or bundle mismatch")
+    observations = record["observations"]
+    for observation in observations:
+        exact_keys(observation, ("step", "public"))
+    steps = [observation["step"] for observation in observations]
+    prefix = ["public_preparation_preflight", "install_signed_firmware", "blank_signed_application"]
+    if steps[3:4] == ["resume_signed_image_verified"]:
+        prefix.append("resume_signed_image_verified")
+    require(steps == prefix + [f"bootkey0_{index}" for index in range(16)]
+            + [f"BOOT_FLAGS1_{index}" for index in range(3)] + ["BOOT_FLAGS1_group_readback"],
+            "permission reconciliation requires every preceding prepare observation")
+    elf_digest = next(item["sha256"] for item in manifest["artifacts"]
+                      if item["name"] == ARTIFACTS[0])
+    require(observations[1]["public"] == {"elf_sha256": elf_digest},
+            "recorded installed firmware differs from bundle")
+    if len(prefix) == 4:
+        require(observations[3]["public"] == {"elf_sha256": elf_digest},
+                "recorded resume firmware differs from bundle")
+    public_policy(observations[0]["public"], manifest["bootkey_sha256"], "prepare")
+    blank = observations[2]["public"]
+    require(blank.get("usb_serial") == serial and blank.get("storage_blank_at_boot") is True
+            and blank.get("critical") == 0, "missing original blank application admission")
+    before = observations[-1]["public"]["snapshot"]
+    public_policy(before, manifest["bootkey_sha256"], "prepare")
+    expected = {**before, "rows": dict(before["rows"])}
+    for row in ("0f85", "0fff"):
+        expected["rows"][row] = (lock_byte(before["rows"][row]) | 0x15) * 0x010101
+    public_policy(expected, manifest["bootkey_sha256"], "enable")
+    bind_tool(record["tool_identity"])
+    require(record["pending"]["expected"] == expected, "permission pending postcondition changed")
+    return record, expected
+
+
+def reconcile_prepare(serial, bundle, record_path, apply=False):
+    """Observe helper postconditions without modifying the incident record or device."""
+    global WRITES_ATTEMPTED
+    WRITES_ATTEMPTED = False
+    if not apply:
+        raise ToolError("reconcile-prepare requires --apply for attended read-only observation", 2)
+    manifest = verify_bundle(bundle)
+    record, expected = _permission_reconciliation_record(record_path, serial, bundle, manifest)
+    attended(serial, "READ-ONLY DEVICE RECONCILIATION: observe preparation; preserve the incident record unchanged; never rerun the helper or write OTP.")
+    board = Board(serial)
+    observed = board.snapshot()
+    require(observed == expected, "permission postconditions incomplete or other OTP changed; no repair attempted")
+    board.command("verify", Path(bundle) / ARTIFACTS[0], "-t", "elf")
+    require(board.snapshot() == observed, "public OTP changed during reconciliation")
+    return {"serial": record["serial"], "profile": record["profile"],
+            "bootkey_sha256": record["bootkey_sha256"], "completed_stage": record["completed_stage"],
+            "pending": record["pending"], "observed": observed,
+            "signed_firmware_verified": True, "device_writes": False}
 
 
 def main():
@@ -1123,11 +1426,26 @@ def main():
     provisioning.add_argument("--bundle", required=True, type=Path)
     provisioning.add_argument("--record", required=True, type=Path)
     provisioning.add_argument("--apply", action="store_true")
+    provisioning.add_argument("--resume", action="store_true",
+                              help="resume only the pre-OTP checkpoint after completed firmware installation")
+    provisioning.add_argument("--trace-hook", type=Path,
+                              help="executable wrapper invoked as HOOK PICOTOOL ARG... for public commands")
     erasing = commands.add_parser("erase-state")
     erasing.add_argument("--serial", required=True)
     erasing.add_argument("--record", required=True, type=Path)
     erasing.add_argument("--apply", required=True, action="store_true")
+    erasing.add_argument("--trace-hook", type=Path,
+                         help="executable wrapper invoked as HOOK PICOTOOL ARG... for public commands")
+    reconciling = commands.add_parser("reconcile-prepare",
+                                     help="read-only device reconciliation of a pending permission helper")
+    reconciling.add_argument("--serial", required=True)
+    reconciling.add_argument("--bundle", required=True, type=Path)
+    reconciling.add_argument("--record", required=True, type=Path)
+    reconciling.add_argument("--apply", required=True, action="store_true")
     args = parser.parse_args()
+    global TRACE_HOOK
+    if getattr(args, "trace_hook", None):
+        TRACE_HOOK = str(args.trace_hook.resolve(strict=True))
     try:
         if args.command == "authorize":
             result = authorize(args.public_key, args.out_dir)
@@ -1140,9 +1458,13 @@ def main():
         elif args.command == "inspect":
             print(json.dumps(inspect_device(args.serial), sort_keys=True))
         elif args.command == "provision":
-            print(json.dumps(provision(args.stage, args.serial, args.bundle, args.record, args.apply), sort_keys=True))
+            print(json.dumps(provision(args.stage, args.serial, args.bundle, args.record,
+                                       args.apply, resume=args.resume), sort_keys=True))
         elif args.command == "erase-state":
             print(json.dumps(erase_state(args.serial, args.record, args.apply), sort_keys=True))
+        elif args.command == "reconcile-prepare":
+            print(json.dumps(reconcile_prepare(args.serial, args.bundle, args.record, args.apply),
+                             sort_keys=True))
         else:
             validate_policy(read_json(args.policy))
             print("policy valid")

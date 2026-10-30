@@ -119,3 +119,87 @@ fn deployment_preflight_enforces_host_node_snapshot_and_backup_boundaries() {
     assert!(!primary_private_key.status.success());
     assert!(String::from_utf8_lossy(&primary_private_key.stderr).contains("off-primary"));
 }
+
+#[test]
+fn commissioning_preflight_needs_no_node_but_retains_host_protections() {
+    let dir = TestDir::new();
+    let policy = dir.0.join("host-security.env");
+    let swaps = dir.0.join("swaps");
+    let systemctl = dir.0.join("systemctl");
+    let acknowledgements = b"SNAPSHOT_POLICY=disabled-or-encrypted-off-host\nBACKUP_PRIVATE_POLICY=off-primary\n";
+    fs::write(&policy, acknowledgements).unwrap();
+    fs::write(&swaps, b"Filename Type Size Used Priority\n").unwrap();
+    fs::write(
+        &systemctl,
+        b"#!/bin/sh\ncase \"$1:$2\" in\n  is-enabled:*) echo masked ;;\n  show:pico2-kes-agentd.service) echo 0 ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o700)).unwrap();
+    let checker =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/pico2-kes-agent-host-check");
+    let run = |arguments: &[&str]| {
+        Command::new(&checker)
+            .args(arguments)
+            .env("PICO2_KES_HOST_POLICY", &policy)
+            .env("PICO2_KES_PROC_SWAPS", &swaps)
+            .env("PICO2_KES_SYSTEMCTL", &systemctl)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["--commission"]).status.success());
+    for state in ["masked-runtime", "static", "disabled", "enabled", "unknown", ""] {
+        fs::write(
+            &systemctl,
+            format!(
+                "#!/bin/sh\ncase \"$1:$2\" in\n  is-enabled:*) printf '%s\\n' '{state}' ;;\n  show:pico2-kes-agentd.service) echo 0 ;;\n  *) exit 1 ;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            run(&["--commission"]).status.success(),
+            state == "masked-runtime",
+            "sleep target state: {state:?}"
+        );
+    }
+    fs::write(
+        &systemctl,
+        b"#!/bin/sh\ncase \"$1:$2\" in\n  is-enabled:*) echo masked-runtime ;;\n  show:pico2-kes-agentd.service) echo 0 ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    assert!(!run(&[]).status.success());
+    fs::write(
+        &policy,
+        [acknowledgements.as_slice(), b"NODE_MEMORY_POLICY=core-and-swap-disabled\n"].concat(),
+    )
+    .unwrap();
+    assert!(!run(&[]).status.success(), "missing node must fail normal mode");
+    assert!(run(&["--commission"]).status.success());
+    assert_eq!(run(&["--unknown"]).status.code(), Some(2));
+    assert_eq!(run(&["--commission", "--commission"]).status.code(), Some(2));
+
+    fs::write(&swaps, b"Filename Type Size Used Priority\n/dev/zram0 partition 1 0 1\n")
+        .unwrap();
+    assert!(!run(&["--commission"]).status.success());
+    fs::write(&swaps, b"Filename Type Size Used Priority\n").unwrap();
+    fs::write(
+        &systemctl,
+        b"#!/bin/sh\ncase \"$1\" in\n  is-enabled) echo enabled ;;\n  show) echo 0 ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    assert!(!run(&["--commission"]).status.success());
+    fs::write(
+        &systemctl,
+        b"#!/bin/sh\ncase \"$1\" in\n  is-enabled) echo masked ;;\n  show) echo infinity ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    assert!(!run(&["--commission"]).status.success());
+    fs::write(
+        &systemctl,
+        b"#!/bin/sh\ncase \"$1:$2\" in\n  is-enabled:*) echo masked ;;\n  show:pico2-kes-agentd.service) echo 0 ;;\n  *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::write(&policy, b"SNAPSHOT_POLICY=disabled-or-encrypted-off-host\n").unwrap();
+    assert!(!run(&["--commission"]).status.success());
+    fs::write(&policy, b"BACKUP_PRIVATE_POLICY=off-primary\n").unwrap();
+    assert!(!run(&["--commission"]).status.success());
+}

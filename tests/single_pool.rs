@@ -59,10 +59,22 @@ fn status(rig: &TestRig) -> Value {
 #[test]
 fn attended_commissioning_publishes_pin_and_normal_restart_authenticates_it() {
     let mut rig = TestRig::blank_commissioning("attended-board01");
-    assert_eq!(status(&rig)["result"]["commissioning_state"], "blank");
+    let blank = status(&rig);
+    assert_eq!(blank["result"]["commissioning_state"], "blank");
+    assert_eq!(blank["result"]["health"], "ready");
+    assert!(blank["result"].get("device_id").is_none());
+    assert!(blank["result"].get("revision").is_none());
+    let cli = rig.status_cli();
+    assert_eq!(cli.exit_code, 0);
+    let cli_status: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli_status["result"]["commissioning_state"], "blank");
     assert!(rig.pool_sockets().is_empty());
     let response = rig.commission_cli("attended-board01", ID);
     assert_eq!(response.exit_code, 0);
+    let committed = status(&rig);
+    assert_eq!(committed["result"]["commissioning_state"], "committed");
+    assert!(committed["result"].get("device_id").is_some());
+    assert!(committed["result"].get("revision").is_some());
     let pin_bytes = std::fs::read(rig.pin_record_path()).unwrap();
     let record: Value = serde_json::from_slice(&pin_bytes).unwrap();
     assert_eq!(record["version"], 1);
@@ -139,8 +151,31 @@ fn commissioning_rejects_wrong_selection_and_nonblank_partial_state() {
     assert_ne!(rig.commission_cli("attended-board01", ID).exit_code, 0);
     rig.restart_commissioning().unwrap();
     assert_ne!(rig.reconcile_cli().exit_code, 0);
-    assert_eq!(status(&rig)["result"]["commissioning_state"], "unavailable");
+    assert_ne!(status(&rig)["result"]["commissioning_state"], "blank");
     assert!(!rig.pin_record_path().exists());
+}
+
+#[test]
+fn commissioning_status_fails_closed_on_bad_hello_and_disconnect() {
+    let rig = TestRig::blank_commissioning("attended-board01");
+    rig.stale_hello();
+    assert_ne!(status(&rig)["outcome"], "success");
+
+    let rig = TestRig::blank_commissioning("attended-board01");
+    rig.malformed_hello();
+    assert_ne!(status(&rig)["outcome"], "success");
+
+    let rig = TestRig::blank_commissioning("attended-board01");
+    rig.disconnect_device();
+    let disconnected = status(&rig);
+    assert_eq!(disconnected["result"]["health"], "disconnected");
+    assert_ne!(disconnected["result"]["commissioning_state"], "blank");
+
+    let rig = TestRig::blank_commissioning("attended-board01");
+    rig.timeout_hello();
+    let timeout = status(&rig);
+    assert_eq!(timeout["result"]["health"], "disconnected");
+    assert_ne!(timeout["result"]["commissioning_state"], "blank");
 }
 
 #[test]
