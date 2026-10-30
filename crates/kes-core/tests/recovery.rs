@@ -490,6 +490,255 @@ fn certified_staged_generation_activates_at_start_and_survives_reboot() {
     assert_eq!(current(&mut restarted, 2).generation_id, staged);
 }
 
+fn activated_replacement() -> (TestDevice, GenerationId) {
+    let (mut device, active) = ready(2);
+    let pool = enrollment(2);
+    let replacement = device
+        .generate(pool.pool_id, OperationId::from_bytes([34; 16]))
+        .unwrap();
+    let vkey = device.public_key(pool.pool_id, replacement).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&vkey, 2, 8))
+        .to_bytes();
+    device
+        .install_certificate(
+            pool.pool_id,
+            replacement,
+            &Certificate::new(vkey, 2, 8, signature),
+        )
+        .unwrap();
+    device
+        .accept_context(&context(2, 8, 2_000, 2), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    assert_eq!(current(&mut device, 2).generation_id, replacement);
+    assert_eq!(
+        device.generation_info(pool.pool_id, active),
+        Err(Error::GenerationUnavailable)
+    );
+    (device, replacement)
+}
+
+fn artifact(device: &mut TestDevice, generation: GenerationId) -> (Vec<u8>, Digest32) {
+    let mut bytes = [0; kes_core::public_object::MAX_ARTIFACT_LEN];
+    let (len, digest, _) = device
+        .artifact(enrollment(2).pool_id, generation, &mut bytes)
+        .unwrap();
+    (bytes[..len].to_vec(), digest)
+}
+
+struct ActiveSnapshot {
+    current: kes_core::lifecycle::Current,
+    info: kes_core::lifecycle::GenerationInfo,
+    artifact: (Vec<u8>, Digest32),
+    enrollment: Enrollment,
+    recipient: Option<([u8; 32], u64)>,
+    floor: Option<u64>,
+    publication: kes_core::lifecycle::Publication,
+}
+
+fn active_snapshot(device: &mut TestDevice) -> ActiveSnapshot {
+    let pool = enrollment(2).pool_id;
+    let current = current(device, 2);
+    ActiveSnapshot {
+        info: device.generation_info(pool, current.generation_id).unwrap(),
+        artifact: artifact(device, current.generation_id),
+        enrollment: device.enrollment(pool).unwrap(),
+        recipient: device.recipient().unwrap(),
+        floor: device.pool_status(pool).unwrap().period_floor,
+        publication: device.publication(pool).unwrap(),
+        current,
+    }
+}
+
+fn assert_active_snapshot(device: &mut TestDevice, expected: &ActiveSnapshot) {
+    let actual = active_snapshot(device);
+    assert_eq!(actual.current.generation_id, expected.current.generation_id);
+    assert_eq!(
+        actual.current.verification_key,
+        expected.current.verification_key
+    );
+    assert_eq!(actual.current.state, expected.current.state);
+    assert_eq!(
+        actual.current.relative_period,
+        expected.current.relative_period
+    );
+    assert_eq!(actual.current.certificate, expected.current.certificate);
+    assert_eq!(actual.current.publication, expected.current.publication);
+    assert_eq!(actual.info.verification_key, expected.info.verification_key);
+    assert_eq!(actual.info.artifact_digest, expected.info.artifact_digest);
+    assert_eq!(actual.artifact, expected.artifact);
+    assert_eq!(actual.enrollment, expected.enrollment);
+    assert_eq!(actual.recipient, expected.recipient);
+    assert_eq!(actual.floor, expected.floor);
+    assert_eq!(actual.publication, expected.publication);
+    assert_eq!(
+        device
+            .public_key(enrollment(2).pool_id, expected.current.generation_id)
+            .unwrap(),
+        expected.current.verification_key
+    );
+}
+
+#[test]
+fn replenishment_preserves_active_across_region_reuse() {
+    let (mut device, mut active) = activated_replacement();
+    let pool = enrollment(2).pool_id;
+    for (operation, counter, period, sample, sequence, old_period, old_sample) in [
+        (35, 3, 9, 3_000, 3, 8, 2_000),
+        (36, 4, 10, 4_000, 4, 9, 3_000),
+    ] {
+        let before = active_snapshot(&mut device);
+        assert_eq!(before.current.generation_id, active);
+        let operation = OperationId::from_bytes([operation; 16]);
+        let staged = device.generate(pool, operation).unwrap();
+        assert_ne!(active, staged);
+        let generations = device.pool_generations(pool).unwrap();
+        assert_eq!(generations.active.unwrap().generation, active);
+        assert_eq!(generations.staged.unwrap().generation, staged);
+        let staged_info = device.generation_info(pool, staged).unwrap();
+        let staged_key = device.public_key(pool, staged).unwrap();
+        assert_eq!(staged_info.verification_key, staged_key);
+        assert_eq!(
+            device.generation_by_operation(pool, operation).unwrap().0,
+            staged
+        );
+        let staged_artifact = artifact(&mut device, staged);
+        assert_eq!(staged_artifact.1, staged_info.artifact_digest);
+        assert_active_snapshot(&mut device, &before);
+
+        let mut restarted = boot(copy_image(device.flash()));
+        recovery(&mut restarted);
+        restarted
+            .accept_context(&context(2, old_period, old_sample, sequence), 100)
+            .unwrap();
+        let generations = restarted.pool_generations(pool).unwrap();
+        assert_eq!(generations.active.unwrap().generation, active);
+        assert_eq!(generations.staged.unwrap().generation, staged);
+        assert_active_snapshot(&mut restarted, &before);
+        assert_eq!(
+            restarted
+                .generation_info(pool, staged)
+                .unwrap()
+                .verification_key,
+            staged_key
+        );
+        assert_eq!(restarted.public_key(pool, staged).unwrap(), staged_key);
+        assert_eq!(artifact(&mut restarted, staged), staged_artifact);
+
+        let signature = cold(2)
+            .sign(&Certificate::signing_bytes(&staged_key, counter, period))
+            .to_bytes();
+        let certificate = Certificate::new(staged_key, counter, period, signature);
+        device
+            .install_certificate(pool, staged, &certificate)
+            .unwrap();
+        device
+            .accept_context(&context(2, period, sample, sequence), 100)
+            .unwrap();
+        device.catch_up(pool, 100).unwrap();
+        let activated = active_snapshot(&mut device);
+        assert_eq!(activated.current.generation_id, staged);
+        assert_eq!(activated.current.relative_period, 0);
+        assert_eq!(activated.current.verification_key, staged_key);
+        assert_eq!(activated.current.certificate, certificate);
+        assert_eq!(
+            device.generation_info(pool, active),
+            Err(Error::GenerationUnavailable)
+        );
+        let mut restarted = boot(copy_image(device.flash()));
+        recovery(&mut restarted);
+        restarted
+            .accept_context(&context(2, period, sample, sequence + 1), 100)
+            .unwrap();
+        assert_active_snapshot(&mut restarted, &activated);
+        assert_eq!(
+            restarted.generation_info(pool, active),
+            Err(Error::GenerationUnavailable)
+        );
+        active = staged;
+    }
+}
+
+#[test]
+fn replenishment_faults_preserve_promoted_active() {
+    let (mut baseline, active) = activated_replacement();
+    let pool = enrollment(2).pool_id;
+    let before = active_snapshot(&mut baseline);
+    assert_eq!(before.current.generation_id, active);
+    let image = baseline.into_flash();
+    let region_one = POOL + 2 * BANK + PUBLIC;
+    let raw_active = image.bytes()[region_one as usize..(region_one + PUBLIC) as usize].to_vec();
+    let operation = OperationId::from_bytes([44; 16]);
+
+    let mut probe = boot(copy_image(&image));
+    recovery(&mut probe);
+    let start = probe.flash().trace.len();
+    let staged = probe.generate(pool, operation).unwrap();
+    let trace = probe.flash().trace[start..].to_vec();
+    let staged_key = probe.public_key(pool, staged).unwrap();
+    let staged_info = probe.generation_info(pool, staged).unwrap();
+    let staged_artifact = artifact(&mut probe, staged);
+    assert_eq!(staged_artifact.1, staged_info.artifact_digest);
+
+    for (offset, fault) in cuts(&trace) {
+        let mut device = boot(copy_image(&image));
+        recovery(&mut device);
+        let at = device.flash().trace.len() + offset;
+        device.flash_mut().fault = Some((at, fault));
+        let success = device.generate(pool, operation).is_ok();
+        assert!(
+            device.flash().fault.is_none(),
+            "unconsumed fault {offset} {fault:?}"
+        );
+        let mut device = reboot(device);
+        recovery(&mut device);
+        let status = device.pool_status(pool).unwrap();
+        assert_eq!(
+            &device.flash().bytes()[region_one as usize..(region_one + PUBLIC) as usize],
+            raw_active.as_slice(),
+            "active object changed at {offset} {fault:?}"
+        );
+        assert_eq!(device.enrollment(pool).unwrap(), before.enrollment);
+        assert_eq!(device.recipient().unwrap(), before.recipient);
+        assert_eq!(status.period_floor, before.floor);
+        assert_eq!(status.publication, before.publication);
+        assert_eq!(device.publication(pool).unwrap(), before.publication);
+        let generations = device.pool_generations(pool).unwrap();
+        assert_eq!(generations.active.unwrap().generation, active);
+        match generations.staged {
+            None => {
+                assert!(!success, "successful generation lost at {offset} {fault:?}");
+                assert_eq!(
+                    device.generation_info(pool, staged),
+                    Err(Error::GenerationUnavailable)
+                );
+                assert!(
+                    erased(device.flash(), POOL + 2 * BANK, PUBLIC),
+                    "orphan object at {offset} {fault:?}"
+                );
+            }
+            Some(recovered) => {
+                assert_eq!(recovered.generation, staged, "cut {offset} {fault:?}");
+                assert_eq!(recovered.artifact_digest, staged_info.artifact_digest);
+                let info = device.generation_info(pool, staged).unwrap();
+                assert_eq!(info.verification_key, staged_key);
+                assert_eq!(info.artifact_digest, staged_info.artifact_digest);
+                assert_eq!(device.public_key(pool, staged).unwrap(), staged_key);
+                assert_eq!(artifact(&mut device, staged), staged_artifact);
+                assert_eq!(
+                    device.generation_by_operation(pool, operation).unwrap().0,
+                    staged
+                );
+            }
+        }
+        device
+            .accept_context(&context(2, 8, 2_000, 3), 100)
+            .unwrap();
+        assert_active_snapshot(&mut device, &before);
+    }
+}
+
 #[test]
 fn deletion_terminal_publication_survives_reboot_for_receipt_recovery() {
     let mut device = enrolled(2);

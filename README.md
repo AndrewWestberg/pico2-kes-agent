@@ -821,6 +821,8 @@ Follow the returned cursor until absent/null. Inspect device identity, pool inca
 
 Period evolution is automatic under trustworthy context; it does not issue a new certificate. Plan generation rotation before expiry. Repeat [generation through certificate installation](#4-generate-a-staged-key) with **new output and receipt names**. Export before installing the certificate, retain the active generation until replacement validity, and update the node's startup certificate file for future restarts. There is no additional backup-readiness gate.
 
+Replenishment reuses the retired generation's public-object region, leaving the active generation's public tree and encrypted backup intact across repeated rotations and reboot. This allocation correction prevents new overwrites; it cannot restore an object already overwritten by affected firmware. Verification covers the software NOR fault model and CLI exports, not physical flash qualification or repair of an already-damaged pool.
+
 On expiry or outage, first restore legitimate context and inspect pool state. If the generation is expired, create/certify a replacement. Do not roll back the clock/period or expect an expired signing key to become useful again.
 
 ### Staged slot and cancellation
