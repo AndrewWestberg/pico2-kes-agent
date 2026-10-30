@@ -28,3 +28,13 @@ target_compile_definitions(pico2-otp-diagnostic PRIVATE
 pico_enable_stdio_usb(pico2-otp-diagnostic 1)
 pico_enable_stdio_uart(pico2-otp-diagnostic 0)
 pico_set_binary_type(pico2-otp-diagnostic copy_to_ram)
+
+add_executable(pico2-otp-crit1-repair diagnostic.c)
+target_link_libraries(pico2-otp-crit1-repair pico_stdlib)
+target_compile_definitions(pico2-otp-crit1-repair PRIVATE
+    PICO2_OTP_CRIT1_REPAIR=1
+    PICO_ENABLE_USB_RESET_VIA_BAUD_RATE=0
+    PICO_ENABLE_USB_RESET_VIA_VENDOR_INTERFACE=0)
+pico_enable_stdio_usb(pico2-otp-crit1-repair 1)
+pico_enable_stdio_uart(pico2-otp-crit1-repair 0)
+pico_set_binary_type(pico2-otp-crit1-repair copy_to_ram)
