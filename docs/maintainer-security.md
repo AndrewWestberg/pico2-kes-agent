@@ -19,17 +19,23 @@ git -C "$TOOL_ROOT/pico-sdk" checkout 079c6f39023649b154152db30f1d781e884879bc
 git -C "$TOOL_ROOT/pico-sdk" submodule update --init lib/mbedtls
 git clone https://github.com/raspberrypi/picotool.git "$TOOL_ROOT/picotool"
 git -C "$TOOL_ROOT/picotool" checkout 2041936441b48a3cc53ae3da9e805229fe8f4e18
+git -C "$TOOL_ROOT/picotool" apply "$PWD/tools/patches/picotool-signature-conversion.patch"
 cmake -S "$TOOL_ROOT/picotool" -B "$TOOL_ROOT/picotool-build" \
   -DPICO_SDK_PATH="$TOOL_ROOT/pico-sdk" -DPICOTOOL_NO_LIBUSB=0 \
   -DCMAKE_INSTALL_PREFIX="$TOOL_ROOT/install"
 cmake --build "$TOOL_ROOT/picotool-build" --parallel
 cmake --install "$TOOL_ROOT/picotool-build"
+python3 tools/check_picotool_signatures.py \
+  --source "$TOOL_ROOT/picotool" --build "$TOOL_ROOT/picotool-build" \
+  --sdk "$TOOL_ROOT/pico-sdk"
 export PATH="$TOOL_ROOT/install/bin:$PATH"
 picotool version
 cmake -S tools/otp_permissions -B target/otp-permissions \
   -DPICO_SDK_PATH="$TOOL_ROOT/pico-sdk" -DPICO_BOARD=pico2
 cmake --build target/otp-permissions --parallel
 ```
+
+The repository-pinned [signature-conversion patch](../tools/patches/picotool-signature-conversion.patch) fixes short ECDSA components being truncated during DER-to-raw conversion and preserves required positive-integer padding during raw-to-DER conversion. The native regression links the actual built picotool archive and checks 4,096 width/sign-bit combinations for both components. Do not substitute repeated signing attempts for this fix or bypass signature verification. The version banner remains `2.3.1`; record the source commit, patch digest and actual executable identity rather than treating that banner as patch provenance.
 
 The permission helper is **unsigned preparation code**, not a firmware update. It runs entirely in XIP-SRAM before secure boot, accepts only the two expected CHIPID words, and can only close page-2/page-63 permissions. Authenticate its bundle digest before making a target-bound private copy. Never use stock `picotool otp permissions`: its page-63 omission does not satisfy this profile.
 
@@ -236,6 +242,8 @@ Build the permission helper with the preceding pinned-SDK recipe before running 
 ### Release publication and provenance
 
 The [release workflow](../.github/workflows/release.yml) builds without the production secret, then signs/publishes on a fresh runner. Both jobs check out the triggering event's exact `github.sha`. Only the signing step receives the dedicated private boot key; cleanup removes its temporary plaintext file. The [publisher](../tools/publish_release.py) checks the triggering tag/commit and resolves the tag again before publishing its verified uploaded draft.
+
+The build job applies the checked-in signature-conversion patch to the pinned picotool commit and runs its native boundary regression before isolated release-bundle tests or access to production secrets. Its `tool-versions.txt` artifact records the native source commit and patch SHA-256. Production sealing and independent bundle verification continue to require a valid signature and the authorized public key.
 
 Tags containing `-`, including `v0.1.0-rc.1` and `vqualification-*`, are explicitly prereleases and not latest. Other `v*` tags retain the existing publication behavior. A completed historical release with a conflicting prerelease classification is an error, never silently edited. Observe the actual workflow run and independently verify every downloaded asset and its manifest commit/tag before relying on a release; the ROM verifies the authority's signature, not GitHub origin.
 
