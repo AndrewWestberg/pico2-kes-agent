@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 from urllib.parse import quote
 
@@ -34,20 +33,15 @@ def gh(*arguments):
 
 
 def release_state(tag):
-    # `--include` gives a status line even on a 404. Network/auth failures are
-    # not interpreted as an absent release.
-    result = subprocess.run(["gh", "api", "--include", "--hostname", "github.com",
-                             f"repos/{REPOSITORY}/releases/tags/{quote(tag, safe='')}"],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-    firmware.require(len(result.stdout) <= 1024 * 1024, "oversized release response")
-    text = result.stdout.decode("utf-8")
-    status = text.splitlines()[0] if text else ""
-    if status.startswith(("HTTP/2.0 404", "HTTP/1.1 404", "HTTP/2 404")):
+    # The by-tag REST endpoint omits drafts, even with authenticated access.
+    # Enumerate all authenticated pages, projecting only admission fields before
+    # the bounded subprocess capture. Multiple matches remain a parse conflict.
+    query = (".[] | select(.tag_name == " + json.dumps(tag) + ") | "
+             "{tag_name, draft, prerelease, assets: [.assets[] | {name, size}]}")
+    data = gh("api", f"repos/{REPOSITORY}/releases", "--paginate", "--jq", query)
+    if not data.strip():
         return None
-    firmware.require(result.returncode == 0, "release inspection failed; refusing publication")
-    separator = "\r\n\r\n" if "\r\n\r\n" in text else "\n\n"
-    firmware.require(separator in text, "missing release HTTP headers")
-    return json.loads(text.split(separator, 1)[1], object_pairs_hook=firmware.unique_object)
+    return json.loads(data, object_pairs_hook=firmware.unique_object)
 
 
 def require_asset_set(release, bundle):

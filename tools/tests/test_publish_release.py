@@ -113,3 +113,24 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertFalse(any(c[:2] in (("release", "create"), ("release", "upload"),
                                       ("release", "edit")) for c in boundary.calls))
+
+    def test_existing_draft_requires_explicit_maintainer_handling(self):
+        boundary, success = self.invoke(
+            "v0.1.0-rc.2",
+            existing={"tag_name": "v0.1.0-rc.2", "draft": True, "prerelease": True})
+        self.assertFalse(success)
+        self.assertFalse(any(c[0] == "release" for c in boundary.calls))
+
+
+class ReleaseInspectionTests(unittest.TestCase):
+    def test_duplicate_matching_releases_fail_closed(self):
+        release = json.dumps({"tag_name": "v0.1.0-rc.2", "draft": True,
+                              "prerelease": True, "assets": []}).encode()
+        with mock.patch.object(publisher, "gh", return_value=release + b"\n" + release):
+            with self.assertRaises(ValueError):
+                publisher.release_state("v0.1.0-rc.2")
+
+    def test_api_failure_is_not_absence(self):
+        with mock.patch.object(publisher, "gh", side_effect=ValueError("API unavailable")):
+            with self.assertRaises(ValueError):
+                publisher.release_state("v0.1.0-rc.2")
