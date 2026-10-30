@@ -241,6 +241,8 @@ Tags containing `-`, including `v0.1.0-rc.1` and `vqualification-*`, are explici
 
 Commit resolution retains only the GitHub response's SHA before enforcing the subprocess output bound; full commit responses can include large patches. A failed workflow does not authorize moving its tag or overwriting partial assets. Preserve the failed run and obtain an explicit maintainer version decision before publishing a corrected candidate.
 
+Draft inspection uses the authenticated paginated releases list: GitHub's by-tag REST endpoint omits unpublished drafts. Upload verification must find and validate the draft before publication. Existing drafts still require explicit maintainer handling; the publisher never resumes, re-signs or overwrites their assets automatically.
+
 `verify` authenticates manifest metadata but does not resolve GitHub tags. `seal --commit` accepts a supplied commit identifier and cannot independently prove which source produced an ELF. Establish the source-to-build-to-manifest relationship; do not label an uncommitted build with an unrelated commit. A local tag label does not create a Git tag or establish cloud publication.
 
 Publication does not overwrite history. Identical completed releases are a no-op; different/partial assets or an existing draft require explicit maintainer handling. A failed upload may leave an unpublished draft. The publisher checks the triggering tag/commit and rechecks tag resolution before publishing; a locally verified bundle or checked-in workflow is not evidence that a cloud run succeeded.
