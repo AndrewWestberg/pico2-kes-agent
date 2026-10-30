@@ -167,6 +167,7 @@ struct Emulator {
     serial: UsbSerial,
     outstanding: Option<(u64, Digest32)>,
     lose_next_reply: bool,
+    cut_delete_after_commit: bool,
     lose_next_ack_reply: bool,
     commission_cut: Option<Cut>,
     unavailable: bool,
@@ -197,6 +198,7 @@ impl Emulator {
             serial: UsbSerial::new(serial).unwrap(),
             outstanding: None,
             lose_next_reply: false,
+            cut_delete_after_commit: false,
             lose_next_ack_reply: false,
             commission_cut: None,
             unavailable: false,
@@ -253,19 +255,45 @@ impl Emulator {
         let device = identity.enrollment_record().public().device();
         let revision = self.device().revision().unwrap_or(0);
         let commissioning_state = 1;
-        let pool = pool
-            .and_then(|pool_id| self.device_mut().pool_status(pool_id).ok())
-            .map(|status| wire::PoolStatus {
+        let pool = pool.and_then(|pool_id| {
+            let status = self.device_mut().pool_status(pool_id).ok();
+            let generations = self.device_mut().pool_generations(pool_id).ok();
+            let (status, active, staged, health) = match (status, generations) {
+                (Some(status), Some(generations)) => {
+                    let active = generations
+                        .active
+                        .map(|value| generation_status(value, status, true));
+                    let staged = generations
+                        .staged
+                        .map(|value| generation_status(value, status, false));
+                    let health = if status.publication.kind == CorePublicationKind::Drop {
+                        2
+                    } else if staged.is_some_and(|value| value.health == 3) {
+                        3
+                    } else {
+                        active.map_or(4, |value| value.health)
+                    };
+                    (status, active, staged, health)
+                }
+                _ => (
+                    self.device_mut().pool_deletion_status(pool_id).ok()?,
+                    None,
+                    None,
+                    12,
+                ),
+            };
+            Some(wire::PoolStatus {
                 target: PoolTarget {
                     pool: status.pool_id,
                     incarnation: status.incarnation_id,
                 },
                 revision: status.revision,
-                health: 0,
-                active: None,
-                staged: None,
+                health,
+                active,
+                staged,
                 publication: publication(status.publication),
-            });
+            })
+        });
         self.encode(&Response::Status(wire::StatusResponse {
             device,
             revision,
@@ -397,13 +425,20 @@ impl Emulator {
     fn actual_revision(&mut self, mutation: &Mutation) -> u64 {
         match mutation.binding() {
             Binding::Commission { .. } => 0,
-            Binding::Managed { action, .. } => action
-                .pool_target()
-                .and_then(|target| self.device_mut().pool_status(target.pool).ok())
-                .map_or_else(
-                    || self.device().revision().unwrap_or(u64::MAX),
-                    |status| status.revision,
-                ),
+            Binding::Managed { action, .. } => match action.pool_target() {
+                None => self.device().revision().unwrap_or(u64::MAX),
+                Some(target) => {
+                    let status = if matches!(action, Action::Delete { .. }) {
+                        self.device_mut().pool_deletion_status(target.pool)
+                    } else {
+                        self.device_mut().pool_status(target.pool)
+                    };
+                    status
+                        .ok()
+                        .filter(|status| status.incarnation_id == target.incarnation)
+                        .map_or(u64::MAX, |status| status.revision)
+                }
+            },
         }
     }
 
@@ -436,6 +471,24 @@ impl Emulator {
         {
             return self.rejected_without_handoff(mutation, operation_code(error), commission);
         }
+        if self.cut_delete_after_commit
+            && matches!(
+                mutation.binding(),
+                Binding::Managed {
+                    action: Action::Delete { .. },
+                    ..
+                }
+            )
+        {
+            let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
+            let len = self
+                .handoff
+                .encode(&mut bytes)
+                .map_err(|_| UsbError::Protocol)?;
+            self.device_mut()
+                .persist_handoff(&bytes[..len])
+                .map_err(|_| UsbError::Protocol)?;
+        }
         let result = if commission {
             let serial = self.serial;
             self.device_mut()
@@ -456,6 +509,23 @@ impl Emulator {
                 mutation.operation_id(),
             )
         };
+        if self.cut_delete_after_commit
+            && result.is_ok()
+            && matches!(
+                mutation.binding(),
+                Binding::Managed {
+                    action: Action::Delete { .. },
+                    ..
+                }
+            )
+        {
+            self.cut_delete_after_commit = false;
+            self.outstanding = Some((mutation.sequence(), mutation.usb_digest()));
+            return Err(UsbError::Uncertain {
+                sequence: mutation.sequence(),
+                digest: mutation.usb_digest(),
+            });
+        }
         let outcome = match result {
             Ok(result) => ReceiptOutcome::Committed(result),
             Err(error) => ReceiptOutcome::Rejected {
@@ -589,10 +659,7 @@ impl Emulator {
                 target,
                 publication_time_us,
             } => {
-                require_target(self.device_mut(), target)?;
-                let terminal = self
-                    .device_mut()
-                    .delete_pool(target.pool, publication_time_us)?;
+                let terminal = self.device_mut().delete_pool(target, publication_time_us)?;
                 let deleted = DeletionPublication::new(
                     target,
                     terminal.revision,
@@ -728,6 +795,22 @@ impl DeviceTransport for Emulator {
                     .handoff
                     .acknowledge(*sequence, *result_digest)
                     .map_err(operation_code);
+                if result.is_ok()
+                    && self
+                        .device()
+                        .persisted_handoff()
+                        .map_err(|_| UsbError::Protocol)?
+                        .is_some()
+                {
+                    let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
+                    let len = self
+                        .handoff
+                        .encode(&mut bytes)
+                        .map_err(|_| UsbError::Protocol)?;
+                    self.device_mut()
+                        .persist_handoff(&bytes[..len])
+                        .map_err(|_| UsbError::Protocol)?;
+                }
                 let response = self.encode(&Response::ReceiptAck(wire::ReceiptAckResponse {
                     sequence: *sequence,
                     result_digest: *result_digest,
@@ -749,6 +832,51 @@ impl DeviceTransport for Emulator {
                 digest,
                 binding,
             } => {
+                let target = self.handoff.receipt().and_then(|receipt| {
+                    let mutation = receipt.mutation();
+                    if receipt.outcome() != &ReceiptOutcome::Pending
+                        || mutation.sequence() != *sequence
+                        || mutation.operation_id() != *operation_id
+                        || mutation.usb_digest() != *digest
+                    {
+                        return None;
+                    }
+                    match (mutation.binding(), binding) {
+                        (
+                            Binding::Managed {
+                                device,
+                                action: Action::Delete { target, .. },
+                            },
+                            wire::ReconcileBinding::Device(expected),
+                        ) if device == expected => Some(*target),
+                        _ => None,
+                    }
+                });
+                if let Some(target) = target
+                    && let Some(publication) = self
+                        .device()
+                        .deletion(target)
+                        .map_err(|_| UsbError::Protocol)?
+                {
+                    let deleted = DeletionPublication::new(
+                        target,
+                        publication.revision,
+                        Some(publication.timestamp_us),
+                        publication.high_water_us,
+                    )
+                    .map_err(|_| UsbError::Protocol)?;
+                    self.handoff
+                        .finish(ReceiptOutcome::Committed(CommittedResult::Deleted(deleted)))
+                        .map_err(|_| UsbError::Protocol)?;
+                    let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
+                    let len = self
+                        .handoff
+                        .encode(&mut bytes)
+                        .map_err(|_| UsbError::Protocol)?;
+                    self.device_mut()
+                        .persist_handoff(&bytes[..len])
+                        .map_err(|_| UsbError::Protocol)?;
+                }
                 let receipt = self
                     .handoff
                     .receipt()
@@ -1066,6 +1194,80 @@ impl TestRig {
         self.run_cli(vec!["status".into()])
     }
 
+    pub fn pool_status_cli(&self) -> CliResult {
+        self.run_cli(vec![
+            "pool".into(),
+            "status".into(),
+            "--pool".into(),
+            self.target.unwrap().pool.to_string(),
+        ])
+    }
+
+    pub fn delete_cli(&self, incarnation: &str, revision: u64, operation: &str) -> CliResult {
+        self.run_cli(vec![
+            "pool".into(),
+            "delete".into(),
+            "--pool".into(),
+            self.target.unwrap().pool.to_string(),
+            "--incarnation".into(),
+            incarnation.into(),
+            "--expected-revision".into(),
+            revision.to_string(),
+            "--operation-id".into(),
+            operation.into(),
+            "--receipt".into(),
+            self.receipt.display().to_string(),
+            "--yes".into(),
+        ])
+    }
+
+    pub fn corrupt_first_public_object(&self) -> Vec<u8> {
+        use kes_core::storage::{POOL_BANK_BYTES, POOL_REGION_BYTES, POOLS_START};
+        let mut state = self.state.lock().unwrap();
+        let device = state.usb.device_mut();
+        let slot = device
+            .pool_status(self.target.unwrap().pool)
+            .unwrap()
+            .slot
+            .get() as u32;
+        let start = (POOLS_START + slot * POOL_REGION_BYTES) as usize;
+        let object = start + (2 * POOL_BANK_BYTES) as usize;
+        let bytes = &mut device.flash_mut().bytes;
+        assert_ne!(bytes[object], 0);
+        bytes[object] = 0;
+        bytes[start..start + POOL_REGION_BYTES as usize].to_vec()
+    }
+
+    pub fn pool_region_bytes(&self, slot: u8) -> Vec<u8> {
+        use kes_core::storage::{POOL_REGION_BYTES, POOLS_START};
+        let mut state = self.state.lock().unwrap();
+        let start = (POOLS_START + u32::from(slot) * POOL_REGION_BYTES) as usize;
+        state.usb.device_mut().flash_mut().bytes[start..start + POOL_REGION_BYTES as usize].to_vec()
+    }
+
+    pub fn pool_slot(&self) -> u8 {
+        self.state
+            .lock()
+            .unwrap()
+            .usb
+            .device_mut()
+            .pool_status(self.target.unwrap().pool)
+            .unwrap()
+            .slot
+            .get()
+    }
+
+    pub fn reboot_device(&self) {
+        let mut state = self.state.lock().unwrap();
+        let flash = state.usb.device.take().unwrap().into_flash();
+        state.usb.device = Some(open_device(flash));
+        state.usb.device_mut().recover().unwrap();
+        if let Some(bytes) = state.usb.device().persisted_handoff().unwrap() {
+            state.usb.handoff = Handoff::decode(bytes).unwrap();
+        }
+        state.usb.device_mut().reconnect();
+    }
+
     pub fn commission_cli(&mut self, serial: &str, operation: &str) -> CliResult {
         let receipt = if self.receipt.exists()
             && cli::receipt::load(&self.receipt)
@@ -1342,6 +1544,9 @@ impl TestRig {
 
     pub fn timeout_next_usb_reply(&mut self) {
         self.state.lock().unwrap().usb.lose_next_reply = true;
+    }
+    pub fn cut_delete_after_commit(&mut self) {
+        self.state.lock().unwrap().usb.cut_delete_after_commit = true;
     }
     pub fn timeout_next_ack_reply(&mut self) {
         self.state.lock().unwrap().usb.lose_next_ack_reply = true;
@@ -1949,6 +2154,37 @@ fn require_target(device: &mut TestDevice, target: PoolTarget) -> Result<(), Lif
         Err(LifecycleError::TargetMismatch)
     }
 }
+fn generation_status(
+    generation: kes_core::lifecycle::GenerationStatus,
+    pool: kes_core::lifecycle::PoolStatus,
+    active: bool,
+) -> wire::GenerationStatus {
+    let health = match (generation.certificate_start, pool.period_floor) {
+        (None, _) => 1,
+        (_, None) => 4,
+        (Some(start), Some(floor)) if floor < start => 1,
+        (Some(start), Some(floor))
+            if floor.saturating_sub(start) >= u64::from(pool.kes_lifetime) =>
+        {
+            2
+        }
+        (Some(start), Some(floor))
+            if !active || generation.period < floor.saturating_sub(start) =>
+        {
+            3
+        }
+        _ => 0,
+    };
+    wire::GenerationStatus {
+        generation: generation.generation,
+        revision: pool.revision,
+        role: u8::from(!active),
+        period: generation.period,
+        health,
+        artifact_digest: generation.artifact_digest,
+    }
+}
+
 fn publication(value: kes_core::lifecycle::Publication) -> wire::Publication {
     wire::Publication {
         revision: value.revision,

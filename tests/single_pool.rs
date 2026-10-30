@@ -399,6 +399,96 @@ fn generate_after_staged_activation_preserves_current_and_exports() {
 }
 
 #[test]
+fn damaged_public_object_can_be_deleted_through_normal_cli() {
+    for lost_reply in [false, true] {
+        let mut rig = TestRig::commissioned_pool();
+        let generation = rig.generate_with_cli().unwrap();
+        rig.remove_receipt();
+        let before: Value = serde_json::from_slice(&rig.pool_status_cli().stdout).unwrap();
+        let expected = &before["result"];
+        let incarnation = expected["incarnation_id"].as_str().unwrap().to_owned();
+        let revision = expected["revision"].as_u64().unwrap();
+        let pool_id = expected["pool_id"].clone();
+        let recipient = rig.recipient_public_key();
+        let slot = rig.pool_slot();
+        let damaged = rig.corrupt_first_public_object();
+        let damaged_status: Value = serde_json::from_slice(&rig.pool_status_cli().stdout).unwrap();
+        let result = &damaged_status["result"];
+        assert_eq!(result["health"], "storage_failure");
+        assert_eq!(result["pool_id"], pool_id);
+        assert_eq!(result["incarnation_id"], incarnation);
+        assert_eq!(result["revision"], revision);
+        assert_eq!(
+            result["publication_revision"],
+            expected["publication_revision"]
+        );
+        assert_eq!(
+            result["publication_timestamp_us"],
+            expected["publication_timestamp_us"]
+        );
+        assert!(result["active"].is_null() && result["staged"].is_null());
+        assert_ne!(rig.export_cli(&generation, "damaged.bin").exit_code, 0);
+
+        let baseline = rig.journal_state();
+        let wrong = rig.delete_cli(
+            "ffffffffffffffffffffffffffffffff",
+            revision,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        assert_ne!(wrong.exit_code, 0);
+        assert_eq!(rig.journal_state(), baseline);
+        assert_eq!(rig.pool_region_bytes(slot), damaged);
+        rig.remove_receipt();
+        let stale = rig.delete_cli(
+            &incarnation,
+            revision + 1,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        assert_ne!(stale.exit_code, 0);
+        assert_eq!(rig.journal_state(), baseline);
+        assert_eq!(rig.pool_region_bytes(slot), damaged);
+        rig.remove_receipt();
+        let generate = rig.generate_cli_expected("cccccccccccccccccccccccccccccccc", revision);
+        assert_ne!(generate.exit_code, 0);
+        assert_eq!(rig.journal_state(), baseline);
+        assert_eq!(rig.pool_region_bytes(slot), damaged);
+        rig.remove_receipt();
+
+        if lost_reply {
+            rig.cut_delete_after_commit();
+        }
+        let deleted = rig.delete_cli(&incarnation, revision, "dddddddddddddddddddddddddddddddd");
+        if lost_reply {
+            assert_eq!(deleted.exit_code, 6);
+            assert!(rig.journal_state().1);
+            rig.reboot_device();
+            let reconciled = rig.reconcile_cli();
+            assert_eq!(
+                reconciled.exit_code,
+                0,
+                "{}",
+                String::from_utf8_lossy(&reconciled.stderr)
+            );
+        } else {
+            assert_eq!(
+                deleted.exit_code,
+                0,
+                "stdout={} stderr={}",
+                String::from_utf8_lossy(&deleted.stdout),
+                String::from_utf8_lossy(&deleted.stderr)
+            );
+        }
+        assert_eq!(rig.journal_state(), (baseline.0 + 1, false));
+        rig.reboot_device();
+        assert!(rig.pool_region_bytes(slot).iter().all(|byte| *byte == 0xff));
+        let after: Value = serde_json::from_slice(&rig.pool_status_cli().stdout).unwrap();
+        assert!(after["result"].get("incarnation_id").is_none());
+        assert_eq!(rig.recipient_public_key(), recipient);
+        assert_eq!(status(&rig)["result"]["commissioning_state"], "committed");
+    }
+}
+
+#[test]
 fn pre_admission_rejection_does_not_require_device_acknowledgment() {
     let rig = TestRig::commissioned_pool();
     let before = rig.journal_state();

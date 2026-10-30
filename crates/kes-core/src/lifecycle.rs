@@ -1116,27 +1116,64 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         Ok(result)
     }
 
+    /// Read authenticated pool metadata for deletion, without restoring public objects.
+    pub fn pool_deletion_status(&mut self, pool_id: PoolId) -> Result<PoolStatus, Error> {
+        self.require_ready()?;
+        let occupied = self.config.as_ref().ok_or(Error::Uncommissioned)?.occupied;
+        let mut found = None;
+        for index in 0..SLOT_COUNT {
+            if occupied & (1u64 << index) == 0 {
+                continue;
+            }
+            let slot = StorageSlot::new(index as u8).map_err(|_| Error::StorageFailure)?;
+            let snapshot = self
+                .storage
+                .pool_snapshot_for_deletion(slot)
+                .map_err(|_| Error::StorageFailure)?;
+            let decoded = decode_pool_header(snapshot.payload(), slot)?;
+            if decoded.enrollment.pool_id == pool_id {
+                if found.is_some() {
+                    return Err(Error::StorageFailure);
+                }
+                found = Some(PoolStatus {
+                    pool_id,
+                    incarnation_id: decoded.enrollment.incarnation_id,
+                    slot,
+                    revision: decoded.revision,
+                    period_floor: decoded.period_floor,
+                    kes_lifetime: decoded.enrollment.network.lifetime(),
+                    publication: decoded.publication,
+                });
+            }
+        }
+        found.ok_or(Error::UnknownPool)
+    }
+
     pub fn delete_pool(
         &mut self,
-        pool_id: PoolId,
+        target: PoolTarget,
         publication_time_us: Option<u64>,
     ) -> Result<Publication, Error> {
         self.require_ready()?;
-        let index = self.find_pool(pool_id)?;
-        let pool = self.take_pool(index)?;
-        let timestamp =
-            publication_time_us.unwrap_or_else(|| pool.publication.high_water_us.saturating_add(1));
+        let status = self.pool_deletion_status(target.pool)?;
+        if status.incarnation_id != target.incarnation {
+            return Err(Error::TargetMismatch);
+        }
+        let index = usize::from(status.slot.get());
+        let timestamp = publication_time_us
+            .unwrap_or_else(|| status.publication.high_water_us.saturating_add(1));
         let terminal = Publication {
-            revision: pool.publication.revision.saturating_add(1),
+            revision: status.publication.revision.saturating_add(1),
             kind: PublicationKind::Drop,
-            timestamp_us: cmp::max(timestamp, pool.publication.high_water_us.saturating_add(1)),
-            high_water_us: cmp::max(timestamp, pool.publication.high_water_us.saturating_add(1)),
+            timestamp_us: cmp::max(
+                timestamp,
+                status.publication.high_water_us.saturating_add(1),
+            ),
+            high_water_us: cmp::max(
+                timestamp,
+                status.publication.high_water_us.saturating_add(1),
+            ),
         };
-        let target = PoolTarget {
-            pool: pool_id,
-            incarnation: pool.enrollment.incarnation_id,
-        };
-        drop(pool);
         let config = self.config.as_mut().ok_or(Error::Uncommissioned)?;
         config.occupied &= !(1u64 << index);
         config.pools[index] = PoolSlot::Empty;
@@ -1146,7 +1183,9 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             publication: terminal,
         });
         self.commit_config()?;
-        self.erase_pool_region(StorageSlot::new(index as u8).map_err(|_| Error::StorageFailure)?)?;
+        if self.erase_pool_region(status.slot).is_err() {
+            return Err(self.shared_failure());
+        }
         Ok(terminal)
     }
 

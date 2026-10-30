@@ -310,8 +310,8 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
     ) -> Result<(Recovered, Option<Snapshot>), StorageError> {
         let layout = domain.layout();
         let keys = DomainKeys::derive(&self.root_key, domain)?;
-        let first = self.scan_bank(domain, Bank::First, &keys)?;
-        let second = self.scan_bank(domain, Bank::Second, &keys)?;
+        let first = self.scan_bank(domain, Bank::First, &keys, false)?;
+        let second = self.scan_bank(domain, Bank::Second, &keys, false)?;
         let chosen = choose(first.as_ref(), second.as_ref(), directory_allows_empty)?;
         let Some((bank, clean)) = chosen else {
             self.erase_if_nonblank(layout.addresses(Bank::First).start, layout.bank_bytes)?;
@@ -340,11 +340,31 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         }
     }
 
+    /// Select authenticated committed pool metadata without inspecting objects or changing flash.
+    pub(crate) fn pool_snapshot_for_deletion(
+        &mut self,
+        slot: StorageSlot,
+    ) -> Result<Snapshot, StorageError> {
+        let domain = RecordDomain::Pool(slot);
+        let keys = DomainKeys::derive(&self.root_key, domain)?;
+        let first = self.scan_bank(domain, Bank::First, &keys, true)?;
+        let second = self.scan_bank(domain, Bank::Second, &keys, true)?;
+        let (bank, _) =
+            choose(first.as_ref(), second.as_ref(), false)?.ok_or(StorageError::Unavailable)?;
+        match bank {
+            Bank::First => first,
+            Bank::Second => second,
+        }
+        .and_then(|scanned| scanned.snapshot)
+        .ok_or(StorageError::CommittedBodyInvalid)
+    }
+
     fn scan_bank(
         &mut self,
         domain: RecordDomain,
         bank: Bank,
         keys: &DomainKeys,
+        reject_invalid_commit: bool,
     ) -> Result<Option<Scanned>, StorageError> {
         let addresses = domain.layout().addresses(bank);
         let mut commit = [0; MARKER_BYTES];
@@ -352,8 +372,11 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         if commit.iter().all(|byte| *byte == 0xff) {
             return Ok(None);
         }
-        let Ok(marker) = parse_marker(&commit, COMMIT_MAGIC, domain, &keys.commit) else {
-            return Ok(None);
+        let marker = match parse_marker(&commit, COMMIT_MAGIC, domain, &keys.commit) {
+            Ok(marker) => marker,
+            // Destructive admission must not treat unauthenticated metadata as absent.
+            Err(error) if reject_invalid_commit => return Err(error),
+            Err(_) => return Ok(None),
         };
         let snapshot = match self.read_snapshot(domain, bank, keys) {
             Ok(Some(snapshot))
