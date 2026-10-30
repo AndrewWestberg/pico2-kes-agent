@@ -1,4 +1,5 @@
 /target/
+/.recovery/
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/coverage/

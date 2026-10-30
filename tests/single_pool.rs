@@ -277,6 +277,128 @@ fn lost_generation_and_activation_replies_reconcile_with_stable_export() {
 }
 
 #[test]
+fn generate_after_staged_activation_preserves_current_and_exports() {
+    use kes_protocol::usb::{CurrentResult, decode_current_response};
+
+    let mut rig = TestRig::commissioned_pool();
+    let a = rig
+        .generate_with_operation("11111111111111111111111111111111")
+        .unwrap();
+    let certificate_a = rig.certificate_for(&a);
+    assert_eq!(
+        rig.install_certificate_cli(&a.id, &certificate_a).exit_code,
+        0
+    );
+    rig.refresh_context().unwrap();
+    assert_eq!(rig.current_usb_generation(), a.id);
+
+    rig.remove_receipt();
+    let b = rig
+        .generate_with_operation("22222222222222222222222222222222")
+        .unwrap();
+    let certificate_b = rig.certificate_for(&b);
+    assert_eq!(
+        rig.install_certificate_cli(&b.id, &certificate_b).exit_code,
+        0
+    );
+    // The fixture derives context sequence from period; start a fresh lease
+    // before refreshing at the same period.
+    rig.disconnect_usb();
+    rig.refresh_context().unwrap();
+    assert_eq!(rig.current_usb_generation(), b.id);
+
+    assert_eq!(rig.export_cli(&b, "active-before.bin").exit_code, 0);
+    let active_before = rig.read_file("active-before.bin");
+    let current_payload = rig.current_usb_payload();
+    let current_before = decode_current_response(&current_payload).unwrap();
+    let (generation_before, period_before, state_before, certificate_before) =
+        match current_before.result {
+            CurrentResult::Key {
+                generation,
+                period,
+                state,
+                certificate,
+            } => (generation, period, state, certificate),
+            _ => panic!("current key unavailable"),
+        };
+    assert_eq!(generation_before.to_string(), b.id);
+
+    rig.remove_receipt();
+    let journal_before = rig.journal_state();
+    assert!(!journal_before.1);
+    let generated = rig.generate_cli("33333333333333333333333333333333");
+    assert_eq!(
+        generated.exit_code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&generated.stdout),
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let response: Value = serde_json::from_slice(&generated.stdout).unwrap();
+    let id = response["result"]["generation_id"].as_str().unwrap();
+    assert_ne!(id, a.id);
+    assert_ne!(id, b.id);
+    let c = rig.generation_from_id(id);
+    assert_eq!(rig.journal_state(), (journal_before.0 + 1, false));
+
+    let payload_after = rig.current_usb_payload();
+    let current_after = decode_current_response(&payload_after).unwrap();
+    assert_eq!(current_after.target, current_before.target);
+    assert_eq!(current_after.publication, current_before.publication);
+    match current_after.result {
+        CurrentResult::Key {
+            generation,
+            period,
+            state,
+            certificate,
+        } => {
+            assert_eq!(generation, generation_before);
+            assert_eq!(period, period_before);
+            assert_eq!(state, state_before);
+            assert_eq!(certificate, certificate_before);
+        }
+        _ => panic!("current key unavailable after generation"),
+    }
+    assert_eq!(rig.export_cli(&b, "active-after.bin").exit_code, 0);
+    assert_eq!(rig.read_file("active-after.bin"), active_before);
+    assert_eq!(
+        rig.export_cli(&c, "replacement-before-reboot.bin")
+            .exit_code,
+        0
+    );
+    let replacement_before = rig.read_file("replacement-before-reboot.bin");
+
+    rig.restart_device_and_refresh_context().unwrap();
+    let payload_rebooted = rig.current_usb_payload();
+    let current_rebooted = decode_current_response(&payload_rebooted).unwrap();
+    assert_eq!(current_rebooted.target, current_before.target);
+    match current_rebooted.result {
+        CurrentResult::Key {
+            generation,
+            period,
+            state,
+            certificate,
+        } => {
+            assert_eq!(generation, generation_before);
+            assert_eq!(period, period_before);
+            assert_eq!(state, state_before);
+            assert_eq!(certificate, certificate_before);
+        }
+        _ => panic!("current key unavailable after reboot"),
+    }
+    assert_eq!(rig.export_cli(&b, "active-after-reboot.bin").exit_code, 0);
+    assert_eq!(rig.read_file("active-after-reboot.bin"), active_before);
+    assert_eq!(
+        rig.export_cli(&c, "replacement-after-reboot.bin").exit_code,
+        0
+    );
+    assert_eq!(
+        rig.read_file("replacement-after-reboot.bin"),
+        replacement_before
+    );
+}
+
+#[test]
 fn pre_admission_rejection_does_not_require_device_acknowledgment() {
     let rig = TestRig::commissioned_pool();
     let before = rig.journal_state();

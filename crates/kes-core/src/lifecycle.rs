@@ -750,7 +750,10 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             artifact.as_bytes(),
         )
         .map_err(|_| Error::StorageFailure)?;
-        let region = if pool.active.is_none() { 0 } else { 1 };
+        let region = pool
+            .active
+            .as_ref()
+            .map_or(0, |active| 1 - active.object_region);
         let mut object_bytes = [0xff; MAX_PUBLIC_OBJECT_BYTES];
         let object_len = encode_object(&object, &mut object_bytes)?;
         let object_digest =
