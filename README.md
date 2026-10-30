@@ -912,6 +912,8 @@ Either perform controlled [file-based failover](#offline-restoration-and-failove
 
 Export required artifacts and archive public records **before** deletion. Remove/fence the node's corresponding credential source first or alongside maintenance; deletion does not stop a node that already has keys. It removes all that pool's device-side keys/artifacts, not external copies.
 
+If only a pool's public KES objects are damaged, `pool status` can still report its authenticated pool/incarnation, revision and publication with `storage_failure` health and no active/staged details. The same deletion command works when the committed metadata of all enrolled pools authenticates unambiguously; it does not require readable objects that will be destroyed. Key delivery, export and other pool mutations remain blocked for the damaged pool. Unauthenticated or conflicting snapshots still prevent deletion: do not substitute a state erase or recommissioning.
+
 **Primary — deliberate deletion:**
 
 ```bash

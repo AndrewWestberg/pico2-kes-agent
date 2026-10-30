@@ -164,6 +164,36 @@ impl Operations for Runtime<'_> {
                 digest,
                 binding,
             } => {
+                let pending_delete = self.handoff().receipt().and_then(|receipt| {
+                    let mutation = receipt.mutation();
+                    (matches!(receipt.outcome(), ReceiptOutcome::Pending)
+                        && mutation.sequence() == sequence
+                        && mutation.operation_id() == operation_id
+                        && mutation.usb_digest() == digest
+                        && reconcile_binding(mutation.binding(), &binding)
+                        && matches!(
+                            mutation.binding(),
+                            Binding::Managed {
+                                action: Action::Delete { .. },
+                                ..
+                            }
+                        ))
+                    .then_some(*mutation)
+                });
+                if let Some(mutation) = pending_delete
+                    && let Some(result) = self.recover_committed(&mutation)
+                {
+                    let outcome = match result {
+                        Ok(result) => ReceiptOutcome::Committed(result),
+                        Err(error) => ReceiptOutcome::Rejected {
+                            code: lifecycle_error_code(error),
+                        },
+                    };
+                    self.handoff_mut()
+                        .finish(outcome)
+                        .map_err(|_| DispatchError::State)?;
+                    self.persist_handoff().map_err(|_| DispatchError::State)?;
+                }
                 let receipt = self.handoff().receipt().filter(|receipt| {
                     let mutation = receipt.mutation();
                     mutation.sequence() == sequence
@@ -339,7 +369,21 @@ impl Runtime<'_> {
                             publication: publication(status.publication),
                         })
                     }
-                    _ => None,
+                    _ => self
+                        .device_mut()
+                        .pool_deletion_status(pool_id)
+                        .ok()
+                        .map(|status| wire::PoolStatus {
+                            target: PoolTarget {
+                                pool: status.pool_id,
+                                incarnation: status.incarnation_id,
+                            },
+                            revision: status.revision,
+                            health: 12,
+                            active: None,
+                            staged: None,
+                            publication: publication(status.publication),
+                        }),
                 }
             }
             None => None,
@@ -503,12 +547,17 @@ impl Runtime<'_> {
             Binding::Commission { .. } => 0,
             Binding::Managed { action, .. } => match action.pool_target() {
                 None => self.device().revision().unwrap_or(u64::MAX),
-                Some(target) => self
-                    .device_mut()
-                    .pool_status(target.pool)
-                    .ok()
-                    .filter(|status| status.incarnation_id == target.incarnation)
-                    .map_or(u64::MAX, |status| status.revision),
+                Some(target) => {
+                    let status = if matches!(action, Action::Delete { .. }) {
+                        self.device_mut().pool_deletion_status(target.pool)
+                    } else {
+                        self.device_mut().pool_status(target.pool)
+                    };
+                    status
+                        .ok()
+                        .filter(|status| status.incarnation_id == target.incarnation)
+                        .map_or(u64::MAX, |status| status.revision)
+                }
             },
         }
     }
@@ -523,7 +572,17 @@ impl Runtime<'_> {
         ) {
             return None;
         }
-        let expected = mutation.expected_revision().checked_add(1)?;
+        let expected = if matches!(
+            mutation.binding(),
+            Binding::Managed {
+                action: Action::Delete { .. },
+                ..
+            }
+        ) {
+            0
+        } else {
+            mutation.expected_revision().checked_add(1)?
+        };
         let Binding::Managed { action, .. } = *mutation.binding() else {
             return None;
         };
@@ -595,9 +654,8 @@ impl Runtime<'_> {
                 .then_some(Ok(CommittedResult::Applied { revision }))
             }
             Action::Delete { target, .. } => {
-                let revision = self.device().revision().ok()?;
                 let publication = self.device().deletion(target).ok()??;
-                (revision == expected).then_some(
+                Some(
                     DeletionPublication::new(
                         target,
                         publication.revision,
@@ -673,10 +731,7 @@ impl Runtime<'_> {
                 target,
                 publication_time_us,
             } => {
-                require_target(self, target)?;
-                let terminal = self
-                    .device_mut()
-                    .delete_pool(target.pool, publication_time_us)?;
+                let terminal = self.device_mut().delete_pool(target, publication_time_us)?;
                 let deleted = DeletionPublication::new(
                     target,
                     terminal.revision,

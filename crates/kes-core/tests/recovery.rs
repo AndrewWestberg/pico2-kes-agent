@@ -9,7 +9,7 @@ use kes_core::{
     certificate::Certificate,
     identity::{Digest32, GenerationId, IncarnationId, NetworkBinding, OperationId, PoolId},
     lifecycle::{CommissionRequest, Context, Device, Enrollment, Error, PublicationKind},
-    operation::{Handoff, MAX_HANDOFF_BYTES},
+    operation::{Handoff, MAX_HANDOFF_BYTES, PoolTarget},
     platform::{Entropy, EntropyError, Flash},
     storage::{RecordDomain, Recovered, Storage},
 };
@@ -66,6 +66,14 @@ fn enrollment(n: u8) -> Enrollment {
         incarnation_id: IncarnationId::from_bytes([n; 16]),
         network: network(),
         publication_floor_us: 0,
+    }
+}
+
+fn target(n: u8) -> PoolTarget {
+    let pool = enrollment(n);
+    PoolTarget {
+        pool: pool.pool_id,
+        incarnation: pool.incarnation_id,
     }
 }
 
@@ -746,7 +754,7 @@ fn deletion_terminal_publication_survives_reboot_for_receipt_recovery() {
         pool: enrollment(2).pool_id,
         incarnation: enrollment(2).incarnation_id,
     };
-    let terminal = device.delete_pool(target.pool, None).unwrap();
+    let terminal = device.delete_pool(target, None).unwrap();
     let mut entropy = EntropyStream(0x1234_5678_9abc_def1);
     let mut root = [0; 32];
     entropy.fill(&mut root).unwrap();
@@ -763,6 +771,139 @@ fn deletion_terminal_publication_survives_reboot_for_receipt_recovery() {
         restarted.pool_status(target.pool),
         Err(Error::UnknownPool)
     ));
+}
+
+fn assert_deletion_refused_without_writes(device: &mut TestDevice) {
+    let before = device.flash().bytes().to_vec();
+    let start = device.flash().trace.len();
+    assert_eq!(
+        device.pool_deletion_status(target(2).pool),
+        Err(Error::StorageFailure)
+    );
+    assert_eq!(
+        device.delete_pool(target(2), None),
+        Err(Error::StorageFailure)
+    );
+    assert_eq!(device.flash().bytes(), before.as_slice());
+    assert!(device.flash().trace[start..].iter().all(|event| !matches!(
+        event.boundary,
+        Boundary::Program | Boundary::MarkerProgram | Boundary::Erase
+    )));
+}
+
+#[test]
+fn deletion_of_damaged_active_or_staged_objects_preserves_other_pool() {
+    for region in 0..=1 {
+        for restart in [false, true] {
+            let (mut device, _) = ready(2);
+            device
+                .generate(target(2).pool, OperationId::from_bytes([48; 16]))
+                .unwrap();
+            device.enroll(&enrollment(3)).unwrap();
+            let other = device.pool_status(target(3).pool).unwrap();
+            let recipient = device.recipient().unwrap();
+            let expected = device.pool_status(target(2).pool).unwrap();
+            corrupt_programmed_byte(
+                device.flash_mut(),
+                POOL + 2 * BANK + region * PUBLIC,
+                PUBLIC,
+            );
+            if restart {
+                device = reboot(device);
+                recovery(&mut device);
+            }
+            assert_eq!(
+                device.pool_status(target(2).pool),
+                Err(Error::StorageFailure)
+            );
+            let before = device.flash().bytes().to_vec();
+            let start = device.flash().trace.len();
+            assert_eq!(device.pool_deletion_status(target(2).pool), Ok(expected));
+            let wrong = PoolTarget {
+                pool: target(2).pool,
+                incarnation: IncarnationId::from_bytes([99; 16]),
+            };
+            assert_eq!(device.delete_pool(wrong, None), Err(Error::TargetMismatch));
+            assert_eq!(device.flash().bytes(), before.as_slice());
+            assert!(device.flash().trace[start..].iter().all(|event| !matches!(
+                event.boundary,
+                Boundary::Program | Boundary::MarkerProgram | Boundary::Erase
+            )));
+            let terminal = device.delete_pool(target(2), None).unwrap();
+            assert_eq!(terminal.kind, PublicationKind::Drop);
+            assert!(erased(device.flash(), POOL, 0x8000));
+            assert_eq!(device.pool_status(target(3).pool), Ok(other));
+            assert_eq!(device.recipient().unwrap(), recipient);
+            let mut device = reboot(device);
+            recovery(&mut device);
+            assert_eq!(device.pool_status(target(2).pool), Err(Error::UnknownPool));
+            assert_eq!(device.deletion(target(2)), Ok(Some(terminal)));
+            assert_eq!(device.pool_status(target(3).pool), Ok(other));
+            assert_eq!(device.recipient().unwrap(), recipient);
+        }
+    }
+}
+
+#[test]
+fn damaged_pool_deletion_faults_recover_before_slot_reuse() {
+    let (mut device, _) = ready(2);
+    device
+        .generate(target(2).pool, OperationId::from_bytes([49; 16]))
+        .unwrap();
+    device.enroll(&enrollment(3)).unwrap();
+    let other = device.pool_status(target(3).pool).unwrap();
+    let recipient = device.recipient().unwrap();
+    let expected = device.pool_status(target(2).pool).unwrap();
+    corrupt_programmed_byte(device.flash_mut(), POOL + 2 * BANK, PUBLIC);
+    let base = device.into_flash();
+    let mut probe = boot(copy_image(&base));
+    recovery(&mut probe);
+    let start = probe.flash().trace.len();
+    let terminal = probe.delete_pool(target(2), None).unwrap();
+    let trace = probe.flash().trace[start..].to_vec();
+    for (offset, fault) in cuts(&trace) {
+        let mut device = boot(copy_image(&base));
+        recovery(&mut device);
+        let at = device.flash().trace.len() + offset;
+        device.flash_mut().fault = Some((at, fault));
+        let success = device.delete_pool(target(2), None).is_ok();
+        assert!(
+            device.flash().fault.is_none(),
+            "unconsumed {offset} {fault:?}"
+        );
+        let mut device = reboot(device);
+        recovery(&mut device);
+        assert_eq!(
+            device.pool_status(target(3).pool),
+            Ok(other),
+            "{offset} {fault:?}"
+        );
+        assert_eq!(device.recipient().unwrap(), recipient);
+        match device.pool_deletion_status(target(2).pool) {
+            Ok(status) => {
+                assert!(
+                    !success,
+                    "successful deletion resurrected at {offset} {fault:?}"
+                );
+                assert_eq!(status, expected);
+                assert_eq!(
+                    device.pool_status(target(2).pool),
+                    Err(Error::StorageFailure)
+                );
+                assert_eq!(device.deletion(target(2)), Ok(None));
+            }
+            Err(Error::UnknownPool) => {
+                assert!(erased(device.flash(), POOL, 0x8000), "{offset} {fault:?}");
+                assert_eq!(device.deletion(target(2)), Ok(Some(terminal)));
+                device.enroll(&enrollment(4)).unwrap();
+                assert_eq!(
+                    device.pool_status(target(4).pool).unwrap().slot,
+                    expected.slot
+                );
+            }
+            other => panic!("unexpected recovery {other:?} at {offset} {fault:?}"),
+        }
+    }
 }
 
 #[test]
@@ -908,6 +1049,39 @@ fn put_bank(flash: &mut ModelFlash, address: u32, image: &[u8]) {
 }
 
 #[test]
+fn unauthenticated_commit_marker_cannot_authorize_deletion() {
+    let mut device = enrolled(2);
+    let first = &device.flash().bytes()[POOL as usize..(POOL + BANK) as usize];
+    let candidate = if first.iter().all(|byte| *byte == 0xff) {
+        POOL
+    } else {
+        POOL + BANK
+    };
+    device
+        .flash_mut()
+        .program_marker(candidate + BANK - 512, &[0])
+        .unwrap();
+    assert_deletion_refused_without_writes(&mut device);
+}
+
+#[test]
+fn duplicate_authenticated_pool_ids_are_not_deletion_targets() {
+    let mut first = enrolled(2);
+    first.enroll(&enrollment(3)).unwrap();
+    let mut second = enrolled(3);
+    second.enroll(&enrollment(2)).unwrap();
+    let second_slot = POOL + 0x8000;
+    let image =
+        second.flash().bytes()[second_slot as usize..(second_slot + 2 * BANK) as usize].to_vec();
+    let mut flash = first.into_flash();
+    put_bank(&mut flash, second_slot, &image[..BANK as usize]);
+    put_bank(&mut flash, second_slot + BANK, &image[BANK as usize..]);
+    let mut device = boot(flash);
+    recovery(&mut device);
+    assert_deletion_refused_without_writes(&mut device);
+}
+
+#[test]
 fn independently_committed_equal_revisions_and_conflicting_parent_chains_quarantine_pool() {
     let base = enrolled(2).into_flash();
     let mut left = boot(copy_image(&base));
@@ -932,6 +1106,7 @@ fn independently_committed_equal_revisions_and_conflicting_parent_chains_quarant
         device.pool_status(enrollment(2).pool_id),
         Err(Error::StorageFailure)
     );
+    assert_deletion_refused_without_writes(&mut device);
 
     // The next right-hand record is valid, but its parent is right_bank, not
     // the independently committed left_bank placed beside it.
@@ -946,6 +1121,7 @@ fn independently_committed_equal_revisions_and_conflicting_parent_chains_quarant
         device.pool_status(enrollment(2).pool_id),
         Err(Error::StorageFailure)
     );
+    assert_deletion_refused_without_writes(&mut device);
 }
 
 #[test]
@@ -983,6 +1159,7 @@ fn committed_successor_with_corrupt_body_never_falls_back_to_predecessor() {
         d.current(enrollment(2).pool_id, enrollment(2).incarnation_id, 100),
         Err(Error::StorageFailure)
     );
+    assert_deletion_refused_without_writes(&mut d);
 }
 
 #[test]
@@ -998,7 +1175,7 @@ fn directory_intents_recover_before_slot_reuse_for_enroll_and_delete() {
         recovery(&mut probe);
         let start = probe.flash().trace.len();
         if deleting {
-            probe.delete_pool(enrollment(2).pool_id, None).unwrap();
+            probe.delete_pool(target(2), None).unwrap();
         } else {
             probe.enroll(&enrollment(2)).unwrap();
         }
@@ -1009,7 +1186,7 @@ fn directory_intents_recover_before_slot_reuse_for_enroll_and_delete() {
             let at = d.flash().trace.len() + offset;
             d.flash_mut().fault = Some((at, fault));
             let outcome = if deleting {
-                d.delete_pool(enrollment(2).pool_id, None).map(|_| ())
+                d.delete_pool(target(2), None).map(|_| ())
             } else {
                 d.enroll(&enrollment(2)).map(|_| ())
             };
@@ -1114,7 +1291,7 @@ fn pool_floor_is_durable_incarnation_local_and_equal_refresh_does_not_write() {
         Err(Error::PeriodRegressive)
     );
     d.accept_context(&context(3, 8, 200, 4), 100).unwrap();
-    d.delete_pool(enrollment(2).pool_id, None).unwrap();
+    d.delete_pool(target(2), None).unwrap();
     let mut next = enrollment(2);
     next.incarnation_id = IncarnationId::from_bytes([99; 16]);
     d.enroll(&next).unwrap();
