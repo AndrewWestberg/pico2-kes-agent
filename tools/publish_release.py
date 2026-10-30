@@ -81,7 +81,10 @@ def publish(bundle, tag, commit):
     manifest = firmware.verify_bundle(bundle)
     firmware.require(manifest["tag"] == tag and manifest["commit"] == commit,
                      "bundle does not match triggering tag/commit")
-    target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}"))
+    # Commit responses include every changed-file patch; retain only the identity
+    # needed here before applying the subprocess diagnostic bound.
+    target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}",
+                           "--jq", "{sha: .sha}"))
     firmware.require(target.get("sha") == commit, "triggering tag moved or resolves to another commit")
     prerelease = "-" in tag
     classification_args = ("--prerelease", "--latest=false") if prerelease else ()
@@ -108,7 +111,8 @@ def publish(bundle, tag, commit):
     firmware.require(uploaded.get("prerelease") is prerelease, "draft classification changed")
     require_asset_set(uploaded, bundle)
     compare_download(tag, bundle)
-    target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}"))
+    target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}",
+                           "--jq", "{sha: .sha}"))
     firmware.require(target.get("sha") == commit, "triggering tag moved during upload; draft retained")
     gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false", *classification_args)
     print("Verified complete release published.")
