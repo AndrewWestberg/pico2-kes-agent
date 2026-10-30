@@ -40,6 +40,7 @@ static const uint8_t expected_key[32] = {
     0xbe,0x36,0x4e,0x66,0x0f,0x6e,0x72,0x36,0xcc,0x14,0xd3,0xe7,0x4b,0x33,0x66,0x03,
     0x11,0x60,0x8f,0xa7,0x8f,0x38,0xcd,0x6c,0xc5,0xc4,0xf0,0x31,0xc9,0x10,0xb8,0xa0
 };
+#ifndef PICO2_OTP_CRIT1_REPAIR
 /* RQ0..RQ11, CQ0..CQ1; exact ROM raw-program and read tables. */
 static const uint8_t dap_read[14] = {1,0x6e,9,4,0,0,0x1f,1,8,0,0,0,0,0};
 static const uint8_t dap_prog[14] = {1,0x48,0x29,4,0,0,0x1f,1,8,0,1,0,0,0};
@@ -63,6 +64,7 @@ static void emit_trace(uint32_t row, uint32_t value) {
         printf("trace %u us=%" PRIu32 " what=%08" PRIx32 " value=%08" PRIx32 " polls=%" PRIu32 "\n",
                i, trace[i].us, trace[i].what, trace[i].value, trace[i].polls);
 }
+#endif
 static bool raw(uint32_t row, uint32_t *value) {
     otp_cmd_t cmd = {.flags = row};
     return rom_func_otp_access((uint8_t *)value, 4, cmd) == BOOTROM_OK;
@@ -80,10 +82,18 @@ static bool identity(bool announce) {
     int rc = rom_func_otp_access((uint8_t *)key, sizeof key, cmd);
     bool key_ok = rc == BOOTROM_OK && memcmp(key, expected_key, sizeof key) == 0;
     ok = ok && key_ok;
-    if (announce) printf("identity result=%d words=%d flags=%08" PRIx32 " package=%08" PRIx32 " chip=%08" PRIx32 "%08" PRIx32 " rom=%u critical=%08" PRIx32 " key_match=%u\n",
-                         ok, n, info[0], info[1], info[3], info[2], version, critical, key_ok);
+    if (announce) {
+        printf("identity result=%d words=%d flags=%08" PRIx32 " package=%08" PRIx32 " chip=%08" PRIx32 "%08" PRIx32 " rom=%u critical=%08" PRIx32 " key_match=%u",
+               ok, n, info[0], info[1], info[3], info[2], version, critical, key_ok);
+#ifdef PICO2_OTP_CRIT1_REPAIR
+        printf(" key=");
+        for (unsigned i = 0; i < sizeof key; ++i) printf("%02x", ((uint8_t *)key)[i]);
+#endif
+        puts("");
+    }
     return ok;
 }
+#ifndef PICO2_OTP_CRIT1_REPAIR
 static bool locks(bool announce) {
     uint32_t l0 = 0, l1 = 0;
     bool ok = raw(OTP_DATA_PAGE3_LOCK0_ROW, &l0) && raw(OTP_DATA_PAGE3_LOCK1_ROW, &l1);
@@ -331,3 +341,164 @@ int main(void) {
         n = 0; overflow = false;
     }
 }
+#else
+#include "repair_sequence.h"
+
+#define REPAIR_STATUS_MASK (OTP_SBPI_STATUS_INSTR_DONE_BITS | OTP_SBPI_STATUS_INSTR_MISS_BITS)
+#define SERIAL "00afd9003906a634"
+static struct repair_sequence sequence = { IDLE, 1 };
+static uint32_t admitted_lock1, admitted_sw1;
+
+static bool read_row(uint32_t row, uint32_t *value, bool announce) {
+    *value = 0;
+    bool ok = raw(row, value);
+    if (announce) printf("row=%04" PRIx32 " raw=%08" PRIx32 " read_ok=%u\n", row, *value, ok);
+    return ok;
+}
+
+static bool page(unsigned p, uint32_t *l0, uint32_t *l1, bool announce) {
+    bool a = raw(0xf80u + p * 2u, l0);
+    bool b = raw(0xf81u + p * 2u, l1);
+    if (announce) printf("page%u lock0=%08" PRIx32 " lock1=%08" PRIx32 " sw=%08" PRIx32 " reads_ok=%u\n",
+                         p, *l0, *l1, otp_hw->sw_lock[p], a && b);
+    return a && b;
+}
+
+static void snapshot(void) {
+    puts("CRIT1_REPAIR protocol=1");
+    identity(true);
+    uint32_t v;
+    for (uint32_t row = 0x40; row <= 0x4d; ++row) read_row(row, &v, true);
+    const unsigned pages[] = {1, 2, 3, 63};
+    for (unsigned i = 0; i < 4; ++i) {
+        uint32_t l0 = 0, l1 = 0;
+        page(pages[i], &l0, &l1, true);
+    }
+    for (uint32_t row = 0xc4; row <= 0xcb; ++row) read_row(row, &v, true);
+    for (uint32_t row = 0xd0; row <= 0xd7; ++row) read_row(row, &v, true);
+    for (uint32_t row = 0xe0; row <= 0xef; ++row) read_row(row, &v, true);
+    uint32_t dbg = otp_hw->dbg;
+    printf("controller status=%08" PRIx32 " usr=%08" PRIx32 " dbg=%08" PRIx32
+           " debugen=%08" PRIx32 " debugen_lock=%08" PRIx32 " rma=%u\n",
+           otp_hw->sbpi_status, otp_hw->usr, dbg, otp_hw->debugen, otp_hw->debugen_lock,
+           !!(dbg & OTP_DBG_CUSTOMER_RMA_FLAG_BITS));
+    puts("SNAPSHOT_END");
+}
+
+/* Verify the immutable public policy separately from write permissions, so
+ * already-complete devices never need to have Secure write access. */
+static bool policy(void) {
+    if (!identity(false) || (otp_hw->critical != 5 && otp_hw->critical != 7) ||
+        (otp_hw->dbg & OTP_DBG_CUSTOMER_RMA_FLAG_BITS) ||
+        (otp_hw->debugen & 0x10fu) || (otp_hw->debugen_lock & 0x10fu) != 0x10fu)
+        return false;
+    for (uint32_t row = 0x48; row <= 0x4d; ++row) {
+        uint32_t v;
+        if (!read_row(row, &v, false) || v != (row <= 0x4a ? 0x2da180u : 0xe01u)) return false;
+    }
+    uint32_t l0 = 0, l1 = 0;
+    if (!page(2, &l0, &l1, false) || l0 != 0 || l1 != 0x151515u) return false;
+    if (!page(63, &l0, &l1, false) || l0 != 0 || l1 != 0x151515u) return false;
+    return true;
+}
+
+static bool permissions(void) {
+    uint32_t l0 = 0, l1 = 0, sw = otp_hw->sw_lock[1];
+    if (!page(1, &l0, &l1, false) || l0 != 0 || (l1 & 0xff000000u)) return false;
+    uint32_t b = l1 & 0xffu;
+    if (l1 != (b | b << 8 | b << 16) || (b & 0xc3u) ||
+        ((b >> 2) & 3u) == 2 || ((b >> 4) & 3u) == 2) return false;
+    return !(sw & ~0x0fu) && !(sw & 3u) && ((sw >> 2) & 3u) != 2;
+}
+
+static bool controller(void) {
+    return otp_hw->usr == OTP_USR_DCTRL_BITS && !(otp_hw->sbpi_status & REPAIR_STATUS_MASK);
+}
+
+/* completed is the number of newly programmed rows following row 0x40. */
+static bool group(unsigned completed) {
+    for (unsigned i = 0; i < 8; ++i) {
+        uint32_t v;
+        if (!read_row(0x40u + i, &v, false) || v != (i <= completed ? 7u : 5u)) return false;
+    }
+    return true;
+}
+
+static void arm(void) {
+    if (sequence.phase != IDLE) { repair_abort(&sequence); puts("ABORT reason=sequence"); return; }
+    if (!policy()) { repair_abort(&sequence); puts("ABORT reason=admission"); return; }
+    if (group(7)) { repair_abort(&sequence); puts("ALREADY_COMPLETE"); return; }
+    if (otp_hw->critical != 5 || !group(0) || !permissions() || !controller()) {
+        repair_abort(&sequence); puts("ABORT reason=admission"); return;
+    }
+    uint32_t lock0 = 0;
+    if (!page(1, &lock0, &admitted_lock1, false) || lock0 != 0) {
+        repair_abort(&sequence); puts("ABORT reason=admission"); return;
+    }
+    admitted_sw1 = otp_hw->sw_lock[1];
+    if (!repair_arm(&sequence)) { puts("ABORT reason=sequence"); return; }
+    puts("READY step=1 next=0041");
+}
+
+static bool permissions_unchanged(void) {
+    uint32_t l0 = 0, l1 = 0;
+    return permissions() && page(1, &l0, &l1, false) && l0 == 0 &&
+           l1 == admitted_lock1 && otp_hw->sw_lock[1] == admitted_sw1;
+}
+
+static void next(unsigned step) {
+    if (!repair_claim(&sequence, (uint8_t)step)) { puts("ABORT reason=sequence"); return; }
+    if (otp_hw->critical != 5 || !policy() || !permissions_unchanged() || !group(step - 1) || !controller()) {
+        repair_abort(&sequence); puts("ABORT reason=preflight"); return;
+    }
+    uint32_t row = 0x40u + step, payload = 7, observed = 0;
+    printf("INTENT step=%u row=%04" PRIx32 " count=1 payload=00000007\n", step, row);
+    stdio_flush();
+    if (!stdio_usb_connected()) { repair_abort(&sequence); puts("ABORT reason=disconnected"); return; }
+    otp_cmd_t cmd = {.flags = row | OTP_CMD_WRITE_BITS};
+    uint32_t start = time_us_32();
+    int rc = rom_func_otp_access((uint8_t *)&payload, 4, cmd);
+    uint32_t elapsed = time_us_32() - start, status = otp_hw->sbpi_status;
+    bool read_ok = read_row(row, &observed, false);
+    printf("RESULT step=%u row=%04" PRIx32 " rc=%d status=%08" PRIx32
+           " raw=%08" PRIx32 " read_ok=%u elapsed_us=%" PRIu32 "\n",
+           step, row, rc, status, observed, read_ok, elapsed);
+    bool verified = rc == BOOTROM_OK && !(status & REPAIR_STATUS_MASK) && read_ok &&
+                    observed == 7 && policy() && permissions_unchanged() && group(step) && controller();
+    if (!repair_finish(&sequence, verified)) { puts("ABORT reason=verification"); return; }
+    if (sequence.phase == COMPLETE) puts("COMPLETE");
+}
+
+int main(void) {
+    otp_hw->debugen = otp_hw->debugen & ~0x10fu;
+    otp_hw->debugen_lock = 0x10fu;
+    if ((otp_hw->debugen & 0x10fu) || (otp_hw->debugen_lock & 0x10fu) != 0x10fu)
+        for (;;) tight_loop_contents();
+    stdio_init_all();
+    while (!stdio_usb_connected()) sleep_ms(20);
+    puts("CRIT1_REPAIR protocol=1");
+    char line[64]; unsigned n = 0; bool overflow = false;
+    for (;;) {
+        int c = getchar_timeout_us(100000);
+        if (c == PICO_ERROR_TIMEOUT) {
+            if (sequence.phase == ARMED && !stdio_usb_connected()) repair_abort(&sequence);
+            continue;
+        }
+        if (c != '\n') {
+            if (c < 0x20 || c > 0x7e) { overflow = true; repair_abort(&sequence); }
+            else if (n + 1 < sizeof line) line[n++] = (char)c;
+            else { overflow = true; repair_abort(&sequence); }
+            continue;
+        }
+        line[n] = 0;
+        if (!overflow && !strcmp(line, "SNAPSHOT")) snapshot();
+        else if (!overflow && !strcmp(line, "CRIT1REPAIR " SERIAL)) arm();
+        else if (!overflow && !strncmp(line, "NEXT " SERIAL " ", sizeof("NEXT " SERIAL " ") - 1) &&
+                 strlen(line) == sizeof("NEXT " SERIAL " ") && line[sizeof("NEXT " SERIAL " ") - 1] >= '1' &&
+                 line[sizeof("NEXT " SERIAL " ") - 1] <= '7')
+            next((unsigned)(line[sizeof("NEXT " SERIAL " ") - 1] - '0'));
+        else { repair_abort(&sequence); puts("ABORT reason=command"); }
+        n = 0; overflow = false;
+    }
+}
+#endif

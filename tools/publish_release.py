@@ -83,10 +83,14 @@ def publish(bundle, tag, commit):
                      "bundle does not match triggering tag/commit")
     target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}"))
     firmware.require(target.get("sha") == commit, "triggering tag moved or resolves to another commit")
+    prerelease = "-" in tag
+    classification_args = ("--prerelease", "--latest=false") if prerelease else ()
     existing = release_state(tag)
     if existing is not None:
         firmware.require(existing.get("tag_name") == tag and existing.get("draft") is False,
                          "pre-existing draft/partial release; explicit maintainer action required")
+        firmware.require(existing.get("prerelease") is prerelease,
+                         "pre-existing release has conflicting prerelease classification")
         require_asset_set(existing, bundle)
         compare_download(tag, bundle)
         print("Identical completed release already exists; no changes.")
@@ -95,17 +99,18 @@ def publish(bundle, tag, commit):
         notes = Path(temporary) / "notes.txt"
         notes.write_text(NOTES, encoding="utf-8")
         gh("release", "create", tag, "--repo", REPOSITORY, "--verify-tag", "--target", commit,
-           "--draft", "--title", tag, "--notes-file", notes)
+           "--draft", "--title", tag, "--notes-file", notes, *classification_args)
     # Any failure leaves a reported draft, never a published partial bundle.
     gh("release", "upload", tag, "--repo", REPOSITORY,
        *(bundle / name for name in (*firmware.ARTIFACTS, "release.json", "release.json.sig")))
     uploaded = release_state(tag)
     firmware.require(uploaded is not None and uploaded.get("draft") is True, "draft release changed")
+    firmware.require(uploaded.get("prerelease") is prerelease, "draft classification changed")
     require_asset_set(uploaded, bundle)
     compare_download(tag, bundle)
     target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}"))
     firmware.require(target.get("sha") == commit, "triggering tag moved during upload; draft retained")
-    gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false")
+    gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false", *classification_args)
     print("Verified complete release published.")
 
 

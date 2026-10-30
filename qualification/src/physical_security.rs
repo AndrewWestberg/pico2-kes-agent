@@ -386,8 +386,13 @@ pub(super) fn execute(path: &Path) -> Result<(), String> {
         return Err("preservation requires an attended terminal".into());
     }
     protect_process().map_err(|_| "cannot disable process dumps")?;
-    let input: Input = serde_json::from_slice(&read_bounded(path, 65536)?)
-        .map_err(|e| format!("invalid public fixture schema at {}:{}", e.line(), e.column()))?;
+    let input: Input = serde_json::from_slice(&read_bounded(path, 65536)?).map_err(|e| {
+        format!(
+            "invalid public fixture schema at {}:{}",
+            e.line(),
+            e.column()
+        )
+    })?;
     if input.output == path {
         return Err("output must not replace input".into());
     }
@@ -404,12 +409,35 @@ pub(super) fn execute(path: &Path) -> Result<(), String> {
         }
     }
 }
+fn validate_bundle_transition(
+    scenario: &str,
+    before: (&str, &str, &str, &str),
+    after: (&str, &str, &str, &str),
+) -> Result<(), String> {
+    if scenario == "reinstall" {
+        if before != after {
+            return Err("reinstall requires identical verified bundles".into());
+        }
+    } else if before.0 == after.0
+        || before.1 == after.1
+        || before.2 == after.2
+        || before.3 == after.3
+    {
+        return Err(
+            "distinct verified versions, source commits, manifests and firmware images required"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn execute_attended(input: &Input) -> Result<(), String> {
     if input.pools.len() < 2
         || input.pools.len() > 16
         || !matches!(
             input.scenario.as_str(),
             "upgrade"
+                | "reinstall"
                 | "downgrade"
                 | "interrupted_beginning"
                 | "interrupted_middle"
@@ -424,16 +452,21 @@ fn execute_attended(input: &Input) -> Result<(), String> {
     }
     let before_bundle = bundle(&input.before_bundle)?;
     let after_bundle = bundle(&input.after_bundle)?;
-    if before_bundle.0 == after_bundle.0
-        || before_bundle.1 == after_bundle.1
-        || before_bundle.2 == after_bundle.2
-        || before_bundle.3 == after_bundle.3
-    {
-        return Err(
-            "distinct verified versions, source commits, manifests and firmware images required"
-                .into(),
-        );
-    }
+    validate_bundle_transition(
+        &input.scenario,
+        (
+            &before_bundle.0,
+            &before_bundle.1,
+            &before_bundle.2,
+            &before_bundle.3,
+        ),
+        (
+            &after_bundle.0,
+            &after_bundle.1,
+            &after_bundle.2,
+            &after_bundle.3,
+        ),
+    )?;
     let pin = IdentityPin {
         device: DeviceId::parse_hex(&input.device_id).map_err(|_| "invalid device")?,
         public_key: parse_hex(&input.identity_public_key)?,
@@ -597,4 +630,47 @@ fn execute_attended(input: &Input) -> Result<(), String> {
         "Public preservation observation written; full security qualification requires the other independent checks."
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_bundle_transition;
+
+    #[test]
+    fn reinstall_requires_all_bundle_fields_equal() {
+        let before = ("manifest", "commit", "tag", "image");
+        assert!(validate_bundle_transition("reinstall", before, before).is_ok());
+        for after in [
+            ("other", "commit", "tag", "image"),
+            ("manifest", "other", "tag", "image"),
+            ("manifest", "commit", "other", "image"),
+            ("manifest", "commit", "tag", "other"),
+        ] {
+            assert!(validate_bundle_transition("reinstall", before, after).is_err());
+        }
+    }
+
+    #[test]
+    fn existing_scenarios_require_every_field_distinct() {
+        let before = ("manifest", "commit", "tag", "image");
+        let distinct = ("other-manifest", "other-commit", "other-tag", "other-image");
+        for scenario in [
+            "upgrade",
+            "downgrade",
+            "interrupted_beginning",
+            "interrupted_middle",
+            "interrupted_end",
+        ] {
+            assert!(validate_bundle_transition(scenario, before, before).is_err());
+            assert!(validate_bundle_transition(scenario, before, distinct).is_ok());
+            for after in [
+                ("manifest", distinct.1, distinct.2, distinct.3),
+                (distinct.0, "commit", distinct.2, distinct.3),
+                (distinct.0, distinct.1, "tag", distinct.3),
+                (distinct.0, distinct.1, distinct.2, "image"),
+            ] {
+                assert!(validate_bundle_transition(scenario, before, after).is_err());
+            }
+        }
+    }
 }

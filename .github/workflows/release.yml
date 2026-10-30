@@ -59,7 +59,7 @@ jobs:
           PICO2_PERMISSIONS_HELPER: ${{ github.workspace }}/target/otp-permissions/pico2-otp-permissions.elf
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tools/tests -p 'test_firmware.py'
+          python3 -m unittest discover -s tools/tests -p 'test_*.py'
           cp target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware release-build/pico2-kes-firmware.elf
           cp target/otp-permissions/pico2-otp-permissions.elf release-build/pico2-otp-permissions.elf
           {
