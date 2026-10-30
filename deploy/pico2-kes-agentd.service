@@ -40,6 +40,9 @@ RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=yes
 SystemCallArchitectures=native
 ProcSubset=pid
+# Keep non-process /proc entries hidden; expose only live swap status.
+BindReadOnlyPaths=/proc/swaps:/run/pico2-kes-agent/host-swaps
+Environment=PICO2_KES_PROC_SWAPS=/run/pico2-kes-agent/host-swaps
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes

@@ -172,6 +172,9 @@ struct Emulator {
     unavailable: bool,
     disconnected: bool,
     wrong_identity: bool,
+    stale_hello: bool,
+    malformed_hello: bool,
+    hello_timeout: bool,
     last_generation: Option<GenerationId>,
     security: Option<kes_protocol::security::SecurityStatus>,
 }
@@ -199,6 +202,9 @@ impl Emulator {
             unavailable: false,
             disconnected: false,
             wrong_identity: false,
+            stale_hello: false,
+            malformed_hello: false,
+            hello_timeout: false,
             last_generation: None,
             security: Some(kes_protocol::security::SecurityStatus {
                 chip_revision: 2,
@@ -241,24 +247,12 @@ impl Emulator {
 
     fn status(&mut self, pool: Option<PoolId>) -> Result<Reply, UsbError> {
         if self.unavailable {
-            return self.encode(&Response::Status(wire::StatusResponse {
-                device: DeviceId::from_bytes([0; 16]),
-                revision: 0,
-                health: 12,
-                commissioning_state: 2,
-                receipt_pending: self.handoff.receipt().is_some(),
-                pool: None,
-                next_pool: None,
-            }));
+            return Err(UsbError::NotFound);
         }
-        let (device, revision, commissioning_state) = match self.device().identity() {
-            Some(identity) => (
-                identity.enrollment_record().public().device(),
-                self.device().revision().unwrap_or(0),
-                1,
-            ),
-            None => (DeviceId::from_bytes([0; 16]), 0, 0),
-        };
+        let identity = self.device().identity().ok_or(UsbError::Protocol)?;
+        let device = identity.enrollment_record().public().device();
+        let revision = self.device().revision().unwrap_or(0);
+        let commissioning_state = 1;
         let pool = pool
             .and_then(|pool_id| self.device_mut().pool_status(pool_id).ok())
             .map(|status| wire::PoolStatus {
@@ -281,6 +275,54 @@ impl Emulator {
             pool,
             next_pool: None,
         }))
+    }
+
+    fn hello(&self, mut nonce: [u8; 32]) -> Result<Reply, UsbError> {
+        if self.unavailable {
+            return Err(UsbError::NotFound);
+        }
+        if self.hello_timeout {
+            return Err(UsbError::Io(std::io::ErrorKind::TimedOut.into()));
+        }
+        if self.malformed_hello {
+            return Ok(Reply::from_parts(wire::Kind::Hello, vec![0xff]));
+        }
+        if self.stale_hello {
+            nonce[0] ^= 1;
+        }
+        let Some(identity) = self.device().identity() else {
+            return self.encode(&Response::Hello(wire::HelloResponse {
+                nonce,
+                state: wire::HelloState::Uncommissioned,
+            }));
+        };
+        let record = identity.enrollment_record().public();
+        let mut response = wire::HelloResponse {
+            nonce,
+            state: wire::HelloState::Committed(wire::HelloIdentity {
+                device: record.device(),
+                public_key: *record.identity_public_key(),
+                serial: *record.serial(),
+                protocol_version: record.protocol_version(),
+                storage_version: record.storage_version(),
+                capacity: 64,
+                commissioning_state: 1,
+                signature: [0; 64],
+            }),
+        };
+        let mut output = [0; wire::MAX_PAYLOAD];
+        let len =
+            wire::encode_hello_signing(&response, &mut output).map_err(|_| UsbError::Protocol)?;
+        let signature = self
+            .device()
+            .sign_identity_message(&output[..len])
+            .map_err(|_| UsbError::Protocol)?;
+        let wire::HelloState::Committed(mut committed) = response.state else {
+            unreachable!()
+        };
+        committed.signature = signature;
+        response.state = wire::HelloState::Committed(committed);
+        self.encode(&Response::Hello(response))
     }
 
     fn public_receipt(receipt: &Receipt) -> wire::PublicReceipt {
@@ -670,6 +712,7 @@ impl DeviceTransport for Emulator {
             return Err(UsbError::IdentityMismatch);
         }
         match request {
+            Request::Hello { nonce } => self.hello(*nonce),
             Request::Status { pool } => self.status(*pool),
             Request::SecurityStatus => {
                 let report = self.security.ok_or(UsbError::Protocol)?;
@@ -792,7 +835,6 @@ impl DeviceTransport for Emulator {
                     result,
                 }))
             }
-            _ => Err(UsbError::Protocol),
         }
     }
 
@@ -1018,6 +1060,10 @@ impl TestRig {
             stdout,
             stderr,
         }
+    }
+
+    pub fn status_cli(&self) -> CliResult {
+        self.run_cli(vec!["status".into()])
     }
 
     pub fn commission_cli(&mut self, serial: &str, operation: &str) -> CliResult {
@@ -1354,6 +1400,17 @@ impl TestRig {
     }
     pub fn disconnect_device(&self) {
         self.state.lock().unwrap().usb.disconnected = true;
+    }
+    pub fn stale_hello(&self) {
+        self.state.lock().unwrap().usb.stale_hello = true;
+    }
+
+    pub fn malformed_hello(&self) {
+        self.state.lock().unwrap().usb.malformed_hello = true;
+    }
+
+    pub fn timeout_hello(&self) {
+        self.state.lock().unwrap().usb.hello_timeout = true;
     }
 
     pub fn certificate_for_other_generation(&self) -> String {

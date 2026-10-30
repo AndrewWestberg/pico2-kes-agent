@@ -21,7 +21,7 @@ use kes_protocol::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::File, io::Read};
 
 #[derive(Debug)]
 pub enum Error {
@@ -143,16 +143,50 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
 
     fn status(&mut self, pool: Option<PoolId>) -> Result<Value, Error> {
         let recovering = self.journal.pending().is_some();
-        match self.usb.request(&Request::Status { pool }) {
-            Ok(reply) => match reply.decode().map_err(|_| Error::Protocol)? {
-                Response::Status(response) => Ok(status::response(response, recovering)),
-                _ => Err(Error::Protocol),
-            },
-            Err(UsbError::NotFound | UsbError::Usb(_) | UsbError::Io(_) | UsbError::Interface) => {
-                Ok(status::unavailable(recovering, pool))
+        let probe = if self.config.mode == RunMode::Commissioning {
+            let mut nonce = [0; 32];
+            File::open("/dev/urandom")
+                .and_then(|mut file| file.read_exact(&mut nonce))
+                .map_err(|error| Error::Usb(UsbError::Io(error)))?;
+            self.usb
+                .request(&Request::Hello { nonce })
+                .map_err(Error::Usb)
+                .and_then(|reply| {
+                    if reply.kind != wire::Kind::Hello {
+                        return Err(Error::Protocol);
+                    }
+                    let Response::Hello(hello) = reply.decode().map_err(|_| Error::Protocol)?
+                    else {
+                        return Err(Error::Protocol);
+                    };
+                    if hello.nonce != nonce {
+                        return Err(Error::Protocol);
+                    }
+                    Ok(matches!(hello.state, wire::HelloState::Uncommissioned))
+                })
+        } else {
+            Ok(false)
+        };
+        let result = probe.and_then(|blank| {
+            if blank {
+                return Ok(json!({
+                    "health": if recovering { "recovering" } else { "ready" },
+                    "commissioning_state": "blank",
+                }));
             }
-            Err(UsbError::Busy) => Ok(status::unavailable(true, pool)),
-            Err(error) => Err(Error::Usb(error)),
+            let reply = self.usb.request(&Request::Status { pool })?;
+            let Response::Status(response) = reply.decode().map_err(|_| Error::Protocol)? else {
+                return Err(Error::Protocol);
+            };
+            Ok(status::response(response, recovering))
+        });
+        match result {
+            Ok(response) => Ok(response),
+            Err(Error::Usb(
+                UsbError::NotFound | UsbError::Usb(_) | UsbError::Io(_) | UsbError::Interface,
+            )) => Ok(status::unavailable(recovering, pool)),
+            Err(Error::Usb(UsbError::Busy)) => Ok(status::unavailable(true, pool)),
+            Err(error) => Err(error),
         }
     }
 
