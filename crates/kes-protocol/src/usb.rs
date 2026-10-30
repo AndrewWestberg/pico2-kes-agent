@@ -1494,6 +1494,36 @@ pub struct StatusResponse {
     pub pool: Option<PoolStatus>,
     pub next_pool: Option<PoolId>,
 }
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContextPhase {
+    Accept = 1,
+    ResolveSlot = 2,
+    Schedule = 3,
+    CatchUp = 4,
+    ReadFloor = 5,
+}
+
+impl ContextPhase {
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Accept),
+            2 => Some(Self::ResolveSlot),
+            3 => Some(Self::Schedule),
+            4 => Some(Self::CatchUp),
+            5 => Some(Self::ReadFloor),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContextDiagnostics {
+    pub phase: ContextPhase,
+    pub storage: Option<kes_core::storage::StorageFailure>,
+    pub entropy: Option<kes_core::platform::EntropyFailure>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContextResponse {
     pub target: PoolTarget,
@@ -1501,6 +1531,7 @@ pub struct ContextResponse {
     pub sequence: u64,
     pub floor: u64,
     pub result: Result<(), u16>,
+    pub diagnostics: Option<ContextDiagnostics>,
 }
 // Receipt reconciliation keeps the bounded serial inline without allocation.
 #[allow(clippy::large_enum_variant)]
@@ -2184,7 +2215,10 @@ pub fn encode_response(value: &Response<'_>, out: &mut [u8]) -> Result<(Kind, us
             Kind::Status
         }
         Response::Context(v) => {
-            w.map(5)?;
+            if v.result.is_ok() && v.diagnostics.is_some() {
+                return Err(Error::Schema);
+            }
+            w.map(if v.diagnostics.is_some() { 6 } else { 5 })?;
             w.uint(1)?;
             w.target(v.target)?;
             w.uint(2)?;
@@ -2195,6 +2229,22 @@ pub fn encode_response(value: &Response<'_>, out: &mut [u8]) -> Result<(Kind, us
             w.uint(v.floor)?;
             w.uint(5)?;
             w.result(v.result)?;
+            if let Some(diagnostics) = v.diagnostics {
+                w.uint(6)?;
+                w.map(3)?;
+                w.uint(1)?;
+                w.uint(diagnostics.phase as u64)?;
+                w.uint(2)?;
+                if let Some(storage) = diagnostics.storage {
+                    w.head(4, 2)?;
+                    w.uint(storage.stage as u64)?;
+                    w.uint(storage.error.diagnostic_code().into())?;
+                } else {
+                    w.raw(&[0xf6])?;
+                }
+                w.uint(3)?;
+                w.optional_uint(diagnostics.entropy.map(|value| value as u64))?;
+            }
             Kind::Context
         }
         Response::Mutate(v) => {
@@ -2377,7 +2427,10 @@ pub fn decode_response(kind: Kind, bytes: &[u8]) -> Result<Response<'_>, Error> 
             })
         }
         Kind::Context => {
-            c.map(5)?;
+            let fields = c.head()?;
+            if fields != (5, 5) && fields != (5, 6) {
+                return Err(Error::Schema);
+            }
             c.key(1)?;
             let target = c.target()?;
             c.key(2)?;
@@ -2388,12 +2441,51 @@ pub fn decode_response(kind: Kind, bytes: &[u8]) -> Result<Response<'_>, Error> 
             let floor = c.uint()?;
             c.key(5)?;
             let result = c.result()?;
+            let diagnostics = if fields == (5, 6) {
+                if result.is_ok() {
+                    return Err(Error::Schema);
+                }
+                c.key(6)?;
+                c.map(3)?;
+                c.key(1)?;
+                let phase = ContextPhase::from_code(c.small()?).ok_or(Error::Schema)?;
+                c.key(2)?;
+                let storage = if c.null() {
+                    None
+                } else {
+                    if c.head()? != (4, 2) {
+                        return Err(Error::Schema);
+                    }
+                    let stage = kes_core::storage::StorageStage::from_code(c.small()?)
+                        .ok_or(Error::Schema)?;
+                    let error = kes_core::storage::StorageError::from_diagnostic_code(c.small()?)
+                        .ok_or(Error::Schema)?;
+                    Some(kes_core::storage::StorageFailure { stage, error })
+                };
+                c.key(3)?;
+                let entropy = if c.null() {
+                    None
+                } else {
+                    Some(
+                        kes_core::platform::EntropyFailure::from_code(c.small()?)
+                            .ok_or(Error::Schema)?,
+                    )
+                };
+                Some(ContextDiagnostics {
+                    phase,
+                    storage,
+                    entropy,
+                })
+            } else {
+                None
+            };
             Response::Context(ContextResponse {
                 target,
                 session,
                 sequence,
                 floor,
                 result,
+                diagnostics,
             })
         }
         Kind::Mutate => {

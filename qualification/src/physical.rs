@@ -1,9 +1,18 @@
 use kes_core::identity::{DeviceId, Digest32, IncarnationId, NetworkBinding, PoolId};
 use kes_core::operation::PoolTarget;
-use kes_protocol::usb::{Request, Response};
+use kes_protocol::usb::{ContextResponse, Kind, Request, Response};
 use pico2_kes_agent::daemon::usb::{IdentityPin, Mode, Transport, UsbSelection};
 use serde::Deserialize;
-use std::{fs, path::Path, time::Duration};
+use serde_json::json;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+#[path = "context_evidence.rs"]
+mod context_evidence;
+use context_evidence::ContextEvidence;
 
 #[path = "physical_security.rs"]
 mod physical_security;
@@ -95,8 +104,11 @@ fn execute(path: &Path) -> Result<(), String> {
         return Err("device returned the wrong status response kind".into());
     };
     println!("pre-context pool status: {:?}", status.pool);
-    let reply = transport
-        .request(&Request::Context {
+    let evidence = context_evidence_path(path, None, input.session, input.sequence);
+    let response = request_context(
+        &mut transport,
+        &evidence,
+        Request::Context {
             target,
             network,
             period: input.period,
@@ -104,26 +116,112 @@ fn execute(path: &Path) -> Result<(), String> {
             sequence: input.sequence,
             lease_seconds: input.lease_seconds,
             publication_time_us: input.publication_time_us,
-        })
-        .map_err(|error| format!("request: {error}"))?;
-    let Response::Context(response) = reply.decode().map_err(|error| format!("decode: {error}"))?
-    else {
-        return Err("device returned the wrong response kind".into());
-    };
-    if response.target != target
-        || response.session != input.session
-        || response.sequence != input.sequence
-    {
-        return Err("device returned a mismatched context binding".into());
-    }
-    response
-        .result
-        .map_err(|code| format!("device rejected context with code {code}"))?;
+        },
+        None,
+    )?;
     println!(
         "accepted pool={} incarnation={} period={} floor={}",
         input.pool_id, input.incarnation_id, input.period, response.floor
     );
     Ok(())
+}
+
+fn context_evidence_path(base: &Path, step: Option<u64>, session: u64, sequence: u64) -> PathBuf {
+    let mut name = base.as_os_str().to_os_string();
+    match step {
+        Some(step) => name.push(format!(".context-{step}-{session}-{sequence}.jsonl")),
+        None => name.push(format!(".context-{session}-{sequence}.jsonl")),
+    }
+    PathBuf::from(name)
+}
+
+fn request_context(
+    transport: &mut Transport,
+    path: &Path,
+    request: Request,
+    expected_floor: Option<u64>,
+) -> Result<ContextResponse, String> {
+    let Request::Context {
+        target,
+        network,
+        period,
+        session,
+        sequence,
+        lease_seconds,
+        publication_time_us,
+    } = request
+    else {
+        return Err("context evidence requires a Context request".into());
+    };
+    let location = path.display();
+    let intent = json!({
+        "event": "intent", "pool_id": target.pool.to_string(),
+        "incarnation_id": target.incarnation.to_string(),
+        "genesis_digest": network.genesis().to_string(), "network_magic": network.magic(),
+        "slots_per_period": network.slots_per_period(), "lifetime": network.lifetime(),
+        "period": period, "session": session, "sequence": sequence,
+        "lease_seconds": lease_seconds, "publication_time_us": publication_time_us
+    });
+    let mut evidence = ContextEvidence::reserve(path, &intent)?;
+    let reply = match transport.request(&request) {
+        Ok(reply) => reply,
+        Err(error) => {
+            let message = format!("context transport: {error}");
+            evidence
+                .event(&json!({"event":"transport_error","error":message}))
+                .map_err(|e| format!("{message}; cannot persist error in {location}: {e}"))?;
+            return Err(format!("{message}; evidence: {location}"));
+        }
+    };
+    evidence.reply(reply.kind, reply.payload())?;
+    if reply.kind != Kind::Context {
+        let message = "device returned the wrong context response kind";
+        evidence
+            .event(&json!({"event":"decode_error","error":message}))
+            .map_err(|e| format!("{message}; cannot persist error in {location}: {e}"))?;
+        return Err(format!("{message}; evidence: {location}"));
+    }
+    let response = match reply.decode() {
+        Ok(Response::Context(response)) => response,
+        Ok(_) => {
+            let message = "device returned the wrong context response kind";
+            evidence
+                .event(&json!({"event":"decode_error","error":message}))
+                .map_err(|e| format!("{message}; cannot persist error in {location}: {e}"))?;
+            return Err(format!("{message}; evidence: {location}"));
+        }
+        Err(error) => {
+            let message = format!("context decode: {error}");
+            evidence
+                .event(&json!({"event":"decode_error","error":message}))
+                .map_err(|e| format!("{message}; cannot persist error in {location}: {e}"))?;
+            return Err(format!("{message}; evidence: {location}"));
+        }
+    };
+    let decoded = format!("{response:?}");
+    let failure = if response.target != target
+        || response.session != session
+        || response.sequence != sequence
+    {
+        Some("mismatched context binding")
+    } else if response.result.is_err() {
+        Some("device rejected context")
+    } else if expected_floor.is_some_and(|floor| response.floor != floor) {
+        Some("context period floor mismatch")
+    } else {
+        None
+    };
+    evidence
+        .event(&json!({"event":"decoded","response":decoded,"failure":failure}))
+        .map_err(|error| {
+            format!("cannot persist decoded context {location}: {error}; response: {decoded}")
+        })?;
+    if let Some(failure) = failure {
+        return Err(format!(
+            "{failure}; response: {decoded}; evidence: {location}"
+        ));
+    }
+    Ok(response)
 }
 
 fn parse_hex<const N: usize>(value: &str) -> Result<[u8; N], String> {

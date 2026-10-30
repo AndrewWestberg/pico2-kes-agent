@@ -1027,6 +1027,14 @@ Read-only diagnosis first. No blanket chmod, journal deletion, pin reset, reform
 
 Some device errors are coarsely mapped; not every failure has a unique fine-grained exit code. Retain diagnostics and receipts, not just the numeric code.
 
+### Context failure evidence
+
+Context rejections from diagnostic-capable firmware include the failing phase, first storage substage/error, and any latched entropy-health cause. For example, `CatchUp / TransactionNonce / Entropy` distinguishes nonce acquisition from `CatchUp / RecoveryScan / Flash(Io)`; neither changes quarantine or authorizes a retry. A latched entropy cause describes device state, not necessarily the cause of an unrelated rejection. Older firmware replies can omit these details. Upgrade host tools before diagnostic-capable firmware: older hosts reject the extended failure response.
+
+The daemon reports these public rejection details on stderr (the service journal under systemd). Attended `qualification physical-context` records an owner-only, no-clobber JSONL sidecar beside its input: `<input>.context-<session>-<sequence>.jsonl`. The `--preserve-update` path records `<output>.context-<offset>-<session>-<sequence>.jsonl` beside its configured output. Each sidecar fsyncs intent before sending, then retains the complete Context payload and decoded response or transport/parse failure before returning an error. Payloads of other response kinds, especially `Current`, are never recorded. Preserve sidecars and attempt markers; an existing sidecar prevents dispatch, and a failed attempt is not automatically resumed.
+
+Diagnostics do not establish key loss or repair: a pool may be quarantined after an otherwise durable commit. Stop and inspect the recorded failure before another context, reset, or firmware transfer. Offline fault-injection and firmware compilation validate diagnostic reporting, not the board's entropy/flash health or upgrade preservation.
+
 ### Deep contracts and evidence scope
 
 Repository-root-relative references:
