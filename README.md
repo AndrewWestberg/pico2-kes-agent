@@ -107,7 +107,7 @@ The default source firmware build is **unsigned**. `ARM Secure` metadata does no
 
 ### Install firmware verification tools
 
-Install Python 3, OpenSSL, GPG/GPGV and picotool **2.3.1 with signing/verification and USB support** from a trusted source. If building picotool is necessary, follow its [upstream build instructions](https://github.com/raspberrypi/picotool/blob/2.3.1/BUILDING.md). The device utility does not install packages for you. Check `picotool version` before starting.
+Install Python 3, OpenSSL, GPG/GPGV and picotool **2.3.1 with the repository's signature-conversion patch, signing/verification and USB support** from a trusted source. When building picotool, use the [pinned build and native boundary check](docs/maintainer-security.md#build-the-pinned-security-tools); end users can stop before the permission-helper build. The patch fixes short ECDSA component conversion without weakening verification. The device utility does not install packages for you. Check `picotool version`, but do not treat its unchanged `2.3.1` banner as proof that the patch is present.
 
 The authenticated release includes `pico2-otp-permissions.elf`; end users do **not** build that helper or need the Pico SDK/CMake for the published-bundle provisioning path. It is unsigned preparation-only code, not an update image. Its bundle digest must verify before use; the provisioner binds it to the selected board. Never use stock `picotool otp permissions` for this profile.
 
