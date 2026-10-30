@@ -146,10 +146,38 @@ pub fn is_fresh<C: Clock>(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EntropyError;
+/// Non-secret cause retained by an entropy implementation after failure.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntropyFailure {
+    Unknown = 1,
+    Timeout = 2,
+    Configuration = 3,
+    Autocorrelation = 4,
+    ContinuousTest = 5,
+    VonNeumann = 6,
+}
+
+impl EntropyFailure {
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Unknown),
+            2 => Some(Self::Timeout),
+            3 => Some(Self::Configuration),
+            4 => Some(Self::Autocorrelation),
+            5 => Some(Self::ContinuousTest),
+            6 => Some(Self::VonNeumann),
+            _ => None,
+        }
+    }
+}
 
 pub trait Entropy {
     /// Implementations may have written a prefix on failure; use `fill_secret`.
     fn fill(&mut self, output: &mut [u8]) -> Result<(), EntropyError>;
+    fn failure(&self) -> Option<EntropyFailure> {
+        None
+    }
 }
 
 /// On failure no partially generated secret remains in the destination.

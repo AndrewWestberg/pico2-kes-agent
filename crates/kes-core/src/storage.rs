@@ -46,6 +46,127 @@ pub enum StorageError {
     Unavailable,
 }
 
+/// Stable non-secret diagnostic categories; these do not alter storage records.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageStage {
+    PoolDecode = 1,
+    PoolObjectRead = 2,
+    PoolObjectValidate = 3,
+    PoolKeyRestore = 4,
+    PoolEncode = 5,
+    PoolAdmission = 6,
+    RetiredObjectErase = 7,
+    TransactionPrepare = 8,
+    TransactionObject = 9,
+    TransactionCandidateErase = 10,
+    TransactionNonce = 11,
+    TransactionEncrypt = 12,
+    TransactionWrite = 13,
+    TransactionVerify = 14,
+    TransactionCommit = 15,
+    TransactionPredecessorErase = 16,
+    TransactionClean = 17,
+    TransactionObjectVerify = 18,
+    RecoveryScan = 19,
+    RecoverySelect = 20,
+    RecoveryObjectVerify = 21,
+    RecoveryErase = 22,
+    RecoveryClean = 23,
+    UnusedObjectErase = 24,
+}
+
+impl StorageStage {
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::PoolDecode),
+            2 => Some(Self::PoolObjectRead),
+            3 => Some(Self::PoolObjectValidate),
+            4 => Some(Self::PoolKeyRestore),
+            5 => Some(Self::PoolEncode),
+            6 => Some(Self::PoolAdmission),
+            7 => Some(Self::RetiredObjectErase),
+            8 => Some(Self::TransactionPrepare),
+            9 => Some(Self::TransactionObject),
+            10 => Some(Self::TransactionCandidateErase),
+            11 => Some(Self::TransactionNonce),
+            12 => Some(Self::TransactionEncrypt),
+            13 => Some(Self::TransactionWrite),
+            14 => Some(Self::TransactionVerify),
+            15 => Some(Self::TransactionCommit),
+            16 => Some(Self::TransactionPredecessorErase),
+            17 => Some(Self::TransactionClean),
+            18 => Some(Self::TransactionObjectVerify),
+            19 => Some(Self::RecoveryScan),
+            20 => Some(Self::RecoverySelect),
+            21 => Some(Self::RecoveryObjectVerify),
+            22 => Some(Self::RecoveryErase),
+            23 => Some(Self::RecoveryClean),
+            24 => Some(Self::UnusedObjectErase),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorageFailure {
+    pub stage: StorageStage,
+    pub error: StorageError,
+}
+
+impl StorageError {
+    pub const fn diagnostic_code(self) -> u8 {
+        match self {
+            Self::Flash(FlashError::Geometry) => 1,
+            Self::Flash(FlashError::Bounds) => 2,
+            Self::Flash(FlashError::Alignment) => 3,
+            Self::Flash(FlashError::CrossPage) => 4,
+            Self::Flash(FlashError::RequiresErase) => 5,
+            Self::Flash(FlashError::Io) => 6,
+            Self::Flash(FlashError::Interrupted) => 7,
+            Self::Geometry => 8,
+            Self::Bounds => 9,
+            Self::Entropy => 10,
+            Self::Crypto => 11,
+            Self::InvalidRecord => 12,
+            Self::InvalidMarker => 13,
+            Self::UnsupportedVersion => 14,
+            Self::RevisionOverflow => 15,
+            Self::ParentConflict => 16,
+            Self::EqualRevisionConflict => 17,
+            Self::CommittedBodyInvalid => 18,
+            Self::PublicObjectInvalid => 19,
+            Self::Unavailable => 20,
+        }
+    }
+
+    pub const fn from_diagnostic_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Flash(FlashError::Geometry)),
+            2 => Some(Self::Flash(FlashError::Bounds)),
+            3 => Some(Self::Flash(FlashError::Alignment)),
+            4 => Some(Self::Flash(FlashError::CrossPage)),
+            5 => Some(Self::Flash(FlashError::RequiresErase)),
+            6 => Some(Self::Flash(FlashError::Io)),
+            7 => Some(Self::Flash(FlashError::Interrupted)),
+            8 => Some(Self::Geometry),
+            9 => Some(Self::Bounds),
+            10 => Some(Self::Entropy),
+            11 => Some(Self::Crypto),
+            12 => Some(Self::InvalidRecord),
+            13 => Some(Self::InvalidMarker),
+            14 => Some(Self::UnsupportedVersion),
+            15 => Some(Self::RevisionOverflow),
+            16 => Some(Self::ParentConflict),
+            17 => Some(Self::EqualRevisionConflict),
+            18 => Some(Self::CommittedBodyInvalid),
+            19 => Some(Self::PublicObjectInvalid),
+            20 => Some(Self::Unavailable),
+            _ => None,
+        }
+    }
+}
+
 impl From<FlashError> for StorageError {
     fn from(error: FlashError) -> Self {
         Self::Flash(error)
@@ -196,6 +317,14 @@ pub struct Storage<F, E> {
     flash: F,
     entropy: E,
     root_key: Zeroizing<[u8; 32]>,
+    failure: Option<StorageFailure>,
+}
+
+macro_rules! diagnose {
+    ($storage:expr, $stage:ident, $operation:expr) => {{
+        let result = $operation;
+        $storage.diagnosed(StorageStage::$stage, result)
+    }};
 }
 
 impl<F: Flash, E: Entropy> Storage<F, E> {
@@ -208,6 +337,7 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
             flash,
             entropy,
             root_key: Zeroizing::new(root_key),
+            failure: None,
         })
     }
 
@@ -223,6 +353,35 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         &mut self.entropy
     }
 
+    pub fn entropy_failure(&self) -> Option<crate::platform::EntropyFailure> {
+        self.entropy.failure()
+    }
+
+    pub fn failure(&self) -> Option<StorageFailure> {
+        self.failure
+    }
+
+    pub fn clear_failure(&mut self) {
+        self.failure = None;
+    }
+
+    pub(crate) fn record_failure(&mut self, stage: StorageStage, error: StorageError) {
+        if self.failure.is_none() {
+            self.failure = Some(StorageFailure { stage, error });
+        }
+    }
+
+    fn diagnosed<T>(
+        &mut self,
+        stage: StorageStage,
+        result: Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        if let Err(error) = result {
+            self.record_failure(stage, error);
+        }
+        result
+    }
+
     pub fn into_flash(self) -> F {
         self.flash
     }
@@ -235,17 +394,23 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         object: Option<PublicObjectWrite<'_>>,
     ) -> Result<Snapshot, StorageError> {
         let layout = domain.layout();
-        if payload.len() > layout.payload_capacity()? || payload.len() > MAX_SNAPSHOT_BYTES {
-            return Err(StorageError::Bounds);
+        if payload.len() > diagnose!(self, TransactionPrepare, layout.payload_capacity())?
+            || payload.len() > MAX_SNAPSHOT_BYTES
+        {
+            return diagnose!(self, TransactionPrepare, Err(StorageError::Bounds));
         }
         let (candidate, revision, parent_revision, parent_digest) = match authoritative {
             Some((bank, snapshot)) => (
                 bank.other(),
-                snapshot
-                    .meta
-                    .revision
-                    .checked_add(1)
-                    .ok_or(StorageError::RevisionOverflow)?,
+                diagnose!(
+                    self,
+                    TransactionPrepare,
+                    snapshot
+                        .meta
+                        .revision
+                        .checked_add(1)
+                        .ok_or(StorageError::RevisionOverflow)
+                )?,
                 Some(snapshot.meta.revision),
                 snapshot.digest,
             ),
@@ -253,7 +418,11 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         };
         let object_ref = object.as_ref().map(|value| value.reference);
         if let Some(value) = object {
-            self.write_public_object(domain, &value)?;
+            diagnose!(
+                self,
+                TransactionObject,
+                self.write_public_object(domain, &value)
+            )?;
         }
         let meta = SnapshotMeta {
             revision,
@@ -263,43 +432,98 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         };
         let digest = snapshot_digest(domain, meta, payload);
         let addresses = layout.addresses(candidate);
-        self.erase_verify(addresses.start, layout.bank_bytes)?;
-        let keys = DomainKeys::derive(&self.root_key, domain)?;
+        diagnose!(
+            self,
+            TransactionCandidateErase,
+            self.erase_verify(addresses.start, layout.bank_bytes)
+        )?;
+        let keys = diagnose!(
+            self,
+            TransactionPrepare,
+            DomainKeys::derive(&self.root_key, domain)
+        )?;
         let mut nonce = [0; 24];
-        fill_secret(&mut self.entropy, &mut nonce).map_err(|_| StorageError::Entropy)?;
-        let header = Header::new(domain, meta, digest, nonce, payload.len())?;
+        diagnose!(
+            self,
+            TransactionNonce,
+            fill_secret(&mut self.entropy, &mut nonce).map_err(|_| StorageError::Entropy)
+        )?;
+        let header = diagnose!(
+            self,
+            TransactionPrepare,
+            Header::new(domain, meta, digest, nonce, payload.len())
+        )?;
         let encoded_header = header.encode();
         let cipher = XChaCha20Poly1305::new((&keys.snapshot).into());
         let mut encrypted = Zeroizing::new([0; MAX_SNAPSHOT_BYTES + TAG_BYTES]);
         encrypted[..payload.len()].copy_from_slice(payload);
-        let tag = cipher
-            .encrypt_in_place_detached(
-                XNonce::from_slice(&nonce),
-                &encoded_header,
-                &mut encrypted[..payload.len()],
-            )
-            .map_err(|_| StorageError::Crypto)?;
-        encrypted[payload.len()..payload.len() + TAG_BYTES].copy_from_slice(&tag);
-        self.program_pages(addresses.start, &encoded_header)?;
-        self.program_pages(
-            addresses.start + PAGE_SIZE,
-            &encrypted[..payload.len() + TAG_BYTES],
+        let tag = diagnose!(
+            self,
+            TransactionEncrypt,
+            cipher
+                .encrypt_in_place_detached(
+                    XNonce::from_slice(&nonce),
+                    &encoded_header,
+                    &mut encrypted[..payload.len()],
+                )
+                .map_err(|_| StorageError::Crypto)
         )?;
-        let candidate_snapshot = self
-            .read_snapshot(domain, candidate, &keys)?
-            .ok_or(StorageError::InvalidRecord)?;
+        encrypted[payload.len()..payload.len() + TAG_BYTES].copy_from_slice(&tag);
+        diagnose!(
+            self,
+            TransactionWrite,
+            self.program_pages(addresses.start, &encoded_header)
+        )?;
+        diagnose!(
+            self,
+            TransactionWrite,
+            self.program_pages(
+                addresses.start + PAGE_SIZE,
+                &encrypted[..payload.len() + TAG_BYTES],
+            )
+        )?;
+        let candidate_snapshot = diagnose!(
+            self,
+            TransactionVerify,
+            self.read_snapshot(domain, candidate, &keys)
+                .and_then(|value| value.ok_or(StorageError::InvalidRecord))
+        )?;
         if candidate_snapshot.digest != digest || candidate_snapshot.payload() != payload {
-            return Err(StorageError::InvalidRecord);
+            return diagnose!(self, TransactionVerify, Err(StorageError::InvalidRecord));
         }
-        let commit = marker(COMMIT_MAGIC, domain, revision, digest, &keys.commit)?;
-        self.program_marker_verify(addresses.commit, &commit)?;
+        let commit = diagnose!(
+            self,
+            TransactionCommit,
+            marker(COMMIT_MAGIC, domain, revision, digest, &keys.commit)
+        )?;
+        diagnose!(
+            self,
+            TransactionCommit,
+            self.program_marker_verify(addresses.commit, &commit)
+        )?;
         if let Some((predecessor, _)) = authoritative {
             let old = layout.addresses(predecessor);
-            self.erase_verify(old.start, layout.bank_bytes)?;
+            diagnose!(
+                self,
+                TransactionPredecessorErase,
+                self.erase_verify(old.start, layout.bank_bytes)
+            )?;
         }
-        let clean = marker(CLEAN_MAGIC, domain, revision, digest, &keys.clean)?;
-        self.program_marker_verify(addresses.clean, &clean)?;
-        self.verify_public_reference(domain, candidate_snapshot.meta.object)?;
+        let clean = diagnose!(
+            self,
+            TransactionClean,
+            marker(CLEAN_MAGIC, domain, revision, digest, &keys.clean)
+        )?;
+        diagnose!(
+            self,
+            TransactionClean,
+            self.program_marker_verify(addresses.clean, &clean)
+        )?;
+        diagnose!(
+            self,
+            TransactionObjectVerify,
+            self.verify_public_reference(domain, candidate_snapshot.meta.object)
+        )?;
         Ok(candidate_snapshot)
     }
 
@@ -309,31 +533,71 @@ impl<F: Flash, E: Entropy> Storage<F, E> {
         directory_allows_empty: bool,
     ) -> Result<(Recovered, Option<Snapshot>), StorageError> {
         let layout = domain.layout();
-        let keys = DomainKeys::derive(&self.root_key, domain)?;
-        let first = self.scan_bank(domain, Bank::First, &keys, false)?;
-        let second = self.scan_bank(domain, Bank::Second, &keys, false)?;
-        let chosen = choose(first.as_ref(), second.as_ref(), directory_allows_empty)?;
+        let keys = diagnose!(
+            self,
+            RecoveryScan,
+            DomainKeys::derive(&self.root_key, domain)
+        )?;
+        let first = diagnose!(
+            self,
+            RecoveryScan,
+            self.scan_bank(domain, Bank::First, &keys, false)
+        )?;
+        let second = diagnose!(
+            self,
+            RecoveryScan,
+            self.scan_bank(domain, Bank::Second, &keys, false)
+        )?;
+        let chosen = diagnose!(
+            self,
+            RecoverySelect,
+            choose(first.as_ref(), second.as_ref(), directory_allows_empty)
+        )?;
         let Some((bank, clean)) = chosen else {
-            self.erase_if_nonblank(layout.addresses(Bank::First).start, layout.bank_bytes)?;
-            self.erase_if_nonblank(layout.addresses(Bank::Second).start, layout.bank_bytes)?;
+            diagnose!(
+                self,
+                RecoveryErase,
+                self.erase_if_nonblank(layout.addresses(Bank::First).start, layout.bank_bytes)
+            )?;
+            diagnose!(
+                self,
+                RecoveryErase,
+                self.erase_if_nonblank(layout.addresses(Bank::Second).start, layout.bank_bytes)
+            )?;
             return Ok((Recovered::Empty, None));
         };
         let snapshot = match bank {
             Bank::First => first.unwrap().snapshot.unwrap(),
             Bank::Second => second.unwrap().snapshot.unwrap(),
         };
-        self.verify_public_reference(domain, snapshot.meta.object)?;
+        diagnose!(
+            self,
+            RecoveryObjectVerify,
+            self.verify_public_reference(domain, snapshot.meta.object)
+        )?;
         let other = bank.other();
-        self.erase_if_nonblank(layout.addresses(other).start, layout.bank_bytes)?;
+        diagnose!(
+            self,
+            RecoveryErase,
+            self.erase_if_nonblank(layout.addresses(other).start, layout.bank_bytes)
+        )?;
         if !clean {
-            let clean_marker = marker(
-                CLEAN_MAGIC,
-                domain,
-                snapshot.meta.revision,
-                snapshot.digest,
-                &keys.clean,
+            let clean_marker = diagnose!(
+                self,
+                RecoveryClean,
+                marker(
+                    CLEAN_MAGIC,
+                    domain,
+                    snapshot.meta.revision,
+                    snapshot.digest,
+                    &keys.clean,
+                )
             )?;
-            self.program_marker_verify(layout.addresses(bank).clean, &clean_marker)?;
+            diagnose!(
+                self,
+                RecoveryClean,
+                self.program_marker_verify(layout.addresses(bank).clean, &clean_marker)
+            )?;
             Ok((Recovered::CleanupRequired(bank), Some(snapshot)))
         } else {
             Ok((Recovered::Clean(bank), Some(snapshot)))
@@ -857,6 +1121,33 @@ mod tests {
     use crate::platform::{EntropyError, Geometry};
     use std::vec;
     use std::vec::Vec;
+
+    #[test]
+    fn diagnostic_codes_round_trip_and_reject_unknown_values() {
+        for code in 1..=24 {
+            assert_eq!(StorageStage::from_code(code).unwrap() as u8, code);
+        }
+        assert_eq!(StorageStage::from_code(0), None);
+        assert_eq!(StorageStage::from_code(25), None);
+        for code in 1..=20 {
+            assert_eq!(
+                StorageError::from_diagnostic_code(code)
+                    .unwrap()
+                    .diagnostic_code(),
+                code
+            );
+        }
+        assert_eq!(StorageError::from_diagnostic_code(0), None);
+        assert_eq!(StorageError::from_diagnostic_code(21), None);
+        for code in 1..=6 {
+            assert_eq!(
+                crate::platform::EntropyFailure::from_code(code).unwrap() as u8,
+                code
+            );
+        }
+        assert_eq!(crate::platform::EntropyFailure::from_code(0), None);
+        assert_eq!(crate::platform::EntropyFailure::from_code(7), None);
+    }
 
     struct TestFlash {
         geometry: Geometry,

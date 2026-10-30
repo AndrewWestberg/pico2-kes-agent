@@ -1,6 +1,6 @@
 //! Bounded RP2350 entropy acquisition with all hardware health tests enabled.
 use embassy_rp::{Peri, peripherals::TRNG};
-use kes_core::platform::{Entropy, EntropyError as CoreEntropyError};
+use kes_core::platform::{Entropy, EntropyError as CoreEntropyError, EntropyFailure};
 use rp_pac as pac;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -10,27 +10,17 @@ pub const ENTROPY_BITS_PER_BLOCK: usize = 192;
 pub const MAX_STATUS_POLLS_PER_BLOCK: u32 = 2_000_000;
 const BLOCK_BYTES: usize = ENTROPY_BITS_PER_BLOCK / 8;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EntropyError {
-    Latched,
-    Timeout,
-    Configuration,
-    Autocorrelation,
-    ContinuousTest,
-    VonNeumann,
-}
-
 /// A health error is sticky until reboot; callers cannot retry through failure.
 pub struct HealthCheckedEntropy<'d> {
     _peripheral: Peri<'d, TRNG>,
-    failed: bool,
+    failure: Option<EntropyFailure>,
 }
 
 impl<'d> HealthCheckedEntropy<'d> {
-    pub fn new(peripheral: Peri<'d, TRNG>) -> Result<Self, EntropyError> {
+    pub fn new(peripheral: Peri<'d, TRNG>) -> Result<Self, EntropyFailure> {
         let mut entropy = Self {
             _peripheral: peripheral,
-            failed: false,
+            failure: None,
         };
         entropy.configure()?;
         // Startup consumes two independent hardware blocks. The RP2350 CRNGT
@@ -44,12 +34,12 @@ impl<'d> HealthCheckedEntropy<'d> {
             || second.iter().all(|byte| *byte == 0)
             || second.iter().all(|byte| *byte == 0xff)
         {
-            return Err(EntropyError::ContinuousTest);
+            return Err(EntropyFailure::ContinuousTest);
         }
         Ok(entropy)
     }
 
-    fn configure(&mut self) -> Result<(), EntropyError> {
+    fn configure(&mut self) -> Result<(), EntropyFailure> {
         let registers = pac::TRNG;
         registers
             .rnd_source_enable()
@@ -97,15 +87,15 @@ impl<'d> HealthCheckedEntropy<'d> {
             || debug.vnc_bypass()
             || registers.rng_debug_en_input().read().rng_debug_en()
         {
-            self.failed = true;
-            return Err(EntropyError::Configuration);
+            self.failure = Some(EntropyFailure::Configuration);
+            return Err(EntropyFailure::Configuration);
         }
         Ok(())
     }
 
-    fn block(&mut self) -> Result<Zeroizing<[u8; BLOCK_BYTES]>, EntropyError> {
-        if self.failed {
-            return Err(EntropyError::Latched);
+    fn block(&mut self) -> Result<Zeroizing<[u8; BLOCK_BYTES]>, EntropyFailure> {
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         let registers = pac::TRNG;
         registers
@@ -114,13 +104,13 @@ impl<'d> HealthCheckedEntropy<'d> {
         for _ in 0..MAX_STATUS_POLLS_PER_BLOCK {
             let status = registers.rng_isr().read();
             if status.autocorr_err() {
-                return self.fail(EntropyError::Autocorrelation);
+                return self.fail(EntropyFailure::Autocorrelation);
             }
             if status.crngt_err() {
-                return self.fail(EntropyError::ContinuousTest);
+                return self.fail(EntropyFailure::ContinuousTest);
             }
             if status.vn_err() {
-                return self.fail(EntropyError::VonNeumann);
+                return self.fail(EntropyFailure::VonNeumann);
             }
             if registers.trng_valid().read().ehr_valid() {
                 let words = Zeroizing::new([
@@ -140,7 +130,7 @@ impl<'d> HealthCheckedEntropy<'d> {
             }
             core::hint::spin_loop();
         }
-        self.fail(EntropyError::Timeout)
+        self.fail(EntropyFailure::Timeout)
     }
 
     fn stop(&self) {
@@ -153,14 +143,18 @@ impl<'d> HealthCheckedEntropy<'d> {
             .write(|value| value.set_rst_bits_counter(true));
     }
 
-    fn fail<T>(&mut self, error: EntropyError) -> Result<T, EntropyError> {
+    fn fail<T>(&mut self, error: EntropyFailure) -> Result<T, EntropyFailure> {
         self.stop();
-        self.failed = true;
+        self.failure = Some(error);
         Err(error)
     }
 }
 
 impl Entropy for HealthCheckedEntropy<'_> {
+    fn failure(&self) -> Option<EntropyFailure> {
+        self.failure
+    }
+
     fn fill(&mut self, destination: &mut [u8]) -> Result<(), CoreEntropyError> {
         for chunk in destination.chunks_mut(BLOCK_BYTES) {
             let mut block = self.block().map_err(|_| CoreEntropyError)?;

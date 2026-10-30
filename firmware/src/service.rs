@@ -111,40 +111,49 @@ impl Operations for Runtime<'_> {
                     observed_us: now,
                     lease_us: u64::from(lease_seconds) * 1_000_000,
                 };
-                let scheduled = self
-                    .device_mut()
-                    .accept_context(&context, now)
-                    .and_then(|()| {
-                        self.device_mut()
-                            .pool_status(target.pool)
-                            .map(|status| status.slot)
-                    });
-                let result = match scheduled {
-                    Ok(slot) => {
-                        self.scheduler.enroll(slot);
-                        self.scheduler.request(slot);
-                        let mut selected = None;
-                        self.scheduler.run_one(|next| selected = Some(next));
-                        if selected == Some(slot) {
-                            match self.device_mut().catch_up(target.pool, now) {
-                                Ok(())
-                                | Err(LifecycleError::PeriodUnavailable)
-                                | Err(LifecycleError::GenerationUnavailable) => Ok(()),
-                                Err(error) => Err(error),
-                            }
-                        } else {
-                            Err(LifecycleError::StorageFailure)
-                        }
+                self.device_mut().begin_context_diagnostics();
+                let mut phase = wire::ContextPhase::Accept;
+                let result = (|| {
+                    self.device_mut().accept_context(&context, now)?;
+                    phase = wire::ContextPhase::ResolveSlot;
+                    let slot = self.device_mut().pool_status(target.pool)?.slot;
+                    phase = wire::ContextPhase::Schedule;
+                    self.scheduler.enroll(slot);
+                    self.scheduler.request(slot);
+                    let mut selected = None;
+                    self.scheduler.run_one(|next| selected = Some(next));
+                    if selected != Some(slot) {
+                        return Err(LifecycleError::StorageFailure);
                     }
-                    Err(error) => Err(error),
-                }
-                .map_err(lifecycle_error_code);
-                let floor = self
-                    .device_mut()
-                    .pool_status(target.pool)
-                    .ok()
-                    .and_then(|status| status.period_floor)
-                    .unwrap_or(0);
+                    phase = wire::ContextPhase::CatchUp;
+                    match self.device_mut().catch_up(target.pool, now) {
+                        Ok(())
+                        | Err(LifecycleError::PeriodUnavailable)
+                        | Err(LifecycleError::GenerationUnavailable) => Ok(()),
+                        Err(error) => Err(error),
+                    }
+                })();
+                // Snapshot the original failure before the floor read can fail too.
+                let mut diagnostics = result.as_ref().err().map(|_| wire::ContextDiagnostics {
+                    phase,
+                    storage: self.device().storage_failure(),
+                    entropy: self.device().entropy_failure(),
+                });
+                let mut result = result.map_err(lifecycle_error_code);
+                let floor = match self.device_mut().pool_status(target.pool) {
+                    Ok(status) => status.period_floor.unwrap_or(0),
+                    Err(error) => {
+                        if result.is_ok() {
+                            result = Err(lifecycle_error_code(error));
+                            diagnostics = Some(wire::ContextDiagnostics {
+                                phase: wire::ContextPhase::ReadFloor,
+                                storage: self.device().storage_failure(),
+                                entropy: self.device().entropy_failure(),
+                            });
+                        }
+                        0
+                    }
+                };
                 encode(
                     &Response::Context(wire::ContextResponse {
                         target,
@@ -152,6 +161,7 @@ impl Operations for Runtime<'_> {
                         sequence,
                         floor,
                         result,
+                        diagnostics,
                     }),
                     output,
                 )

@@ -1,5 +1,5 @@
 //! Attended public observations; current KES material never leaves zeroizing memory.
-use super::parse_hex;
+use super::{context_evidence_path, parse_hex, request_context};
 use crate::evidence;
 use kes_core::{
     certificate::OperationalCertificate,
@@ -150,8 +150,11 @@ fn context(
         .publication_time_us
         .checked_add(offset)
         .ok_or("publication time overflow")?;
-    let reply = transport
-        .request(&Request::Context {
+    let evidence = context_evidence_path(&input.output, Some(offset), session, sequence);
+    let response = request_context(
+        transport,
+        &evidence,
+        Request::Context {
             target,
             network,
             period,
@@ -159,19 +162,9 @@ fn context(
             sequence,
             lease_seconds: input.lease_seconds,
             publication_time_us: time,
-        })
-        .map_err(|e| format!("context: {e}"))?;
-    let Response::Context(response) = reply.decode().map_err(|e| e.to_string())? else {
-        return Err("wrong context response".into());
-    };
-    if response.target != target
-        || response.session != session
-        || response.sequence != sequence
-        || response.result.is_err()
-        || response.floor != period
-    {
-        return Err("context rejected or period floor mismatch".into());
-    }
+        },
+        Some(period),
+    )?;
     Ok(response.floor)
 }
 fn key(
@@ -488,7 +481,7 @@ fn execute_attended(input: &Input) -> Result<(), String> {
     }
     let mut before = Vec::with_capacity(input.pools.len());
     for (i, pool) in input.pools.iter().enumerate() {
-        before.push(capture(&mut transport, &input, pool, network, i as u64)?);
+        before.push(capture(&mut transport, input, pool, network, i as u64)?);
     }
     drop(transport);
     println!(
@@ -515,7 +508,7 @@ fn execute_attended(input: &Input) -> Result<(), String> {
     for (i, pool) in input.pools.iter().enumerate() {
         after.push(capture(
             &mut transport,
-            &input,
+            input,
             pool,
             network,
             input.pools.len() as u64 + i as u64,
@@ -533,7 +526,7 @@ fn execute_attended(input: &Input) -> Result<(), String> {
     for (i, a) in before.iter().enumerate() {
         context(
             &mut transport,
-            &input,
+            input,
             a.target,
             network,
             a.staged_start,
@@ -554,7 +547,8 @@ fn execute_attended(input: &Input) -> Result<(), String> {
         else {
             return Err("staged generation unavailable after activation".into());
         };
-        let certificate_digest = Digest32::from_bytes(Sha256::digest(&a.staged_certificate).into());
+        let certificate_digest =
+            Digest32::from_bytes(Sha256::digest(a.staged_certificate.as_slice()).into());
         if current.target != a.target
             || generation != a.staged
             || period != 0

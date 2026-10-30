@@ -19,7 +19,8 @@ use crate::{
     storage::{
         ALLOCATED_END, Bank, CONFIG_START, MAX_PUBLIC_OBJECT_BYTES, MAX_SNAPSHOT_BYTES,
         POOL_BANK_BYTES, POOL_REGION_BYTES, POOLS_START, PUBLIC_OBJECT_BYTES, PublicObjectRef,
-        PublicObjectWrite, RecordDomain, Snapshot, Storage,
+        PublicObjectWrite, RecordDomain, Snapshot, Storage, StorageError, StorageFailure,
+        StorageStage,
     },
 };
 use core::cmp;
@@ -277,6 +278,24 @@ impl<F: Flash, E: Entropy> Device<F, E> {
 
     pub fn flash_mut(&mut self) -> &mut F {
         self.storage.flash_mut()
+    }
+
+    /// Begin diagnostics for one Context request without changing persistent state.
+    pub fn begin_context_diagnostics(&mut self) {
+        self.storage.clear_failure();
+    }
+
+    pub fn storage_failure(&self) -> Option<StorageFailure> {
+        self.storage.failure()
+    }
+
+    pub fn entropy_failure(&self) -> Option<crate::platform::EntropyFailure> {
+        self.storage.entropy_failure()
+    }
+
+    fn diagnostic_error(&mut self, stage: StorageStage, error: StorageError) -> Error {
+        self.storage.record_failure(stage, error);
+        Error::StorageFailure
     }
 
     pub fn into_flash(self) -> F {
@@ -1004,7 +1023,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             revision: pool.revision,
         });
         pool = self.commit_pool_for(index, pool, None)?;
-        self.erase_object_if_needed(pool.slot, region)?;
+        self.erase_object_if_needed(pool.slot, region, StorageStage::RetiredObjectErase)?;
         self.put_pool(index, pool);
         Ok(())
     }
@@ -1256,10 +1275,14 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             return Err(Error::StorageFailure);
         };
         let Some(bank) = recovered_bank(status) else {
+            self.storage
+                .record_failure(StorageStage::PoolAdmission, StorageError::Unavailable);
             self.config.as_mut().unwrap().pools[index] = PoolSlot::Quarantined;
             return Err(Error::StorageFailure);
         };
         let Some(snapshot) = snapshot else {
+            self.storage
+                .record_failure(StorageStage::PoolAdmission, StorageError::Unavailable);
             self.config.as_mut().unwrap().pools[index] = PoolSlot::Quarantined;
             return Err(Error::StorageFailure);
         };
@@ -1301,7 +1324,10 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         object: Option<PublicObjectWrite<'_>>,
     ) -> Result<PoolState, Error> {
         let mut payload = Zeroizing::new([0; MAX_SNAPSHOT_BYTES]);
-        let len = encode_pool(&pool, &mut *payload)?;
+        let len = encode_pool(&pool, &mut *payload).inspect_err(|_| {
+            self.storage
+                .record_failure(StorageStage::PoolEncode, StorageError::Bounds);
+        })?;
         let bank = other_bank(pool.bank);
         match self.storage.transact(
             RecordDomain::Pool(pool.slot),
@@ -1354,7 +1380,10 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         bank: Bank,
         snapshot: Snapshot,
     ) -> Result<PoolState, Error> {
-        let decoded = decode_pool_header(snapshot.payload(), slot)?;
+        let decoded = decode_pool_header(snapshot.payload(), slot).inspect_err(|_| {
+            self.storage
+                .record_failure(StorageStage::PoolDecode, StorageError::InvalidRecord);
+        })?;
         let active = match decoded.active {
             Some(encoded) => {
                 Some(self.restore_generation(slot, decoded.enrollment.network, encoded)?)
@@ -1391,21 +1420,36 @@ impl<F: Flash, E: Entropy> Device<F, E> {
     ) -> Result<GenerationState, Error> {
         let mut object_bytes = [0; MAX_PUBLIC_OBJECT_BYTES];
         let base = public_address(slot, encoded.object_region);
-        self.storage
+        if let Err(error) = self
+            .storage
             .flash_mut()
             .read(base, &mut object_bytes[..usize::from(encoded.object_len)])
-            .map_err(|_| Error::StorageFailure)?;
+        {
+            return Err(self.diagnostic_error(StorageStage::PoolObjectRead, error.into()));
+        }
         if Digest32::from_bytes(
             Sha256::digest(&object_bytes[..usize::from(encoded.object_len)]).into(),
         ) != encoded.object_digest
         {
-            return Err(Error::StorageFailure);
+            return Err(self.diagnostic_error(
+                StorageStage::PoolObjectValidate,
+                StorageError::PublicObjectInvalid,
+            ));
         }
-        let object = decode_object(&object_bytes[..usize::from(encoded.object_len)])?;
+        let object =
+            decode_object(&object_bytes[..usize::from(encoded.object_len)]).inspect_err(|_| {
+                self.storage.record_failure(
+                    StorageStage::PoolObjectValidate,
+                    StorageError::PublicObjectInvalid,
+                );
+            })?;
         if object.generation_id() != encoded.id
             || object.artifact_digest() != encoded.artifact_digest
         {
-            return Err(Error::StorageFailure);
+            return Err(self.diagnostic_error(
+                StorageStage::PoolObjectValidate,
+                StorageError::PublicObjectInvalid,
+            ));
         }
         let key = Sum6Kes::restore(
             &encoded.state,
@@ -1413,7 +1457,9 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             network.lifetime(),
             object.public_tree(),
         )
-        .map_err(|_| Error::StorageFailure)?;
+        .map_err(|_| {
+            self.diagnostic_error(StorageStage::PoolKeyRestore, StorageError::InvalidRecord)
+        })?;
         Ok(GenerationState {
             id: encoded.id,
             number: encoded.number,
@@ -1438,7 +1484,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
                     .as_ref()
                     .is_some_and(|value| value.object_region == region);
             if !used {
-                self.erase_object_if_needed(pool.slot, region)?;
+                self.erase_object_if_needed(pool.slot, region, StorageStage::UnusedObjectErase)?;
             }
         }
         Ok(())
@@ -1450,24 +1496,29 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         transition: PeriodTransition,
     ) -> Result<(), Error> {
         if let Some(region) = transition.first_retired_region {
-            self.erase_object_if_needed(slot, region)?;
+            self.erase_object_if_needed(slot, region, StorageStage::RetiredObjectErase)?;
         }
         if let Some(region) = transition.second_retired_region
             && Some(region) != transition.first_retired_region
         {
-            self.erase_object_if_needed(slot, region)?;
+            self.erase_object_if_needed(slot, region, StorageStage::RetiredObjectErase)?;
         }
         Ok(())
     }
 
-    fn erase_object_if_needed(&mut self, slot: StorageSlot, region: u8) -> Result<(), Error> {
+    fn erase_object_if_needed(
+        &mut self,
+        slot: StorageSlot,
+        region: u8,
+        stage: StorageStage,
+    ) -> Result<(), Error> {
         let base = public_address(slot, region);
-        self.erase_range_if_needed(base, PUBLIC_OBJECT_BYTES)
+        self.erase_range_if_needed(base, PUBLIC_OBJECT_BYTES, stage)
     }
 
     fn erase_pool_region_if_needed(&mut self, slot: StorageSlot) -> Result<(), Error> {
         let base = POOLS_START + u32::from(slot.get()) * POOL_REGION_BYTES;
-        self.erase_range_if_needed(base, POOL_REGION_BYTES)
+        self.erase_range_if_needed(base, POOL_REGION_BYTES, StorageStage::RecoveryErase)
     }
 
     fn erase_pool_region(&mut self, slot: StorageSlot) -> Result<(), Error> {
@@ -1480,45 +1531,50 @@ impl<F: Flash, E: Entropy> Device<F, E> {
                 .map_err(|_| Error::StorageFailure)?;
             address += SECTOR_SIZE;
         }
-        self.verify_erased(base, POOL_REGION_BYTES)
+        self.verify_erased(base, POOL_REGION_BYTES, StorageStage::RecoveryErase)
     }
 
-    fn erase_range_if_needed(&mut self, start: u32, len: u32) -> Result<(), Error> {
+    fn erase_range_if_needed(
+        &mut self,
+        start: u32,
+        len: u32,
+        stage: StorageStage,
+    ) -> Result<(), Error> {
         let mut page = [0; PAGE_SIZE as usize];
         let mut address = start;
         let mut dirty = false;
         while address < start + len {
-            self.storage
-                .flash_mut()
-                .read(address, &mut page)
-                .map_err(|_| Error::StorageFailure)?;
+            if let Err(error) = self.storage.flash_mut().read(address, &mut page) {
+                return Err(self.diagnostic_error(stage, error.into()));
+            }
             dirty |= page.iter().any(|byte| *byte != 0xff);
             address += PAGE_SIZE;
         }
         if dirty {
             let mut sector = start;
             while sector < start + len {
-                self.storage
-                    .flash_mut()
-                    .erase_sector(sector)
-                    .map_err(|_| Error::StorageFailure)?;
+                if let Err(error) = self.storage.flash_mut().erase_sector(sector) {
+                    return Err(self.diagnostic_error(stage, error.into()));
+                }
                 sector += SECTOR_SIZE;
             }
-            self.verify_erased(start, len)?;
+            self.verify_erased(start, len, stage)?;
         }
         Ok(())
     }
 
-    fn verify_erased(&mut self, start: u32, len: u32) -> Result<(), Error> {
+    fn verify_erased(&mut self, start: u32, len: u32, stage: StorageStage) -> Result<(), Error> {
         let mut page = [0; PAGE_SIZE as usize];
         let mut address = start;
         while address < start + len {
-            self.storage
-                .flash_mut()
-                .read(address, &mut page)
-                .map_err(|_| Error::StorageFailure)?;
+            if let Err(error) = self.storage.flash_mut().read(address, &mut page) {
+                return Err(self.diagnostic_error(stage, error.into()));
+            }
             if page.iter().any(|byte| *byte != 0xff) {
-                return Err(Error::StorageFailure);
+                return Err(self.diagnostic_error(
+                    stage,
+                    StorageError::Flash(crate::platform::FlashError::RequiresErase),
+                ));
             }
             address += PAGE_SIZE;
         }

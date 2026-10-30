@@ -695,22 +695,49 @@ impl Emulator {
             observed_us: 100,
             lease_us: u64::from(lease_seconds) * 1_000_000,
         };
-        let result = self
-            .device_mut()
-            .accept_context(&context, 100)
-            .map_err(lifecycle_code);
-        let floor = self
-            .device_mut()
-            .pool_status(target.pool)
-            .ok()
-            .and_then(|status| status.period_floor)
-            .unwrap_or(0);
+        self.device_mut().begin_context_diagnostics();
+        let mut phase = wire::ContextPhase::Accept;
+        let mut result = self.device_mut().accept_context(&context, 100);
+        if result.is_ok() {
+            phase = wire::ContextPhase::ResolveSlot;
+            result = self.device_mut().pool_status(target.pool).map(|_| ());
+        }
+        if result.is_ok() {
+            phase = wire::ContextPhase::CatchUp;
+            result = match self.device_mut().catch_up(target.pool, 100) {
+                Err(LifecycleError::PeriodUnavailable | LifecycleError::GenerationUnavailable) => {
+                    Ok(())
+                }
+                other => other,
+            };
+        }
+        let mut diagnostics = result.as_ref().err().map(|_| wire::ContextDiagnostics {
+            phase,
+            storage: self.device_mut().storage_failure(),
+            entropy: self.device_mut().entropy_failure(),
+        });
+        let floor = match self.device_mut().pool_status(target.pool) {
+            Ok(status) => status.period_floor.unwrap_or(0),
+            Err(error) => {
+                if result.is_ok() {
+                    diagnostics = Some(wire::ContextDiagnostics {
+                        phase: wire::ContextPhase::ReadFloor,
+                        storage: self.device_mut().storage_failure(),
+                        entropy: self.device_mut().entropy_failure(),
+                    });
+                    result = Err(error);
+                }
+                0
+            }
+        };
+        let result = result.map_err(lifecycle_code);
         self.encode(&Response::Context(wire::ContextResponse {
             target,
             session,
             sequence,
             floor,
             result,
+            diagnostics,
         }))
     }
 

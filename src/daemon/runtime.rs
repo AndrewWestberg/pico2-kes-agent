@@ -20,7 +20,7 @@ use kes_core::{identity::Digest32, operation::PoolTarget};
 use kes_protocol::{
     management::MAX_FRAME,
     node_service::DIRECT_CERTIFICATE_BYTES,
-    usb::{CurrentResult, PublicationKind, Request, Response},
+    usb::{ContextDiagnostics, CurrentResult, PublicationKind, Request, Response},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -236,6 +236,10 @@ enum PollError {
     Protocol,
     Memory,
     Usb,
+    ContextRejected {
+        code: u16,
+        diagnostics: Option<ContextDiagnostics>,
+    },
 }
 
 impl From<usb::Error> for PollError {
@@ -267,8 +271,11 @@ fn poll_target<T: DeviceTransport>(
     {
         return Err(PollError::Protocol);
     }
-    if accepted.result.is_err() {
-        return Ok(None);
+    if let Err(code) = accepted.result {
+        return Err(PollError::ContextRejected {
+            code,
+            diagnostics: accepted.diagnostics,
+        });
     }
 
     let current_reply = usb.request(&Request::Current {
@@ -421,6 +428,12 @@ fn poll_pools(
                     }
                 }
                 Ok(None) => subscription.suspend(),
+                Err(PollError::ContextRejected { code, diagnostics }) => {
+                    eprintln!(
+                        "context rejected for {target:?}: code {code}, diagnostics {diagnostics:?}"
+                    );
+                    subscription.suspend();
+                }
                 Err(_) => {
                     suspend_all(pools);
                     if let Ok(mut state) = state.lock() {
@@ -909,6 +922,7 @@ mod tests {
                     sequence: 13,
                     floor: 7,
                     result: Ok(()),
+                    diagnostics: None,
                 })),
                 reply(&Response::Current(CurrentResponse {
                     target,
@@ -969,11 +983,26 @@ mod tests {
                 sequence: 13,
                 floor: 6,
                 result: Err(9),
+                diagnostics: Some(wire::ContextDiagnostics {
+                    phase: wire::ContextPhase::Accept,
+                    storage: None,
+                    entropy: Some(kes_core::platform::EntropyFailure::Timeout),
+                }),
             }))]),
             seen: Vec::new(),
         };
 
-        assert!(poll_target(&mut transport, context()).unwrap().is_none());
+        assert!(matches!(
+            poll_target(&mut transport, context()),
+            Err(PollError::ContextRejected {
+                code: 9,
+                diagnostics: Some(wire::ContextDiagnostics {
+                    phase: wire::ContextPhase::Accept,
+                    storage: None,
+                    entropy: Some(kes_core::platform::EntropyFailure::Timeout),
+                }),
+            })
+        ));
         assert_eq!(
             transport.seen,
             [Seen::Context {
@@ -1001,6 +1030,7 @@ mod tests {
                     sequence: 13,
                     floor: 7,
                     result: Ok(()),
+                    diagnostics: None,
                 })),
                 reply(&Response::Current(CurrentResponse {
                     target,

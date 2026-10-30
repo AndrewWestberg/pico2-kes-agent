@@ -95,6 +95,105 @@ fn all_kinds_and_surplus_input() {
 }
 
 #[test]
+fn context_diagnostics_roundtrip_and_schema() {
+    use kes_core::{
+        identity::{IncarnationId, PoolId},
+        operation::PoolTarget,
+        platform::EntropyFailure,
+        storage::{StorageError, StorageFailure, StorageStage},
+    };
+    use usb::{ContextDiagnostics, ContextPhase, ContextResponse, Response};
+
+    let target = PoolTarget {
+        pool: PoolId::from_bytes([2; 28]),
+        incarnation: IncarnationId::from_bytes([3; 16]),
+    };
+    let diagnostics = ContextDiagnostics {
+        phase: ContextPhase::CatchUp,
+        storage: Some(StorageFailure {
+            stage: StorageStage::PoolDecode,
+            error: StorageError::Geometry,
+        }),
+        entropy: Some(EntropyFailure::Timeout),
+    };
+    let response = ContextResponse {
+        target,
+        session: 2,
+        sequence: 3,
+        floor: 4,
+        result: Err(9),
+        diagnostics: Some(diagnostics),
+    };
+    let mut output = [0; 4096];
+    let (_, n) = usb::encode_response(&Response::Context(response), &mut output).unwrap();
+    match usb::decode_response(Kind::Context, &output[..n]).unwrap() {
+        Response::Context(decoded) => assert_eq!(decoded, response),
+        _ => panic!("wrong response kind"),
+    }
+    let empty = ContextResponse {
+        diagnostics: Some(ContextDiagnostics {
+            phase: ContextPhase::ReadFloor,
+            storage: None,
+            entropy: None,
+        }),
+        ..response
+    };
+    let (_, n) = usb::encode_response(&Response::Context(empty), &mut output).unwrap();
+    assert!(matches!(usb::decode_response(Kind::Context, &output[..n]),
+        Ok(Response::Context(value)) if value == empty));
+
+    let old = ContextResponse {
+        diagnostics: None,
+        ..response
+    };
+    let (_, old_len) = usb::encode_response(&Response::Context(old), &mut output).unwrap();
+    assert_eq!(output[0], 0xa5);
+    assert!(
+        matches!(usb::decode_response(Kind::Context, &output[..old_len]),
+        Ok(Response::Context(value)) if value == old)
+    );
+
+    let invalid_success = ContextResponse {
+        result: Ok(()),
+        diagnostics: Some(diagnostics),
+        ..response
+    };
+    assert!(usb::encode_response(&Response::Context(invalid_success), &mut output).is_err());
+    let success = ContextResponse {
+        result: Ok(()),
+        diagnostics: None,
+        ..response
+    };
+    let (_, success_len) = usb::encode_response(&Response::Context(success), &mut output).unwrap();
+    let mut payload = output[..success_len].to_vec();
+    payload[0] = 0xa6;
+    payload.extend_from_slice(&[6, 0xa3, 1, 1, 2, 0xf6, 3, 0xf6]);
+    assert!(usb::decode_response(Kind::Context, &payload).is_err());
+
+    let (_, old_len) = usb::encode_response(&Response::Context(old), &mut output).unwrap();
+    let mut prefix = output[..old_len].to_vec();
+    prefix[0] = 0xa6;
+    for suffix in [
+        &b"\x06\xa3\x01\x00\x02\xf6\x03\xf6"[..],
+        &b"\x06\xa3\x01\x06\x02\xf6\x03\xf6"[..],
+        &b"\x06\xa3\x01\x01\x02\x82\x00\x08\x03\xf6"[..],
+        &b"\x06\xa3\x01\x01\x02\x82\x01\x00\x03\xf6"[..],
+        &b"\x06\xa3\x01\x01\x02\xf6\x03\x00"[..],
+        &b"\x06\xa3\x01\x01\x02\x81\x01\x03\xf6"[..],
+        &b"\x06\xa3\x01\x01\x02\x00\x03\xf6"[..],
+        &b"\x06\xa2\x01\x01\x02\xf6"[..],
+        &b"\x06\xa3\x01\x01\x02\xf6\x03\x80"[..],
+    ] {
+        let mut malformed = prefix.clone();
+        malformed.extend_from_slice(suffix);
+        assert!(
+            usb::decode_response(Kind::Context, &malformed).is_err(),
+            "{suffix:?}"
+        );
+    }
+}
+
+#[test]
 fn security_status_roundtrip_and_schema_rejection() {
     use kes_protocol::{
         security::SecurityStatus,
@@ -636,6 +735,7 @@ fn every_response_kind_round_trips_and_rejects_unknown_fields() {
             sequence: 3,
             floor: 4,
             result: Ok(()),
+            diagnostics: None,
         }),
         Response::Mutate(receipt),
         Response::Reconcile(receipt),

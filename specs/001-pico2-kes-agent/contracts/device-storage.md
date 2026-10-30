@@ -112,3 +112,24 @@ Frame: ASCII `PKA1` (4 bytes), protocol-major u16 BE (=1), message-kind u16 BE, 
 One USB request is in flight; the host retains at most one pending read per pool plus one management request. Firmware services autonomous lifecycle work cooperatively and provides public `pending` status rather than monopolizing a USB request throughout generation. Host scheduler alternates due pool reads/context/lifecycle work fairly. Firmware can mark a pool revision dirty in its status bitmap; daemon fetches/pushes the latest complete bundle, not a queue of secret historical bundles.
 
 Error taxonomy matches [management contract](management-cli.md). I/O timeout is an uncertain mutation outcome; reconcile its identity. Context freshness expires on device reboot/session loss; a successful challenge does not establish valid time. New format/protocol major versions require caller migration and storage compatibility decisions before deployment; authentication/parse failure must never trigger an older decoder fallback.
+
+### Context failure diagnostics
+
+Context response keys 1–5 remain target, session, sequence, floor and result. A rejection may additionally contain key 6, a canonical map with exactly three entries: key 1 is Context phase, key 2 is null or the two-element array `[storage_stage, storage_error]`, and key 3 is null or the latched entropy cause. The result code remains unchanged. Key 6 is forbidden on success; invalid codes/shapes and other unknown fields are rejected. Five-field replies, including older firmware rejections, remain valid; missing diagnostics do not imply healthy storage. Older hosts cannot decode extended rejections, so deploy updated host tools first. This extension changes neither protocol major 1 nor storage format 2.
+
+Context phase codes: 1 `Accept`, 2 `ResolveSlot`, 3 `Schedule`, 4 `CatchUp`, 5 `ReadFloor`. Capture the first failure before any subsequent floor read. A failed final floor read turns an otherwise successful Context into a rejection rather than silently reporting a zero floor.
+
+Storage stage codes:
+
+| Codes | Stages in code order |
+|---|---|
+| 1–7 | `PoolDecode`, `PoolObjectRead`, `PoolObjectValidate`, `PoolKeyRestore`, `PoolEncode`, `PoolAdmission`, `RetiredObjectErase` |
+| 8–14 | `TransactionPrepare`, `TransactionObject`, `TransactionCandidateErase`, `TransactionNonce`, `TransactionEncrypt`, `TransactionWrite`, `TransactionVerify` |
+| 15–18 | `TransactionCommit`, `TransactionPredecessorErase`, `TransactionClean`, `TransactionObjectVerify` |
+| 19–24 | `RecoveryScan`, `RecoverySelect`, `RecoveryObjectVerify`, `RecoveryErase`, `RecoveryClean`, `UnusedObjectErase` |
+
+Storage error codes 1–7 are flash `Geometry`, `Bounds`, `Alignment`, `CrossPage`, `RequiresErase`, `Io`, `Interrupted`. Codes 8–20 are storage `Geometry`, `Bounds`, `Entropy`, `Crypto`, `InvalidRecord`, `InvalidMarker`, `UnsupportedVersion`, `RevisionOverflow`, `ParentConflict`, `EqualRevisionConflict`, `CommittedBodyInvalid`, `PublicObjectInvalid`, `Unavailable`.
+
+Entropy cause codes: 1 `Unknown`, 2 `Timeout`, 3 `Configuration`, 4 `Autocorrelation`, 5 `ContinuousTest`, 6 `VonNeumann`. Firmware retains the original health-test/timeout cause across subsequent rejected entropy calls until reboot; reporting never clears or retries a failed health test. A reported latch may predate an unrelated rejection. Begin each Context with an empty storage diagnostic, retain its first failure, and do not overwrite it during follow-up reads. These diagnostics are volatile enum values only: never include keys, secret-state hashes, nonces, flash addresses/contents, or secret USB payloads.
+
+Qualification persists no-clobber, owner-only Context intent before dispatch, then the full public Context response before decoding or validating it. Retain failure evidence without replaying the attempt. Do not persist payloads of unexpected response kinds. This is diagnostic evidence, not a preservation or physical-hardware qualification pass.

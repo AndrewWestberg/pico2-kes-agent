@@ -10,8 +10,8 @@ use kes_core::{
     identity::{Digest32, GenerationId, IncarnationId, NetworkBinding, OperationId, PoolId},
     lifecycle::{CommissionRequest, Context, Device, Enrollment, Error, PublicationKind},
     operation::{Handoff, MAX_HANDOFF_BYTES, PoolTarget},
-    platform::{Entropy, EntropyError, Flash},
-    storage::{RecordDomain, Recovered, Storage},
+    platform::{Entropy, EntropyError, EntropyFailure, Flash, FlashError},
+    storage::{RecordDomain, Recovered, Storage, StorageError, StorageFailure, StorageStage},
 };
 
 const CAPACITY: u32 = 0x400000;
@@ -32,6 +32,39 @@ impl Entropy for EntropyStream {
         }
         Ok(())
     }
+}
+
+struct FailingEntropy {
+    stream: EntropyStream,
+    failed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Entropy for FailingEntropy {
+    fn fill(&mut self, out: &mut [u8]) -> Result<(), EntropyError> {
+        if self.failed.get() {
+            Err(EntropyError)
+        } else {
+            self.stream.fill(out)
+        }
+    }
+
+    fn failure(&self) -> Option<EntropyFailure> {
+        self.failed.get().then_some(EntropyFailure::Timeout)
+    }
+}
+
+fn diagnostic_boot(
+    flash: ModelFlash,
+) -> (
+    Device<ModelFlash, FailingEntropy>,
+    std::rc::Rc<std::cell::Cell<bool>>,
+) {
+    let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let entropy = FailingEntropy {
+        stream: EntropyStream(0x1234_5678_9abc_def1),
+        failed: failed.clone(),
+    };
+    (Device::open(flash, entropy), failed)
 }
 
 type TestDevice = Device<ModelFlash, EntropyStream>;
@@ -1338,6 +1371,177 @@ fn raised_floor_never_acknowledges_before_clean_or_recovers_below_acknowledged_v
             );
         }
     }
+}
+
+#[test]
+fn context_entropy_failures_retain_transaction_cause_and_reset_only_storage_diagnostic() {
+    let (initial, _) = ready(2);
+    let image = initial.into_flash();
+    for publication in [false, true] {
+        let (mut device, entropy_failed) = diagnostic_boot(copy_image(&image));
+        device.recover().unwrap();
+        if publication {
+            device
+                .accept_context(&context(2, 8, 2_000, 2), 100)
+                .unwrap();
+        }
+        device.begin_context_diagnostics();
+        entropy_failed.set(true);
+        let result = if publication {
+            device.catch_up(enrollment(2).pool_id, 100)
+        } else {
+            device.accept_context(&context(2, 8, 2_000, 2), 100)
+        };
+        assert_eq!(result, Err(Error::StorageFailure));
+        let failure = Some(StorageFailure {
+            stage: StorageStage::TransactionNonce,
+            error: StorageError::Entropy,
+        });
+        assert_eq!(device.storage_failure(), failure);
+        assert_eq!(device.entropy_failure(), Some(EntropyFailure::Timeout));
+        assert_eq!(
+            device.pool_status(enrollment(2).pool_id),
+            Err(Error::StorageFailure)
+        );
+        assert_eq!(device.storage_failure(), failure);
+        device.begin_context_diagnostics();
+        assert_eq!(device.storage_failure(), None);
+        assert_eq!(device.entropy_failure(), Some(EntropyFailure::Timeout));
+        assert_eq!(
+            device.pool_status(enrollment(2).pool_id),
+            Err(Error::StorageFailure)
+        );
+        assert_eq!(device.storage_failure(), None);
+    }
+}
+
+#[test]
+fn context_read_and_transaction_cleanup_report_distinct_first_causes() {
+    let mut initial = enrolled(2);
+    initial.accept_context(&context(2, 5, 100, 1), 100).unwrap();
+    let image = initial.into_flash();
+    let mut probe = boot(copy_image(&image));
+    recovery(&mut probe);
+    let start = probe.flash().trace.len();
+    probe.accept_context(&context(2, 8, 200, 2), 100).unwrap();
+    let trace = &probe.flash().trace[start..];
+    let commit = trace
+        .iter()
+        .position(|event| event.boundary == Boundary::MarkerProgram)
+        .unwrap();
+    let cleanup = commit
+        + 1
+        + trace[commit + 1..]
+            .iter()
+            .position(|event| event.boundary == Boundary::Erase)
+            .unwrap();
+    for (offset, expected) in [
+        (0, StorageStage::RecoveryScan),
+        (cleanup, StorageStage::TransactionPredecessorErase),
+    ] {
+        let mut device = boot(copy_image(&image));
+        recovery(&mut device);
+        device.begin_context_diagnostics();
+        let at = device.flash().trace.len() + offset;
+        device.flash_mut().fault = Some((at, Fault::FailBefore));
+        assert_eq!(
+            device.accept_context(&context(2, 8, 200, 2), 100),
+            Err(Error::StorageFailure)
+        );
+        let failure = Some(StorageFailure {
+            stage: expected,
+            error: StorageError::Flash(FlashError::Io),
+        });
+        assert_eq!(device.storage_failure(), failure);
+        assert_eq!(
+            device.pool_status(enrollment(2).pool_id),
+            Err(Error::StorageFailure)
+        );
+        assert_eq!(device.storage_failure(), failure);
+    }
+}
+
+#[test]
+fn context_object_read_and_retired_erase_keep_their_underlying_flash_errors() {
+    let (initial, _) = activated_replacement();
+    let image = initial.into_flash();
+    let mut probe = boot(copy_image(&image));
+    recovery(&mut probe);
+    let start = probe.flash().trace.len();
+    probe.accept_context(&context(2, 8, 2_000, 3), 100).unwrap();
+    let trace = &probe.flash().trace[start..];
+    let object_read = trace
+        .iter()
+        .rposition(|event| {
+            event.boundary == Boundary::Read && event.address == POOL + 2 * BANK + PUBLIC
+        })
+        .unwrap();
+    let mut device = boot(copy_image(&image));
+    recovery(&mut device);
+    device.begin_context_diagnostics();
+    let at = device.flash().trace.len() + object_read;
+    device.flash_mut().fault = Some((at, Fault::ReadError));
+    assert_eq!(
+        device.accept_context(&context(2, 8, 2_000, 3), 100),
+        Err(Error::StorageFailure)
+    );
+    assert_eq!(
+        device.storage_failure(),
+        Some(StorageFailure {
+            stage: StorageStage::PoolObjectRead,
+            error: StorageError::Flash(FlashError::Io),
+        })
+    );
+
+    let (mut initial, _) = ready(2);
+    let pool = enrollment(2);
+    let replacement = initial
+        .generate(pool.pool_id, OperationId::from_bytes([34; 16]))
+        .unwrap();
+    let vkey = initial.public_key(pool.pool_id, replacement).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&vkey, 2, 8))
+        .to_bytes();
+    initial
+        .install_certificate(
+            pool.pool_id,
+            replacement,
+            &Certificate::new(vkey, 2, 8, signature),
+        )
+        .unwrap();
+    initial
+        .accept_context(&context(2, 8, 2_000, 2), 100)
+        .unwrap();
+    let image = initial.into_flash();
+    let mut probe = boot(copy_image(&image));
+    recovery(&mut probe);
+    probe.accept_context(&context(2, 8, 2_000, 3), 100).unwrap();
+    let start = probe.flash().trace.len();
+    probe.catch_up(pool.pool_id, 100).unwrap();
+    let trace = &probe.flash().trace[start..];
+    let retired = trace
+        .iter()
+        .position(|event| event.boundary == Boundary::Erase && event.address == POOL + 2 * BANK)
+        .unwrap();
+    let mut device = boot(copy_image(&image));
+    recovery(&mut device);
+    device
+        .accept_context(&context(2, 8, 2_000, 3), 100)
+        .unwrap();
+    device.begin_context_diagnostics();
+    let at = device.flash().trace.len() + retired;
+    device.flash_mut().fault = Some((at, Fault::FailBefore));
+    assert_eq!(
+        device.catch_up(pool.pool_id, 100),
+        Err(Error::StorageFailure)
+    );
+    let failure = Some(StorageFailure {
+        stage: StorageStage::RetiredObjectErase,
+        error: StorageError::Flash(FlashError::Io),
+    });
+    assert_eq!(device.storage_failure(), failure);
+    let _ = device.pool_status(pool.pool_id);
+    assert_eq!(device.storage_failure(), failure);
 }
 
 #[test]
