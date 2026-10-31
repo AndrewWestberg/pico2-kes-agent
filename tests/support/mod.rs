@@ -1192,6 +1192,12 @@ impl TestRig {
     pub fn remove_receipt(&self) {
         let _ = std::fs::remove_file(&self.receipt);
     }
+    pub fn reload_pool_bindings(&self, bindings: Vec<PoolBinding>) {
+        let mut state = self.state.lock().unwrap();
+        state.config.pools = bindings;
+        state.journal = Journal::open(&self.root.join("operations.journal")).unwrap();
+    }
+
     pub fn journal_state(&self) -> (u64, bool) {
         let state = self.state.lock().unwrap();
         (
