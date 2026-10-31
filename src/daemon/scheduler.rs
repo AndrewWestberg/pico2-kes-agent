@@ -1,8 +1,8 @@
-use kes_core::{operation::PoolTarget, pool::MAX_POOLS};
+use kes_core::{identity::StorageSlot, operation::PoolTarget};
 
 /// Allocation-free round-robin work set for the daemon's configured pools.
 pub struct Scheduler {
-    targets: [Option<PoolTarget>; MAX_POOLS],
+    targets: [Option<PoolTarget>; StorageSlot::CAPACITY as usize],
     pending: u64,
     cursor: u8,
 }
@@ -16,7 +16,7 @@ impl Default for Scheduler {
 impl Scheduler {
     pub const fn new() -> Self {
         Self {
-            targets: [None; MAX_POOLS],
+            targets: [None; StorageSlot::CAPACITY as usize],
             pending: 0,
             cursor: 0,
         }
@@ -66,12 +66,12 @@ impl Scheduler {
     }
 
     pub fn next_target(&mut self) -> Option<PoolTarget> {
-        for offset in 0..MAX_POOLS as u8 {
-            let index = self.cursor.wrapping_add(offset) % MAX_POOLS as u8;
+        for offset in 0..StorageSlot::CAPACITY {
+            let index = self.cursor.wrapping_add(offset) % StorageSlot::CAPACITY;
             let bit = 1u64 << index;
             if self.pending & bit != 0 {
                 self.pending &= !bit;
-                self.cursor = (index + 1) % MAX_POOLS as u8;
+                self.cursor = (index + 1) % StorageSlot::CAPACITY;
                 return self.targets[index as usize];
             }
         }

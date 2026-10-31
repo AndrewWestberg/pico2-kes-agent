@@ -1,5 +1,8 @@
 //! Power-cut regressions against the production lifecycle and raw-flash recovery path.
 //! The NOR adapter is a deterministic fault model, not hardware qualification.
+#[allow(dead_code)]
+#[path = "../../../src/backup/cbor.rs"]
+mod cbor;
 #[path = "support/flash.rs"]
 mod flash;
 
@@ -566,6 +569,19 @@ fn artifact(device: &mut TestDevice, generation: GenerationId) -> (Vec<u8>, Dige
         .artifact(enrollment(2).pool_id, generation, &mut bytes)
         .unwrap();
     (bytes[..len].to_vec(), digest)
+}
+
+fn artifact_number(device: &mut TestDevice, generation: GenerationId) -> u64 {
+    let (bytes, _) = artifact(device, generation);
+    let payload = bytes.strip_prefix(kes_core::backup::MAGIC).unwrap();
+    cbor::Value::parse(payload)
+        .unwrap()
+        .map()
+        .unwrap()
+        .required("generation_number")
+        .unwrap()
+        .uint()
+        .unwrap()
 }
 
 struct ActiveSnapshot {
@@ -1697,4 +1713,253 @@ fn full_directory_retains_64_active_and_64_staged_generations() {
         assert!(device.generation_info(pool, active).is_ok());
         assert!(device.generation_info(pool, staged).is_ok());
     }
+}
+
+#[test]
+fn metadata_revision_gap_and_equal_refresh_preserve_publication() {
+    let (mut device, _) = ready(2);
+    let pool = enrollment(2);
+    let original = device.publication(pool.pool_id).unwrap();
+    let staged = device
+        .generate(pool.pool_id, OperationId::from_bytes([90; 16]))
+        .unwrap();
+    let metadata = device.pool_status(pool.pool_id).unwrap();
+    assert!(metadata.revision > original.revision);
+    assert_eq!(metadata.publication, original);
+
+    device
+        .accept_context(&context(2, 5, 9_000, 2), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    assert_eq!(device.publication(pool.pool_id).unwrap(), original);
+
+    device
+        .accept_context(&context(2, 6, 9_000, 3), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    let evolved = device.pool_status(pool.pool_id).unwrap();
+    assert_eq!(evolved.publication.revision, evolved.revision);
+    assert!(evolved.publication.revision > original.revision + 1);
+    assert_eq!(current(&mut device, 2).publication, evolved.publication);
+    assert!(device.generation_info(pool.pool_id, staged).is_ok());
+}
+
+#[test]
+fn exhausted_publication_timestamp_preserves_pool_and_other_pool_after_reboot() {
+    let (mut device, _) = ready(2);
+    device.enroll(&enrollment(3)).unwrap();
+    let other = device.pool_status(enrollment(3).pool_id).unwrap();
+    let handoff = Handoff::commissioned(*device.hello().unwrap().public(), 17);
+    let mut encoded = [0; MAX_HANDOFF_BYTES];
+    let len = handoff.encode(&mut encoded).unwrap();
+    device.persist_handoff(&encoded[..len]).unwrap();
+
+    device
+        .accept_context(&context(2, 6, u64::MAX - 1, 2), 100)
+        .unwrap();
+    device.catch_up(target(2).pool, 100).unwrap();
+    assert_eq!(
+        device.publication(target(2).pool).unwrap().timestamp_us,
+        u64::MAX - 1
+    );
+    device.accept_context(&context(2, 7, 0, 3), 100).unwrap();
+    device.catch_up(target(2).pool, 100).unwrap();
+    let published = device.pool_status(target(2).pool).unwrap();
+    assert_eq!(published.publication.timestamp_us, u64::MAX);
+    assert_eq!(published.publication.high_water_us, u64::MAX);
+    assert_eq!(published.publication.revision, published.revision);
+
+    device.accept_context(&context(2, 8, 0, 4), 100).unwrap();
+    assert_eq!(
+        device.catch_up(target(2).pool, 100),
+        Err(Error::StorageFailure)
+    );
+    let mut device = reboot(device);
+    recovery(&mut device);
+    let after = device.pool_status(target(2).pool).unwrap();
+    assert_eq!(after.period_floor, Some(8));
+    assert_eq!(after.publication, published.publication);
+    assert_eq!(after.revision, published.revision + 1);
+    assert_eq!(device.pool_status(target(3).pool).unwrap(), other);
+    assert_eq!(
+        Handoff::decode(device.persisted_handoff().unwrap().unwrap()).unwrap(),
+        handoff
+    );
+
+    let before_delete = device.flash().bytes().to_vec();
+    assert_eq!(
+        device.delete_pool(target(2), None),
+        Err(Error::StorageFailure)
+    );
+    assert_eq!(device.flash().bytes(), before_delete.as_slice());
+    let mut device = reboot(device);
+    recovery(&mut device);
+    assert_eq!(device.pool_status(target(2).pool).unwrap(), after);
+    assert_eq!(device.pool_status(target(3).pool).unwrap(), other);
+    assert_eq!(device.deletion(target(2)).unwrap(), None);
+    assert_eq!(
+        Handoff::decode(device.persisted_handoff().unwrap().unwrap()).unwrap(),
+        handoff
+    );
+}
+
+#[test]
+fn deletion_timestamp_can_reach_max_and_uses_pool_revision() {
+    let mut device = commissioned();
+    let mut pool = enrollment(2);
+    pool.publication_floor_us = u64::MAX - 1;
+    device.enroll(&pool).unwrap();
+    let before = device.pool_status(pool.pool_id).unwrap();
+    let terminal = device.delete_pool(target(2), None).unwrap();
+    assert_eq!(terminal.timestamp_us, u64::MAX);
+    assert_eq!(terminal.high_water_us, u64::MAX);
+    assert_eq!(terminal.revision, before.revision + 1);
+    let mut device = reboot(device);
+    recovery(&mut device);
+    assert_eq!(device.deletion(target(2)).unwrap(), Some(terminal));
+}
+
+#[test]
+fn artifact_numbers_increase_after_discard_and_expiry_reboot() {
+    let mut device = enrolled(2);
+    device.set_recipient([3; 32]).unwrap();
+    let pool = enrollment(2);
+    let first = device
+        .generate(pool.pool_id, OperationId::from_bytes([91; 16]))
+        .unwrap();
+    let first_number = artifact_number(&mut device, first);
+    assert!(first_number > 0);
+    let staged = device
+        .generate(pool.pool_id, OperationId::from_bytes([92; 16]))
+        .unwrap();
+    let staged_number = artifact_number(&mut device, staged);
+    assert!(staged_number > first_number);
+    device
+        .discard(
+            pool.pool_id,
+            pool.incarnation_id,
+            staged,
+            OperationId::from_bytes([93; 16]),
+        )
+        .unwrap();
+    let replacement = device
+        .generate(pool.pool_id, OperationId::from_bytes([94; 16]))
+        .unwrap();
+    let replacement_number = artifact_number(&mut device, replacement);
+    assert!(replacement_number > staged_number);
+    device
+        .discard(
+            pool.pool_id,
+            pool.incarnation_id,
+            replacement,
+            OperationId::from_bytes([95; 16]),
+        )
+        .unwrap();
+
+    device
+        .accept_context(&context(2, 5, 1_000, 1), 100)
+        .unwrap();
+    let key = device.public_key(pool.pool_id, first).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&key, 1, 0))
+        .to_bytes();
+    device
+        .install_certificate(pool.pool_id, first, &Certificate::new(key, 1, 0, signature))
+        .unwrap();
+    device
+        .accept_context(&context(2, 16, 2_000, 2), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    assert_eq!(
+        device.publication(pool.pool_id).unwrap().kind,
+        PublicationKind::Drop
+    );
+    let mut device = reboot(device);
+    recovery(&mut device);
+    let next = device
+        .generate(pool.pool_id, OperationId::from_bytes([96; 16]))
+        .unwrap();
+    assert!(artifact_number(&mut device, next) > replacement_number);
+}
+
+#[test]
+fn artifact_survives_certification_evolution_and_reboot() {
+    let mut device = enrolled(2);
+    let pool = enrollment(2).pool_id;
+    device.set_recipient([3; 32]).unwrap();
+    let generation = device
+        .generate(pool, OperationId::from_bytes([97; 16]))
+        .unwrap();
+    let original = artifact(&mut device, generation);
+    let key = device.public_key(pool, generation).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&key, 1, 0))
+        .to_bytes();
+    device
+        .install_certificate(pool, generation, &Certificate::new(key, 1, 0, signature))
+        .unwrap();
+    assert_eq!(artifact(&mut device, generation), original);
+    for (sequence, period) in [1, 8, 15].into_iter().enumerate() {
+        device
+            .accept_context(
+                &context(2, period, 1_000 + period, sequence as u64 + 1),
+                100,
+            )
+            .unwrap();
+        device.catch_up(pool, 100).unwrap();
+        assert_eq!(u64::from(current(&mut device, 2).relative_period), period);
+        assert_eq!(artifact(&mut device, generation), original);
+        device = reboot(device);
+        recovery(&mut device);
+        assert_eq!(artifact(&mut device, generation), original);
+    }
+}
+
+#[test]
+fn context_before_certificate_start_withholds_key_without_underflow() {
+    let mut device = enrolled(2);
+    let pool = enrollment(2);
+    device.set_recipient([3; 32]).unwrap();
+    let generation = device
+        .generate(pool.pool_id, OperationId::from_bytes([97; 16]))
+        .unwrap();
+    let key = device.public_key(pool.pool_id, generation).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&key, 1, 10))
+        .to_bytes();
+    device
+        .install_certificate(
+            pool.pool_id,
+            generation,
+            &Certificate::new(key, 1, 10, signature),
+        )
+        .unwrap();
+    device
+        .accept_context(&context(2, 9, 1_000, 1), 100)
+        .unwrap();
+    let before = device.flash().bytes().to_vec();
+    assert_eq!(
+        device.catch_up(pool.pool_id, 100),
+        Err(Error::PeriodUnavailable)
+    );
+    assert!(matches!(
+        device.current(pool.pool_id, pool.incarnation_id, 100),
+        Err(Error::PeriodUnavailable)
+    ));
+    assert_eq!(device.flash().bytes(), before.as_slice());
+    assert_eq!(
+        device.publication(pool.pool_id).unwrap().kind,
+        PublicationKind::None
+    );
+
+    let mut device = reboot(device);
+    recovery(&mut device);
+    device
+        .accept_context(&context(2, 10, 2_000, 2), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    let current = current(&mut device, 2);
+    assert_eq!(current.generation_id, generation);
+    assert_eq!(current.relative_period, 0);
+    assert_eq!(current.verification_key, key);
 }

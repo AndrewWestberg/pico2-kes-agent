@@ -44,3 +44,10 @@ Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepte
 - **Referenced storage-contract SHA-256:** `2e8f615650cbd09f156827a4716e1411df25c91aff4f87e10ec324b34ede93c7`.
 - **Effect:** Functional software/device evidence remains required; voltage/temperature/endurance labs, repeated attended cuts, fixed coverage/mutation/benchmark thresholds, and supplied-leadership/accepted-block campaigns are excluded.
 - **Storage-linkage amendment:** The approved secure Pico2 provisioning/update plan adds signed firmware-only ranges, the read-only security report and explicitly attended OTP conversion. This updates the storage-contract linkage without promoting existing hardware evidence to secure-boot qualification.
+
+### Storage-linkage amendment — 2026-10-31
+
+- **Approver:** Project maintainer (approval of the KES bugs and simplification execution plan).
+- **Referenced storage-contract SHA-256:** `9b0616cbd3e3ef3e5ee5e82f276e61e83df38faa6653a1c1fd45fea96ba6862b`, verified against the complete unchanged UTF-8 storage contract.
+- **Scope:** Rebind the reviewed storage contract, including its existing public Context diagnostic evidence requirements. The required qualification definition and its SHA-256 remain unchanged; the historical approval above remains intact.
+- **Evidence boundary:** This linkage is authorization, not a qualification pass, firmware attestation, or closure of the original advancing-Context incident.

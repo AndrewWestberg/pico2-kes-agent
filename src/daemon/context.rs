@@ -80,16 +80,18 @@ impl Clock for SystemClock {
     }
 
     fn synchronized(&self) -> bool {
-        [
-            "/run/systemd/timesync/synchronized",
-            "/run/systemd/timesync/synchronized-clock",
-        ]
-        .iter()
-        .any(|path| {
-            std::fs::read_to_string(path)
-                .is_ok_and(|value| matches!(value.trim(), "yes" | "1" | "true"))
-        })
+        // modes = 0 queries kernel time discipline without changing the clock.
+        let mut query: libc::timex = unsafe { std::mem::zeroed() };
+        let state = unsafe { libc::adjtimex(&mut query) };
+        clock_synchronized(state, query.status)
     }
+}
+
+fn clock_synchronized(state: libc::c_int, status: libc::c_int) -> bool {
+    matches!(
+        state,
+        libc::TIME_OK | libc::TIME_INS | libc::TIME_DEL | libc::TIME_OOP | libc::TIME_WAIT
+    ) && status & (libc::STA_UNSYNC | libc::STA_CLOCKERR) == 0
 }
 
 #[derive(Debug)]
@@ -421,6 +423,30 @@ fn slot_at_time(history: &[EraSegment], time_us: u64) -> Result<u64, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_clock_states_and_failure_flags_fail_closed() {
+        for state in [
+            libc::TIME_OK,
+            libc::TIME_INS,
+            libc::TIME_DEL,
+            libc::TIME_OOP,
+            libc::TIME_WAIT,
+        ] {
+            assert!(clock_synchronized(state, 0));
+            assert!(clock_synchronized(state, libc::STA_PLL));
+            for flag in [
+                libc::STA_UNSYNC,
+                libc::STA_CLOCKERR,
+                libc::STA_UNSYNC | libc::STA_CLOCKERR,
+            ] {
+                assert!(!clock_synchronized(state, flag));
+            }
+        }
+        for state in [-1, libc::TIME_ERROR, libc::TIME_ERROR + 1, libc::c_int::MAX] {
+            assert!(!clock_synchronized(state, 0));
+        }
+    }
 
     #[test]
     fn era_conversion_is_contiguous_and_checked() {

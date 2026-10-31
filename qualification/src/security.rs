@@ -135,6 +135,11 @@ struct Pool {
     active_artifact_sha256: String,
     staged_artifact_sha256: String,
     period_floor: u64,
+    pool_revision: u64,
+    relative_period: u64,
+    publication_revision: u64,
+    publication_timestamp_us: u64,
+    publication_high_water_us: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -256,6 +261,8 @@ fn pool_valid(p: &Pool) -> bool {
         && hex(&p.staged_certificate_sha256, 64)
         && hex(&p.active_artifact_sha256, 64)
         && hex(&p.staged_artifact_sha256, 64)
+        && p.publication_revision <= p.pool_revision
+        && p.publication_timestamp_us <= p.publication_high_water_us
 }
 fn preservation_valid(p: &PreservationObservation, scenario: &str) -> bool {
     p.scenario == scenario
@@ -274,7 +281,7 @@ fn preservation_valid(p: &PreservationObservation, scenario: &str) -> bool {
         && p.before.iter().all(|pool| {
             pool_valid(pool)
                 && pool.active_generation != pool.staged_generation
-                && pool.period_floor <= p.period
+                && pool.period_floor == p.period
         })
         && p.before.iter().enumerate().all(|(i, pool)| {
             p.before[..i]
@@ -539,8 +546,13 @@ fn execute(path: &Path) -> Result<(std::path::PathBuf, bool), String> {
     if bytes.len() as u64 > LIMIT {
         return Err("input exceeds 1 MiB".into());
     }
-    let input: Input = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("invalid public evidence schema at {}:{}", e.line(), e.column()))?;
+    let input: Input = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "invalid public evidence schema at {}:{}",
+            e.line(),
+            e.column()
+        )
+    })?;
     let (revision, dirty) = evidence::candidate().ok_or("candidate identity unavailable")?;
     let passed = validate(&input, &revision, &dirty).map_err(str::to_owned)?;
     let observed = if passed {
@@ -593,6 +605,27 @@ mod tests {
             active_artifact_sha256: "a".repeat(64),
             staged_artifact_sha256: "b".repeat(64),
             period_floor: 8,
+            pool_revision: 5,
+            relative_period: 2,
+            publication_revision: 4,
+            publication_timestamp_us: 10,
+            publication_high_water_us: 10,
+        }
+    }
+
+    #[test]
+    fn pool_observation_requires_complete_publication() {
+        let mut value = serde_json::to_value(pool("a")).unwrap();
+        for field in [
+            "pool_revision",
+            "relative_period",
+            "publication_revision",
+            "publication_timestamp_us",
+            "publication_high_water_us",
+        ] {
+            let removed = value.as_object_mut().unwrap().remove(field).unwrap();
+            assert!(serde_json::from_value::<Pool>(value.clone()).is_err());
+            value.as_object_mut().unwrap().insert(field.into(), removed);
         }
     }
 
@@ -660,6 +693,12 @@ mod tests {
         assert!(!preservation_valid(&obs, "upgrade"));
         obs.current_kes_equal = true;
         obs.after[1].period_floor = 7;
+        assert!(!preservation_valid(&obs, "upgrade"));
+        obs.after[1].period_floor = 8;
+        obs.after[0].publication_timestamp_us += 1;
+        assert!(!preservation_valid(&obs, "upgrade"));
+        obs.after[0].publication_timestamp_us -= 1;
+        obs.after[0].publication_revision += 1;
         assert!(!preservation_valid(&obs, "upgrade"));
     }
 

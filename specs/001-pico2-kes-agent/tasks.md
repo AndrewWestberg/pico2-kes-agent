@@ -42,5 +42,5 @@ The maintainer-approved pragmatic software/device scope supersedes the earlier l
 ## Execution record
 
 - Production device: Pico2 A2, USB `1209:4b45`, stable serial `00afd9003906a634`; persistent udev matching makes changing `/dev/bus/usb/001/0XX` addresses irrelevant.
-- Implemented commands: `qualification foundation`, `hardware`, `load`, `native-regression`, bounded gate dispatch, and optional benchmark/fixture commands documented by their owning contracts.
+- Implemented commands: `qualification foundation`, `hardware`, `load`, `native-regression`, `physical-context`, and `security`; host and firmware checks run directly. No aggregate gate dispatcher or benchmark runner is supplied.
 - Current-source changes invalidate older candidate digests. Final verification MUST regenerate reports for the final dirty-source digest rather than treating an older report as current.

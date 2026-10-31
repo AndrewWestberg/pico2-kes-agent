@@ -1,4 +1,4 @@
-name: quality-dispatch
+name: quality
 
 on:
   pull_request:
@@ -19,24 +19,57 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Exercise and validate foundation scope
-        run: cargo run --locked -p qualification -- gates run foundation
+      - name: Install pinned Rust tools
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Exercise foundation scope
+        run: cargo run --locked -p qualification -- foundation
 
   host:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Run host dispatch checks
-        run: cargo run --locked -p qualification -- gates run host
+      - name: Install pinned host tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+          cargo install --locked cargo-audit --version 0.22.1
+          cargo install --locked cargo-deny --version 0.19.8
+      - name: Run host quality checks
+        run: |
+          cargo fmt --all --check
+          cargo check --locked
+          cargo test --locked --workspace --exclude pico2-kes-firmware
+          cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings
+          cargo check --locked -p kes-core --no-default-features
+          cargo check --locked -p kes-protocol --no-default-features
+          cargo audit
+          cargo deny check
+          python3 -I -m unittest discover -s tools/tests
 
   firmware:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Run firmware dispatch checks
-        run: cargo run --locked -p qualification -- gates run firmware
+      - name: Install pinned firmware tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component clippy
+          rustup target add --toolchain 1.99.1 thumbv8m.main-none-eabihf
+      - name: Check, link, and lint production firmware
+        run: |
+          cargo check --locked -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
+          cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
+          cargo clippy --locked -p pico2-kes-firmware --target thumbv8m.main-none-eabihf -- -D warnings
+
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust tools
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Exercise capacity and client isolation
+        run: cargo run --locked -p qualification -- load
 
   native:
     # Native source identities and Cabal plans are fixture prerequisites. A
@@ -46,5 +79,50 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Run pinned native dispatch checks
-        run: cargo run --locked -p qualification -- gates run native
+      - name: Install pinned Rust tools
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Build pinned native prerequisites
+        run: |
+          cabal build all --project-dir=qualification/native
+          CLI_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native/pins.json"))["cli_resolved_plan"]["source"])')"
+          cabal build exe:cardano-cli --project-dir="$CLI_SOURCE"
+      - name: Run pinned native protocol and crypto regressions
+        run: |
+          cargo run --locked -p qualification -- native-regression
+          export KES_ORACLE_NODE_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native-sources.json"))["sources"]["cardano_node"]["root"])')"
+          export KES_ORACLE_CONSENSUS_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native-sources.json"))["sources"]["ouroboros_consensus"]["root"])')"
+          export KES_ORACLE_CLI_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native/pins.json"))["cli_resolved_plan"]["source"])')"
+          export KES_ORACLE_SOURCE="$PWD/qualification/native"
+          export KES_ORACLE_AGENT_ARCHIVE="$HOME/.cabal/packages/cardano-haskell-packages/kes-agent/1.3.0.0/kes-agent-1.3.0.0.tar.gz"
+          export KES_ORACLE_CRYPTO_ARCHIVE="$HOME/.cabal/packages/cardano-haskell-packages/kes-agent-crypto/1.1.0.0/kes-agent-crypto-1.1.0.0.tar.gz"
+          export KES_ORACLE_PLAN="$KES_ORACLE_SOURCE/dist-newstyle/cache/plan.json"
+          export KES_ORACLE_EXECUTABLE="$(cabal list-bin exe:native-oracle --project-dir="$KES_ORACLE_SOURCE")"
+          export KES_ORACLE_CLI_PLAN="$KES_ORACLE_CLI_SOURCE/dist-newstyle/cache/plan.json"
+          export KES_ORACLE_CLI_EXECUTABLE="$(cabal list-bin exe:cardano-cli --project-dir="$KES_ORACLE_CLI_SOURCE")"
+          export KES_ORACLE_GHC="$(command -v ghc)"
+          export KES_ORACLE_CABAL="$(command -v cabal)"
+          cargo test --locked -p kes-core --features qualification --test crypto_compatibility -- --test-threads=1
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [usb, management, node_service, certificate, artifact]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned fuzz tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup toolchain install nightly-2026-10-22 --profile minimal
+          cargo install --locked cargo-fuzz --version 0.13.1
+      - name: Exercise bounded fuzz target
+        run: cargo +nightly-2026-10-22 fuzz run ${{ matrix.target }} -- -max_total_time=60
+      - name: Retain crash artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

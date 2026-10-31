@@ -67,7 +67,7 @@ pub fn read(identity: Identity, admission: Admission, serial: &[u8]) -> Result<S
     // BOOTKEY0 is an ECC-protected 16-row SHA-256 digest. Picotool writes
     // each adjacent digest byte pair as a little-endian 16-bit OTP value.
     let mut bootkey0 = [0; 32];
-    for (index, pair) in bootkey0.chunks_exact_mut(2).enumerate() {
+    for (index, pair) in bootkey0.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         pair.copy_from_slice(
             &otp::read_ecc_word(0x80 + index)
                 .map_err(|_| ())?

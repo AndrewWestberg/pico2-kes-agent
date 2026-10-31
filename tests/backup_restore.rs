@@ -148,26 +148,38 @@ fn restores_exact_period_zero_state_to_owner_only_no_clobber_file() {
 #[test]
 fn wrong_binding_recipient_password_and_tampering_publish_nothing() {
     let (artifact, recipient, expected, _) = fixture();
-    let mut wrong_binding = expected;
-    wrong_binding.pool[0] ^= 1;
-    assert_eq!(
-        recover::recover(&artifact, &recipient, b"test passphrase", wrong_binding).err(),
-        Some(Error::WrongBinding)
-    );
+    for field in 0..5 {
+        let mut wrong_binding = expected;
+        match field {
+            0 => wrong_binding.device[0] ^= 1,
+            1 => wrong_binding.pool[0] ^= 1,
+            2 => wrong_binding.incarnation[0] ^= 1,
+            3 => wrong_binding.generation[0] ^= 1,
+            4 => wrong_binding.verification_key[0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            recover::recover(&artifact, &recipient, b"test passphrase", wrong_binding).err(),
+            Some(Error::WrongBinding)
+        );
+    }
     assert_eq!(
         recover::recover(&artifact, &recipient, b"wrong", expected).err(),
         Some(Error::WrongPassword)
     );
     let mut tampered = artifact.clone();
-    let index = tampered.len() - 80;
-    tampered[index] ^= 1;
     let directory = TestDir::new();
     let output = directory.0.join("rejected.skey");
-    assert!(
-        recover::restore_to_file(&tampered, &recipient, b"test passphrase", expected, &output,)
-            .is_err()
-    );
-    assert!(!output.exists());
+    for index in 0..artifact.len() {
+        tampered[index] ^= 1;
+        assert!(
+            recover::restore_to_file(&tampered, &recipient, b"test passphrase", expected, &output)
+                .is_err(),
+            "tampered artifact byte {index}"
+        );
+        assert!(!output.exists());
+        tampered[index] ^= 1;
+    }
 
     let mut entropy = TestEntropy(77);
     let (_, wrong_recipient) = recipient::create(b"test passphrase", &mut entropy).unwrap();

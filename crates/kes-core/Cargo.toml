@@ -22,12 +22,6 @@ kes-summed-ed25519-adapted = { version = "=0.2.1", path = "../../third-party/kes
 
 [dev-dependencies]
 proptest = "=1.11.0"
-criterion = "=0.8.2"
 libc = "=0.2.191"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
-
-[[bench]]
-name = "lifecycle"
-path = "../../benches/lifecycle.rs"
-harness = false
