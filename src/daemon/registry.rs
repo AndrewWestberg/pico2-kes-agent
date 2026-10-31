@@ -12,15 +12,13 @@ struct Entry {
 }
 
 pub struct PoolRegistry {
-    directory: PathBuf,
     gid: u32,
     entries: HashMap<kes_core::identity::PoolId, Entry>,
 }
 
 impl PoolRegistry {
-    pub fn new(directory: PathBuf, gid: u32) -> Self {
+    pub fn new(gid: u32) -> Self {
         Self {
-            directory,
             gid,
             entries: HashMap::with_capacity(usize::from(StorageSlot::CAPACITY)),
         }
@@ -30,11 +28,12 @@ impl PoolRegistry {
         &mut self,
         sockets: &mut sockets::SocketRegistry,
         target: PoolTarget,
+        path: &Path,
     ) -> Result<bool, sockets::Error> {
         if self
             .entries
             .get(&target.pool)
-            .is_some_and(|entry| entry.target == target)
+            .is_some_and(|entry| entry.target == target && entry.path == path)
         {
             return Ok(false);
         }
@@ -47,13 +46,12 @@ impl PoolRegistry {
                 "dynamic pool registry capacity exceeded",
             )));
         }
-        let path = self.directory.join(format!("{}.sock", target.pool));
-        sockets.bind_dynamic(&path, self.gid)?;
+        sockets.bind_dynamic(path, self.gid)?;
         self.entries.insert(
             target.pool,
             Entry {
                 target,
-                path,
+                path: path.to_path_buf(),
                 subscription: PoolSubscription::new(target),
             },
         );
@@ -74,31 +72,6 @@ impl PoolRegistry {
         let entry = self.entries.remove(&target.pool).expect("entry checked");
         entry.subscription.stop();
         sockets.remove_dynamic(&entry.path)
-    }
-
-    pub fn reconcile(
-        &mut self,
-        sockets: &mut sockets::SocketRegistry,
-        desired: &[PoolTarget],
-    ) -> Result<(), sockets::Error> {
-        if desired.len() > usize::from(StorageSlot::CAPACITY) {
-            return Err(sockets::Error::Io(std::io::Error::other(
-                "dynamic pool registry capacity exceeded",
-            )));
-        }
-        let stale: Vec<_> = self
-            .entries
-            .values()
-            .filter(|entry| !desired.contains(&entry.target))
-            .map(|entry| entry.target)
-            .collect();
-        for target in stale {
-            self.remove(sockets, target)?;
-        }
-        for target in desired {
-            self.upsert(sockets, *target)?;
-        }
-        Ok(())
     }
 
     pub fn subscription(&self, target: PoolTarget) -> Option<&PoolSubscription> {
@@ -165,25 +138,36 @@ mod tests {
             pools: Vec::new(),
         };
         let mut sockets = sockets::SocketRegistry::bind(&config).unwrap();
-        let mut registry = PoolRegistry::new(root.clone(), gid);
+        let mut registry = PoolRegistry::new(gid);
         let first = target(1, 1);
-        assert!(registry.upsert(&mut sockets, first).unwrap());
-        let first_path = registry.path(first).unwrap().to_path_buf();
+        let first_path = root.join("custom.sock");
+        assert!(registry.upsert(&mut sockets, first, &first_path).unwrap());
         let metadata = std::fs::symlink_metadata(&first_path).unwrap();
         assert!(metadata.file_type().is_socket());
         assert_eq!(metadata.permissions().mode() & 0o777, 0o660);
         assert_eq!(metadata.gid(), gid);
         assert_eq!(registry.subscription(first).unwrap().target(), first);
+        assert!(!registry.upsert(&mut sockets, first, &first_path).unwrap());
+        let moved_path = root.join("moved.sock");
+        assert!(registry.upsert(&mut sockets, first, &moved_path).unwrap());
+        assert!(!first_path.exists());
+        assert_eq!(registry.path(first), Some(moved_path.as_path()));
 
         let replacement = target(1, 2);
-        assert!(registry.upsert(&mut sockets, replacement).unwrap());
+        let replacement_path = root.join("replacement.sock");
+        assert!(
+            registry
+                .upsert(&mut sockets, replacement, &replacement_path)
+                .unwrap()
+        );
+        assert!(!moved_path.exists());
         assert!(registry.subscription(first).is_none());
         assert_eq!(
             registry.subscription(replacement).unwrap().target(),
             replacement
         );
         assert!(registry.remove(&mut sockets, replacement).unwrap());
-        assert!(!first_path.exists());
+        assert!(!replacement_path.exists());
         drop(sockets);
         std::fs::remove_dir_all(root).unwrap();
     }

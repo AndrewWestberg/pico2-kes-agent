@@ -591,7 +591,7 @@ Normal `pools` may initially be empty for management-only setup. Management enro
 }
 ```
 
-Registry reconstruction replays journal enrollment/deletion receipts before applying configuration. A custom socket path applies only to the matching live incarnation and network; stale configuration cannot resurrect a deleted pool or retarget a new enrollment.
+Registry reconstruction replays journal enrollment/deletion receipts before applying configuration. A custom socket path applies only to the matching live incarnation and network; stale configuration cannot resurrect a deleted pool or retarget a new enrollment. The daemon serves that configured path without creating an additional default `<pool-id>.sock` endpoint.
 
 ### Switch to normal mode
 
@@ -641,7 +641,7 @@ RECIPIENT_PUBLIC="$BACKUP_OPS/recipient.public.json"
 pico2-kes-agent-cli recipient create --out "$RECIPIENT_KEY" --public-out "$RECIPIENT_PUBLIC"
 ```
 
-Terminal prompts handle passphrases. There is no argv/environment passphrase option. Transfer **only the public JSON** to the primary's `$OPS/recipient.public.json`.
+Terminal prompts handle passphrases. Both recipient creation and restoration disable process dumps before the first passphrase prompt; failure to establish protection stops the command. There is no argv/environment passphrase option. Transfer **only the public JSON** to the primary's `$OPS/recipient.public.json`.
 
 ### 2. Install the public recipient
 
@@ -770,6 +770,8 @@ Replace the old `--shelley-kes-key` source; do not pass both sources. For a syst
 Migration from a signing-key file or the original agent uses a **fresh device generation and new certificate**, not plaintext import. Keep the existing producer until the replacement is ready, then fence/stop it before enabling replacement forging. Avoid dual forging.
 
 Ordinary evolution and generation rotation require neither node restart nor SIGHUP. Keep the node's startup certificate file current for future restarts. A change to startup configuration requires a controlled restart using your normal node-service procedure. A running node may retain already delivered state and evolve/sign independently; stopping the agent alone is not revocation.
+
+Each pool permits two node subscriptions. Idle connections are checked for peer disconnection every 100 ms, subject to host scheduling, so closed clients release their slots without waiting for a new key publication. Healthy idle connections remain open.
 
 ## Operations and maintenance
 
