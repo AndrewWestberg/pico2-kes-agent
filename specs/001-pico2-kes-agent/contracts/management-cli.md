@@ -76,7 +76,23 @@ Normal daemon invocation: `pico2-kes-agentd --config FILE`; `--check-config` val
 - `version: 1`, `device: {id, identity_public_key, usb_serial}`: attended pin, no automatic trust-on-reconnect.
 - `socket_directory`, `socket_group`, `socket_mode: "0660"`, `management_socket`: all under the owner-controlled runtime directory; reject inconsistent per-endpoint policies.
 - `state_directory`: owner-restricted public mutation journal/configuration; 64-MiB journal admission bound, checksummed records and fsync. No plaintext secret fields. Includes initial commissioning and completed deletion receipts; the latter supply a same-pool publication timestamp floor on re-enrollment, not a retained network period floor. Truncated uncommitted journal tails reconcile from device; corruption of acknowledged history fails closed rather than silently resetting.
-- `networks`: named objects with exact genesis files/digests, network magic, local node socket, trusted `cardano_cli` executable path, era-history source and `max_context_age_ms: 30000`. Daemon queries public local node state every 5 seconds and derives/checks era-aware periods from trusted time. Fan each validated observation and synchronized publication-time sample out to exact pool/incarnation targets; durable period floors are independent per incarnation. A timeout, unsynchronized host, stale tip, mismatched genesis or regressive value withholds new time-dependent delivery.
+- `networks`: named objects with the following required fields:
+
+  ```json
+  {
+    "byron_genesis_file": "/etc/cardano/mainnet-byron-genesis.json",
+    "shelley_genesis_file": "/etc/cardano/mainnet-shelley-genesis.json",
+    "byron_to_shelley_epochs": 208,
+    "genesis_digest": "<SHA-256 of the exact Shelley genesis bytes>",
+    "max_context_age_ms": 30000
+  }
+  ```
+
+  Both paths are absolute and service-readable; transition epochs are required even when zero. The Shelley digest pins raw bytes, not the node's differently defined genesis hash. Byron protocol magic must match Shelley network magic; binding magic, `slotsPerKESPeriod` and `maxKESEvolutions` come from Shelley genesis. `max_context_age_ms` is a device-context lease, accepted from 1000 through 30999 ms and truncated to whole seconds. Genesis/configuration are loaded once and remain unchanged until restart. Unknown and obsolete fields, including `genesis_file`, `cardano_cli`, `node_socket`, `query_timeout_ms`, `era_history`, `mainnet`, `network_magic`, `slots_per_kes_period` and `kes_lifetime`, are rejected.
+
+  The daemon derives absolute slots and KES periods from Byron start time, Byron epoch/slot duration, the configured transition and Shelley slot length, sampling operator-maintained host UTC for each exact pool/incarnation context and publication-time sample. It does not query the node or CLI or gate on kernel synchronization status. Before Shelley, or on time/arithmetic failure, context is unavailable; the device rejects regressive periods against independent durable incarnation floors. The next pass is scheduled at the earliest network boundary or transition, half the encoded lease, or five seconds, subject to OS/USB delays.
+
+  Operators must maintain correct UTC and supply matching genesis files and the actual transition epoch: incorrect inputs can irreversibly advance or expire a key. Migrate old configuration by renaming the Shelley path, adding Byron and transition fields, and removing obsolete fields while retaining the Shelley digest and lease. Identical Shelley bytes and genesis-derived binding values preserve an existing enrollment; a mismatch fails closed, with no automatic floor reset, certificate rewrite or re-enrollment.
 - `pools`: initial socket bindings `{pool_id,incarnation_id,socket_path,network}`. Enrollment derives a stable default filename `<pool-id>.sock` in the shared directory; persist the resulting binding publicly before reporting host-side availability. Re-enrollment changes incarnation, never silently retargets an existing live connection. Unknown/duplicate/conflicting bindings fail with pool context.
 
 All configured filenames and paths are validated before use; no client-provided path is forwarded into an executable shell. Dynamic enrollment updates the public binding registry atomically after device result reconciliation. A daemon crash between device enrollment and registry publication reconstructs the same mapping from its intent/receipt, not another pool. Socket mapping and registry failure affects readiness, not the already committed generation identity.

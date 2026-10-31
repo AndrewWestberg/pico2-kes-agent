@@ -3,7 +3,7 @@
 use crate::{
     config::{Config, PoolBinding, RunMode},
     daemon::{
-        context::{ContextProvider, REFRESH_INTERVAL, SystemClock, TargetContext},
+        context::{ContextProvider, HEARTBEAT_INTERVAL, SystemClock, TargetContext},
         journal::Journal,
         management::{self, Management},
         node_service::{
@@ -68,13 +68,22 @@ fn shutting_down(local: &AtomicBool) -> bool {
 
 fn sleep_until_shutdown(shutdown: &AtomicBool, duration: Duration) {
     let deadline = Instant::now() + duration;
+    sleep_to_deadline(shutdown, deadline);
+}
+
+fn sleep_to_deadline(shutdown: &AtomicBool, deadline: Instant) {
     while !shutting_down(shutdown) {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        let Some(remaining) = remaining_pass_delay(deadline, Instant::now()) else {
             break;
-        }
+        };
         std::thread::sleep(remaining.min(Duration::from_millis(50)));
     }
+}
+
+fn remaining_pass_delay(deadline: Instant, now: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|delay| !delay.is_zero())
 }
 
 #[derive(Debug)]
@@ -360,6 +369,7 @@ fn poll_pools(
     }
     let mut observed_epoch = 1;
     while !shutting_down(shutdown) {
+        let deadline = Instant::now() + provider.next_wake_delay();
         let recovery = state.lock().map_err(|_| ()).and_then(|mut state| {
             let epoch = state.usb.ensure_connected().map_err(|_| ())?;
             if state.journal.pending().is_some() {
@@ -383,7 +393,7 @@ fn poll_pools(
         });
         let Ok((epoch, reconciled)) = recovery else {
             suspend_all(pools);
-            sleep_until_shutdown(shutdown, REFRESH_INTERVAL);
+            sleep_until_shutdown(shutdown, HEARTBEAT_INTERVAL);
             continue;
         };
         if reconciled {
@@ -394,7 +404,7 @@ fn poll_pools(
         if epoch != observed_epoch {
             if provider.restart_session().is_err() {
                 suspend_all(pools);
-                sleep_until_shutdown(shutdown, REFRESH_INTERVAL);
+                sleep_until_shutdown(shutdown, HEARTBEAT_INTERVAL);
                 continue;
             }
             observed_epoch = epoch;
@@ -445,7 +455,7 @@ fn poll_pools(
             }
         }
         if !transport_failed {
-            sleep_until_shutdown(shutdown, REFRESH_INTERVAL);
+            sleep_to_deadline(shutdown, deadline);
         }
     }
     suspend_all(pools);
@@ -826,6 +836,24 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use std::collections::VecDeque;
+
+    #[test]
+    fn pool_sweep_consumes_the_precomputed_wake_deadline() {
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(500);
+        assert_eq!(
+            remaining_pass_delay(deadline, started + Duration::from_millis(200)),
+            Some(Duration::from_millis(300))
+        );
+        assert_eq!(
+            remaining_pass_delay(deadline, started + Duration::from_millis(500)),
+            None
+        );
+        assert_eq!(
+            remaining_pass_delay(deadline, started + Duration::from_millis(700)),
+            None
+        );
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Seen {
