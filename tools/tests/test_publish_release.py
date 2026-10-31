@@ -36,6 +36,8 @@ class GithubBoundary:
             self.api_calls += 1
             return json.dumps({"sha": "moved" if self.fail == "moved" and self.api_calls == 2 else self.commit})
         operation = args[1]
+        if operation == "create" and "--target" in args:
+            raise ValueError("fixture target changes workflows; contents-only token cannot target it")
         if operation == self.fail:
             raise ValueError("injected GitHub failure")
         if operation == "upload":
