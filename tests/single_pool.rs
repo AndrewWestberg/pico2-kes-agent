@@ -695,3 +695,95 @@ fn commissioning_mode_rejects_pool_mutations() {
     assert_eq!(status(&rig)["result"]["commissioning_state"], "blank");
     assert!(rig.pool_sockets().is_empty());
 }
+
+#[test]
+fn reenrolled_pool_reconstructs_before_applying_current_socket_configuration() {
+    let rig = TestRig::commissioned_pool();
+    let cold = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+    let cold_hex: String = cold
+        .verifying_key()
+        .to_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let enroll = |operation: u8| {
+        let revision = status(&rig)["result"]["revision"].as_u64().unwrap();
+        let response = management(
+            &rig,
+            json!({"version":1,"request_id":ID,"action":"pool.enroll",
+                "arguments":{"cold_verification_key":cold_hex,"network":"test"},
+                "operation_id":format!("{operation:032x}"),"expected_revision":revision}),
+        );
+        assert_eq!(response["outcome"], "success", "{response}");
+        response["result"].clone()
+    };
+    let delete = |target: &Value, operation: u8| {
+        let pool = management(
+            &rig,
+            json!({"version":1,"request_id":ID,"action":"pool.status",
+                "arguments":{"pool_id":target["pool_id"]}}),
+        );
+        let response = management(
+            &rig,
+            json!({"version":1,"request_id":ID,"action":"pool.delete",
+                "arguments":{"pool_id":target["pool_id"],"incarnation_id":target["incarnation_id"]},
+                "operation_id":format!("{operation:032x}"),
+                "expected_revision":pool["result"]["revision"]}),
+        );
+        assert_eq!(response["outcome"], "success", "{response}");
+    };
+    let old = enroll(21);
+    delete(&old, 22);
+    let current = enroll(23);
+    assert_ne!(old["incarnation_id"], current["incarnation_id"]);
+    let binding = pico2_kes_agent::config::PoolBinding {
+        pool: kes_core::identity::PoolId::parse_hex(current["pool_id"].as_str().unwrap()).unwrap(),
+        incarnation: kes_core::identity::IncarnationId::parse_hex(
+            current["incarnation_id"].as_str().unwrap(),
+        )
+        .unwrap(),
+        socket_path: rig.management_socket().with_file_name("replacement.sock"),
+        network: "test".to_owned(),
+    };
+    let list = || {
+        management(
+            &rig,
+            json!({"version":1,"request_id":ID,"action":"pool.list","arguments":{}}),
+        )
+    };
+    rig.reload_pool_bindings(vec![binding.clone()]);
+    let listed = list();
+    assert_eq!(listed["outcome"], "success", "{listed}");
+    assert_eq!(listed["result"]["pools"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        listed["result"]["pools"][0]["incarnation_id"],
+        current["incarnation_id"]
+    );
+    assert_eq!(
+        listed["result"]["pools"][0]["socket_path"],
+        binding.socket_path.to_str().unwrap()
+    );
+
+    let mut retired_binding = binding.clone();
+    retired_binding.incarnation =
+        kes_core::identity::IncarnationId::parse_hex(old["incarnation_id"].as_str().unwrap())
+            .unwrap();
+    rig.reload_pool_bindings(vec![retired_binding]);
+    let listed = list();
+    assert_eq!(listed["outcome"], "success", "{listed}");
+    assert_eq!(
+        listed["result"]["pools"][0]["incarnation_id"],
+        current["incarnation_id"]
+    );
+    assert_eq!(
+        listed["result"]["pools"][0]["socket_path"],
+        rig.management_socket()
+            .with_file_name(format!("{}.sock", binding.pool))
+            .to_str()
+            .unwrap()
+    );
+
+    rig.reload_pool_bindings(vec![binding]);
+    delete(&current, 24);
+    assert_eq!(list()["result"]["pools"], json!([]));
+}

@@ -292,6 +292,10 @@ struct Tip {
     _era: Option<String>,
     #[serde(default, rename = "hash")]
     _hash: Option<String>,
+    #[serde(default, rename = "slotInEpoch")]
+    _slot_in_epoch: Option<u64>,
+    #[serde(default, rename = "slotsToEpochEnd")]
+    _slots_to_epoch_end: Option<u64>,
 }
 
 fn query_tip(config: &NetworkConfig) -> Result<Tip, Error> {
@@ -352,8 +356,7 @@ fn bounded_read(mut reader: impl Read) -> io::Result<Vec<u8>> {
 pub fn validate_network_config(config: &NetworkConfig) -> Result<(), Error> {
     if config.era_history.is_empty()
         || config.binding.slots_per_period() == 0
-        || config.max_age.is_zero()
-        || config.max_age > Duration::from_secs(255)
+        || !(1..=30).contains(&config.max_age.as_secs())
         || config.query_timeout.is_zero()
     {
         return Err(Error::InvalidConfiguration("invalid bounds"));
@@ -423,6 +426,57 @@ fn slot_at_time(history: &[EraSegment], time_us: u64) -> Result<u64, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_age_rejects_unencodable_lease_boundaries() {
+        let mut config = NetworkConfig {
+            cardano_cli: PathBuf::from("/bin/false"),
+            node_socket: PathBuf::from("/unused/node.sock"),
+            genesis_file: PathBuf::from("/unused/genesis.json"),
+            expected_genesis_digest: Digest32::from_bytes([7; 32]),
+            selector: NetworkSelector::Testnet(42),
+            binding: NetworkBinding::new(Digest32::from_bytes([7; 32]), 42, 100, 64).unwrap(),
+            era_history: vec![EraSegment {
+                start_slot: 0,
+                start_time_us: 0,
+                slot_length_us: 1_000_000,
+            }],
+            max_age: DEFAULT_MAX_AGE,
+            query_timeout: Duration::from_secs(1),
+        };
+        for (milliseconds, accepted) in
+            [(1_000, true), (30_999, true), (999, false), (31_000, false)]
+        {
+            config.max_age = Duration::from_millis(milliseconds);
+            assert_eq!(
+                validate_network_config(&config).is_ok(),
+                accepted,
+                "{milliseconds} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn cardano_tip_epoch_progress_preserves_slot_authority_and_strict_types() {
+        let tip = serde_json::json!({
+            "block": 4811671, "epoch": 1467, "era": "Conway",
+            "hash": "f4b83f12ac778c7bf9943b3b1a14df8aa4a8c0214c84357b88af102b27d7aea0",
+            "slot": 126801332, "slotInEpoch": 52532, "slotsToEpochEnd": 33868,
+            "syncProgress": "100.00"
+        });
+        let parsed: Tip = serde_json::from_value(tip.clone()).unwrap();
+        assert_eq!(parsed.slot / 129600, 978);
+        for field in ["slotInEpoch", "slotsToEpochEnd"] {
+            for invalid in [serde_json::json!(-1), serde_json::json!("52532")] {
+                let mut malformed = tip.clone();
+                malformed[field] = invalid;
+                assert!(serde_json::from_value::<Tip>(malformed).is_err());
+            }
+        }
+        let mut unknown = tip;
+        unknown["unexpected"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<Tip>(unknown).is_err());
+    }
 
     #[test]
     fn kernel_clock_states_and_failure_flags_fail_closed() {

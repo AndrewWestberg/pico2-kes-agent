@@ -227,13 +227,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 
     pub(crate) fn reconstructed_registry(&self) -> Result<Vec<PoolBinding>, Error> {
-        let mut registry: HashMap<PoolId, PoolBinding> = self
-            .config
-            .pools
-            .iter()
-            .cloned()
-            .map(|binding| (binding.pool, binding))
-            .collect();
+        let mut registry: HashMap<PoolId, Option<PoolBinding>> = HashMap::new();
         for completed in self.journal.completed() {
             let response = decode_durable(&completed.terminal.public_result)?;
             let receipt = match response {
@@ -248,10 +242,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                     let intent: Envelope =
                         serde_json::from_slice(&completed.intent).map_err(|_| Error::Protocol)?;
                     let network = string(&intent.arguments, "network")?.to_owned();
-                    if !self.config.networks.contains_key(&network) {
-                        return Err(Error::Protocol);
-                    }
-                    if let Some(existing) = registry.get(&target.pool) {
+                    if let Some(Some(existing)) = registry.get(&target.pool) {
                         if existing.incarnation != target.incarnation || existing.network != network
                         {
                             return Err(Error::Protocol);
@@ -260,7 +251,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                     }
                     registry.insert(
                         target.pool,
-                        PoolBinding {
+                        Some(PoolBinding {
                             pool: target.pool,
                             incarnation: target.incarnation,
                             socket_path: self
@@ -268,20 +259,53 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                                 .socket_directory
                                 .join(format!("{}.sock", target.pool)),
                             network,
-                        },
+                        }),
                     );
                 }
-                CommittedResult::Deleted(deleted)
-                    if registry.get(&deleted.target().pool).is_some_and(|binding| {
-                        binding.incarnation == deleted.target().incarnation
-                    }) =>
-                {
-                    registry.remove(&deleted.target().pool);
+                CommittedResult::Deleted(deleted) => {
+                    let target = deleted.target();
+                    if registry
+                        .get(&target.pool)
+                        .and_then(Option::as_ref)
+                        .is_none_or(|binding| binding.incarnation == target.incarnation)
+                    {
+                        // Keep tombstones only where configuration could resurrect a retired pool.
+                        if self
+                            .config
+                            .pools
+                            .iter()
+                            .any(|binding| binding.pool == target.pool)
+                        {
+                            registry.insert(target.pool, None);
+                        } else {
+                            registry.remove(&target.pool);
+                        }
+                    }
                 }
                 _ => {}
             }
         }
-        let mut registry: Vec<_> = registry.into_values().collect();
+        for configured in &self.config.pools {
+            match registry.get_mut(&configured.pool) {
+                None => {
+                    registry.insert(configured.pool, Some(configured.clone()));
+                }
+                Some(Some(binding)) if binding.incarnation == configured.incarnation => {
+                    if binding.network != configured.network {
+                        return Err(Error::Protocol);
+                    }
+                    binding.socket_path.clone_from(&configured.socket_path);
+                }
+                _ => {}
+            }
+        }
+        let mut registry: Vec<_> = registry.into_values().flatten().collect();
+        if registry
+            .iter()
+            .any(|binding| !self.config.networks.contains_key(&binding.network))
+        {
+            return Err(Error::Protocol);
+        }
         registry.sort_by_key(|binding| binding.pool.to_string());
         Ok(registry)
     }

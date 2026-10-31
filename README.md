@@ -584,9 +584,11 @@ Obtain actual slot-length transitions from authoritative network history, includ
 ]
 ```
 
-The parser accepts 1–32 segments with positive slot lengths. `max_context_age_ms=30000` and `query_timeout_ms=5000` are example settings: maximum context age must be positive and at most 255000 ms; query timeout must be positive. A stale tip, failed query, bad genesis/history, or unsynchronized kernel clock withholds fresh context/key delivery. Recheck [clock readiness](#requirements-and-compatibility) before relying on delivery; configuration validation does not test it.
+The parser accepts 1–32 segments with positive slot lengths. `max_context_age_ms=30000` and `query_timeout_ms=5000` are example settings. Maximum context age must produce a 1–30-second lease after truncating to whole seconds (1000–30999 ms); unsupported bounds fail configuration validation. Query timeout must be positive. A stale tip, failed query, bad genesis/history, or unsynchronized kernel clock withholds fresh context/key delivery. Recheck [clock readiness](#requirements-and-compatibility) before relying on delivery; configuration validation does not test it.
 
-Normal `pools` may initially be empty. Management enrollment and the durable public journal reconstruct bindings; **preserve the journal**. Default enrollment creates `<pool-id>.sock` directly under `socket_directory`. For migration/custom socket names, an optional explicit binding has this shape (replace IDs with returned values and insert into `pools`):
+The strict tip parser accepts the standard `slotInEpoch` and `slotsToEpochEnd` unsigned-integer fields; the absolute `slot` remains authoritative. Unknown fields and malformed values are rejected.
+
+Normal `pools` may initially be empty for management-only setup. Management enrollment and the durable public journal reconstruct socket bindings; **preserve the journal**. Context polling uses the explicit `pools` bindings loaded at startup, so configure each intended delivery pool and restart before expecting readiness. Default enrollment creates `<pool-id>.sock` directly under `socket_directory`; use that returned path or choose a custom socket name. A binding has this shape (replace IDs with returned values and insert into `pools`):
 
 ```json
 {
@@ -596,6 +598,8 @@ Normal `pools` may initially be empty. Management enrollment and the durable pub
   "network": "pool-network"
 }
 ```
+
+Registry reconstruction replays journal enrollment/deletion receipts before applying configuration. A custom socket path applies only to the matching live incarnation and network; stale configuration cannot resurrect a deleted pool or retarget a new enrollment.
 
 ### Switch to normal mode
 
@@ -680,6 +684,8 @@ pico2-kes-agent-cli --json pool list --page-size 16
 ```
 
 `POOL` is 56 lowercase hexadecimal characters, not Bech32 `pool1...`. Device, incarnation, and generation IDs are 32 hex characters. Save returned IDs with your records. Obtain `POOL_SOCKET` from the matching pool's returned list entry `socket_path`; follow pagination when necessary, rather than substituting the management socket.
+
+Before key delivery, add the returned binding to the normal configuration as described [above](#normal-configuration-and-trusted-context), validate it, and restart the daemon. Enrollment alone does not add a running context poller.
 
 ### 4. Generate a staged key
 
@@ -926,7 +932,7 @@ DELETE_RESULT=$(pico2-kes-agent-cli --json pool delete --pool "$POOL" --incarnat
 printf '%s\n' "$DELETE_RESULT"
 ```
 
-Interactive confirmation requires `yes`; append `--yes` only for deliberate automation. Preserve receipts. Re-enrollment creates a new incarnation and needs fresh generations/certificates. Review any explicit configuration binding so an obsolete incarnation is not retained.
+Interactive confirmation requires `yes`; append `--yes` only for deliberate automation. Preserve receipts. Re-enrollment creates a new incarnation and needs fresh generations/certificates. Update the configured binding to the new incarnation and restart before expecting delivery.
 
 ### Decommission and uninstall
 
