@@ -1,6 +1,8 @@
 # RP2350 CRIT1 redundant-write false-success investigation
 
-## Handoff status
+The investigation below is a historical record, not authorization for additional OTP writes. The later [rc.9 preservation-upgrade evidence](../evidence/2e22f818e15d1824f88c9eed365aaffc29dff803-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/hardware/preservation-upgrade.json) reports `critical=7` and `redundancy_ok=true` before and after the signed upgrade. That observation supersedes the board-disposition snapshot below; it does not resolve the ROM multi-row false-success mechanism or establish firmware readback/attestation.
+
+## Historical handoff status (2026-10-30)
 
 This is a maintainer/engineering bug report, not end-user documentation.
 
@@ -19,7 +21,7 @@ At the previous investigation's last observation, the board was in BOOTSEL and t
 
 Destructive authorization is not authorization to run blind retries. Preserve the existing record and current state first, instrument every attempted write, and restrict tests to this serial. Do not attach or modify a backup board.
 
-**Current disposition:** the exact false-success pattern was reproduced through the stock ROM with no PICOBOOT/picotool in the write path. Stock-ROM **single-row** calls subsequently passed all 24 tested transitions. Host hardening and 39 permanent tests are implemented. The authenticated application is restored, the daemon is inactive, and the board remains sacrificial with its original CRIT1 mismatch—not qualified or repaired. Upstream publication was explicitly declined in favor of a local draft.
+**Disposition at the end of this investigation:** the exact false-success pattern was reproduced through the stock ROM with no PICOBOOT/picotool in the write path. Stock-ROM **single-row** calls subsequently passed all 24 tested transitions. Host hardening and 39 permanent tests were implemented. The authenticated application was restored, the daemon was inactive, and the board remained sacrificial with its original CRIT1 mismatch—not qualified or repaired at that point. Upstream publication was explicitly declined in favor of a local draft.
 
 ### 2026-10-30 evidence preservation and revised experiment protocol
 

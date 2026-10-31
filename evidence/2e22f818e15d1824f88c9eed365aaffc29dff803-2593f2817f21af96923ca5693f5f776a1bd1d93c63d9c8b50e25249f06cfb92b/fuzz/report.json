@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "verdict": "pass",
+  "runs": [
+    {
+      "target": "usb",
+      "exit_code": 0,
+      "executions": 2495268,
+      "seconds": 61,
+      "command": "cargo +nightly-2026-10-22 fuzz run usb /home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-generated-corpus/usb fuzz/corpus/usb -- -max_total_time=60",
+      "output": "usb.log",
+      "output_kind": "complete retained tool output"
+    },
+    {
+      "target": "management",
+      "exit_code": 0,
+      "executions": 7115539,
+      "seconds": 61,
+      "command": "cargo +nightly-2026-10-22 fuzz run management /home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-generated-corpus/management fuzz/corpus/management -- -max_total_time=60",
+      "output": "management.log",
+      "output_kind": "complete retained tool output"
+    },
+    {
+      "target": "node_service",
+      "exit_code": 0,
+      "executions": 24108838,
+      "seconds": 61,
+      "command": "cargo +nightly-2026-10-22 fuzz run node_service /home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-generated-corpus/node_service fuzz/corpus/node_service -- -max_total_time=60",
+      "output": "node_service.log",
+      "output_kind": "observed completion excerpt; full terminal stream was not retained"
+    },
+    {
+      "target": "certificate",
+      "exit_code": 0,
+      "executions": 18229506,
+      "seconds": 61,
+      "command": "cargo +nightly-2026-10-22 fuzz run certificate /home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-generated-corpus/certificate fuzz/corpus/certificate -- -max_total_time=60",
+      "output": "certificate.log",
+      "output_kind": "complete retained tool output"
+    },
+    {
+      "target": "artifact",
+      "exit_code": 0,
+      "executions": 10487651,
+      "seconds": 61,
+      "command": "cargo +nightly-2026-10-22 fuzz run artifact /home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-generated-corpus/artifact fuzz/corpus/artifact -- -max_total_time=60",
+      "output": "artifact.log",
+      "output_kind": "complete retained tool output"
+    }
+  ],
+  "total_executions": 62436802,
+  "limit": "Five bounded 60-second campaigns, not a coverage or absence-of-bugs proof."
+}

@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "signed_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+  "outcome": "pass",
+  "before": {
+    "active": null,
+    "commissioning_state": "committed",
+    "device_id": "f39127e9e0ab25f8341401048acf629d",
+    "health": "expired",
+    "high_water_us": 1793459791748389,
+    "incarnation_id": "38d4dc203980e952ada8130fd96f608f",
+    "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+    "publication_revision": 28,
+    "publication_state": "drop",
+    "publication_timestamp_us": 1793459791748389,
+    "receipt_pending": false,
+    "revision": 28,
+    "staged": {
+      "artifact_digest": "3e74a002f6910e187101d41b25575f16b3b7cf218b4ee3e186eef30d0f0a2946",
+      "generation_id": "4909108ab599e49ffaa6f9e1c944ab76",
+      "health": "not_yet_valid",
+      "period": 0,
+      "revision": 28,
+      "role": "staged"
+    }
+  },
+  "delete": {
+    "drop_timestamp_us": 1793459791748390,
+    "high_water_us": 1793459791748390,
+    "incarnation_id": "38d4dc203980e952ada8130fd96f608f",
+    "kind": "deleted",
+    "operation_id": "c93da04e4e7b68d4c7e7475b7a3cfc2f",
+    "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+    "request_digest": "a44902f18c0bea05fe7d0a59893d47ab03536b78000d5ac080d98674b83a7ab6",
+    "result_digest": "664105ef3cc19e15c5eca8b9c5086608897fecd00a3096c98006796a5baa45f1",
+    "revision": 29,
+    "sequence": 47,
+    "version": 1
+  },
+  "reconciled_identical_receipt": true,
+  "reenrollment": {
+    "incarnation_id": "8faaecfd9a64f5c1f58df056088db239",
+    "kind": "enrolled",
+    "operation_id": "6e53c1ee220064da41231ffcd4362d0c",
+    "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+    "request_digest": "39dcea6d03f9f262721a7396780f1e54736b886a2d8541e00bfbedb050c16975",
+    "result_digest": "ed37e40dc1542cd6d72592e8be178e07895a2178613ab503893152867879927e",
+    "revision": 1,
+    "sequence": 48,
+    "version": 1
+  },
+  "after": {
+    "active": null,
+    "commissioning_state": "committed",
+    "device_id": "f39127e9e0ab25f8341401048acf629d",
+    "health": "period_unavailable",
+    "high_water_us": 1793459791748390,
+    "incarnation_id": "8faaecfd9a64f5c1f58df056088db239",
+    "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+    "publication_revision": 0,
+    "publication_state": "none",
+    "publication_timestamp_us": 1793459791748390,
+    "receipt_pending": false,
+    "revision": 1,
+    "staged": null
+  },
+  "old_subscription": {
+    "public_v2_handshake_completed": true,
+    "terminal_drop_timestamp_us": null,
+    "closed_without_retargeting": true,
+    "daemon_restarted_between_enrollments": false,
+    "key_payload_read_or_persisted": false
+  },
+  "original_journal_preserved": true,
+  "harness_note": "Initial reconciliation invocation omitted the operation subcommand and was rejected with exit 2 before submission. Corrected invocation used the original receipt; deletion was not replayed.",
+  "rejected_invocation_log": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/kes-lab-dafa3a76/rc9-reconcile-delete-b.json"
+}

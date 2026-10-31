@@ -1,0 +1,30 @@
+{
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "sandbox": "same lab daemon properties; production cardano-node hardening preflight excluded",
+  "observation": {
+    "outcome": "pass",
+    "uid": 1000,
+    "process_security": {
+      "CapEff": "0000000000000000",
+      "CapBnd": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "2"
+    },
+    "read_only_adjtimex_modes": 0,
+    "read_only_adjtimex_result": 0,
+    "clock_settime_result": -1,
+    "clock_settime_errno": 1,
+    "host_time_changed_by_probe": false
+  },
+  "installed_daemon_process_security": {
+    "Uid": "1000\t1000\t1000\t1000",
+    "CapEff": "0000000000000000",
+    "CapBnd": "0000000000000000",
+    "NoNewPrivs": "1",
+    "Seccomp": "2"
+  },
+  "installed_preview_ready_record": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/kes-lab-dafa3a76/rc9-reset-after-preview.json"
+}

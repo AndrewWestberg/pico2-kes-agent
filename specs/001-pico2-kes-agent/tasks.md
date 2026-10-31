@@ -24,7 +24,7 @@ The maintainer-approved pragmatic software/device scope supersedes the earlier l
 
 ## Device and operator surfaces
 
-- [X] T114 Build and qualify production firmware on the accepted Pico2 A2 using fitted JEDEC/SFDP geometry, assigned USB identity/stable serial, readback firmware identity, image/RAM fit, ready startup, and honest threat exclusions.
+- [X] T114 Build and qualify production firmware on the accepted Pico2 A2 using fitted JEDEC/SFDP geometry, assigned USB identity/stable serial, signed-image provenance (operational inference, not firmware readback or attestation), image/RAM fit, ready startup, and honest threat exclusions.
 - [X] T115 Complete the daemon-only CLI lifecycle, status, warnings, receipts/reconciliation, recipient, local restore, stable JSON, and exit-code surface with no direct-USB escape path.
 - [X] T116 Serialize exact staged discard against activation, preserve active/later-staged generations, retain retry outcomes, return `target_not_staged` precisely, and cover both orderings plus reboot cuts.
 

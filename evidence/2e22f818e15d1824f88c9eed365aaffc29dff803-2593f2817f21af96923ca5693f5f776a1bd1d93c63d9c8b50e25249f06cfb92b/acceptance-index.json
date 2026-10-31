@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "purpose": "Public index of observed current-candidate acceptance results; not a replacement gate runner or validator",
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "verdict": "pass-required-pragmatic-scope",
+  "release": {
+    "tag": "v0.1.0-rc.9",
+    "url": "https://github.com/AndrewWestberg/pico2-kes-agent/releases/tag/v0.1.0-rc.9",
+    "workflow_run": "https://github.com/AndrewWestberg/pico2-kes-agent/actions/runs/41212720836",
+    "workflow_conclusion": "success",
+    "bundle": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/github-v0.1.0-rc.9",
+    "verified_assets": 11,
+    "manifest_sha256": "d025e97236fbe449352b501e67dec994ac771ec68b6f3effe3edac61a633a0b5",
+    "signed_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+    "authorized_bootkey_sha256": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0"
+  },
+  "device": {
+    "usb_serial": "00afd9003906a634",
+    "device_id": "f39127e9e0ab25f8341401048acf629d",
+    "identity_public_key": "a3cd5edfccee6bef4b640a591e80afd47a69ef1970b9abe0de63514df56b6e7f",
+    "stepping": "A2",
+    "security_profile": "rp2350-signed-msd-v1",
+    "security_policy_changed": false
+  },
+  "required_rows": [
+    {
+      "scope": "Host quality",
+      "outcome": "pass",
+      "evidence": [
+        "host/report.json",
+        "host/commands.log"
+      ]
+    },
+    {
+      "scope": "Firmware",
+      "outcome": "pass",
+      "evidence": [
+        "host/report.json",
+        "hardware/report.json"
+      ]
+    },
+    {
+      "scope": "Lifecycle and recovery",
+      "outcome": "pass",
+      "evidence": [
+        "host/commands.log",
+        "hardware/evolution-campaign.json"
+      ]
+    },
+    {
+      "scope": "Capacity and isolation",
+      "outcome": "pass",
+      "evidence": [
+        "load/report.json"
+      ]
+    },
+    {
+      "scope": "Protocol robustness",
+      "outcome": "pass",
+      "evidence": [
+        "fuzz/report.json"
+      ]
+    },
+    {
+      "scope": "Restore interoperability",
+      "outcome": "pass",
+      "evidence": [
+        "host/commands.log"
+      ]
+    },
+    {
+      "scope": "Native compatibility",
+      "outcome": "pass",
+      "evidence": [
+        "native/report.json",
+        "host/report.json"
+      ]
+    },
+    {
+      "scope": "Operator path",
+      "outcome": "pass",
+      "evidence": [
+        "host/report.json",
+        "hardware/operator-lifecycle.json",
+        "hardware/installed-usb-reset.json"
+      ]
+    },
+    {
+      "scope": "Device path",
+      "outcome": "pass",
+      "evidence": [
+        "hardware/installed-usb-reset.json",
+        "hardware/production-usb.json"
+      ]
+    }
+  ],
+  "additional_plan_evidence": {
+    "foundation": "foundation/report.json",
+    "clock_query_and_denied_setting": "hardware/clock-sandbox.json",
+    "signed_upgrade_preservation": "hardware/preservation-upgrade.json",
+    "bounded_advancing_context_campaign": "hardware/evolution-campaign.json",
+    "ordinary_cli_lifecycle": "hardware/operator-lifecycle.json"
+  },
+  "measured_reduction": {
+    "changed_files": 48,
+    "added_lines": 1680,
+    "removed_lines": 3160,
+    "locked_packages_before": 262,
+    "locked_packages_after": 224,
+    "dependencies_removed": 38,
+    "dependencies_added": 0,
+    "net_lines_removed": 1480
+  },
+  "verification_counts": {
+    "workspace_tests": 218,
+    "python_tests": 61,
+    "native_crypto_tests": 5,
+    "signature_boundary_cases": 4096,
+    "fuzz_targets": 5,
+    "fuzz_executions": 62436802
+  },
+  "installed_device_path": {
+    "identity_ready_after_usb_reset_seconds": 0.2661774789885385,
+    "pool_bindings_recovered": 6,
+    "ready_chain_pool": "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1",
+    "chain": "Existing preview node queried read-only; no lab credentials supplied to that node",
+    "journal_unchanged_during_reset": true,
+    "reenrollment_or_manual_reconstruction_after_reset": false,
+    "same_daemon_pid_across_reset": 2316365,
+    "fresh_public_v2_delivery": "hardware/installed-usb-reset.json"
+  },
+  "original_advancing_context_incident": {
+    "status": "open / not reproduced",
+    "conclusion": "Bounded rc6, rc8 and rc9 campaigns succeeded; they do not establish the original physical trigger or close the incident."
+  },
+  "operating_state_at_completion": {
+    "signed_rc9_firmware": "installed",
+    "host_binaries": "installed; hashes in host/report.json",
+    "temporary_lab_daemon": "stopped cleanly after qualification",
+    "original_agent_service": "inactive and enabled, as before; existing configuration preserved",
+    "cardano_node_and_supplied_hardening": "left unchanged and not qualified"
+  },
+  "historical_evidence": {
+    "directory": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik",
+    "rc8_evidence": "/home/westbam/Development/pico2-kes-agent/evidence/8c18fe9ed2987d5c97a0c3890b0927566bea7ee0-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b",
+    "rc7_failed_publication": "Tag and failed workflow preserved; no tag was moved",
+    "lab_journal_setup": "Before fixture creation, the isolated public journal was reconstructed once from archived actual intents, receipts and acknowledgements. The original production journal was untouched. No reconstruction occurred during rc9 install/reset qualification."
+  },
+  "limits": [
+    "Production cardano-node hardening and its daemon ExecStartPre preflight deliberately excluded at user request; installed smoke used an isolated daemon sandbox.",
+    "Signed-MSD execution is operationally inferred from authenticated bundle, flushed firmware-only copy and pinned application startup, not flash readback or independent attestation.",
+    "No OTP, signing-authority, state-partition erase or cleanup-image operation was performed.",
+    "Compatible downgrade, interrupted-copy, second-stepping, endurance/environmental and live-forging campaigns were not added.",
+    "Bounded fuzzing is not an absence-of-bugs proof; the node_service completion excerpt is retained, but its full terminal stream was not saved.",
+    "Existing allowed maintenance/future-compatibility warnings remain recorded in host/report.json."
+  ]
+}

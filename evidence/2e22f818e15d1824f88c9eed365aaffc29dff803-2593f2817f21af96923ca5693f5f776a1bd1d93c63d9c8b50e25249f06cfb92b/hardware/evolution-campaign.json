@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "release_tag": "v0.1.0-rc.9",
+  "signed_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+  "outcome": "pass",
+  "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+  "incarnation_id": "38d4dc203980e952ada8130fd96f608f",
+  "certificate_start_period": 128,
+  "staged_certificate_start_period": 256,
+  "steps": [
+    {
+      "absolute_period": 129,
+      "relative_period": 1,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 16,
+        "timestamp_us": 1793459783295504,
+        "high_water_us": 1793459783295504,
+        "kind": "Key"
+      },
+      "pool_revision": 16,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-129.json.context-9144256699004584323-1.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-129-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-129-legacy.json"
+    },
+    {
+      "absolute_period": 129,
+      "relative_period": 1,
+      "equal_refresh": true,
+      "publication": {
+        "revision": 16,
+        "timestamp_us": 1793459783295504,
+        "high_water_us": 1793459783295504,
+        "kind": "Key"
+      },
+      "pool_revision": 16,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-129-equal.json.context-9144256699004584323-2.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-129-equal-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-129-equal-legacy.json"
+    },
+    {
+      "absolute_period": 130,
+      "relative_period": 2,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 18,
+        "timestamp_us": 1793459785660549,
+        "high_water_us": 1793459785660549,
+        "kind": "Key"
+      },
+      "pool_revision": 18,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-130.json.context-9144256699004584323-3.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-130-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-130-legacy.json"
+    },
+    {
+      "absolute_period": 159,
+      "relative_period": 31,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 20,
+        "timestamp_us": 1793459786871438,
+        "high_water_us": 1793459786871438,
+        "kind": "Key"
+      },
+      "pool_revision": 20,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-159.json.context-9144256699004584323-4.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-159-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-159-legacy.json"
+    },
+    {
+      "absolute_period": 160,
+      "relative_period": 32,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 22,
+        "timestamp_us": 1793459788081485,
+        "high_water_us": 1793459788081485,
+        "kind": "Key"
+      },
+      "pool_revision": 22,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-160.json.context-9144256699004584323-5.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-160-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-160-legacy.json"
+    },
+    {
+      "absolute_period": 161,
+      "relative_period": 33,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 24,
+        "timestamp_us": 1793459789286381,
+        "high_water_us": 1793459789286381,
+        "kind": "Key"
+      },
+      "pool_revision": 24,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-161.json.context-9144256699004584323-6.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-161-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-161-legacy.json"
+    },
+    {
+      "absolute_period": 191,
+      "relative_period": 63,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 26,
+        "timestamp_us": 1793459790490638,
+        "high_water_us": 1793459790490638,
+        "kind": "Key"
+      },
+      "pool_revision": 26,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-191.json.context-9144256699004584323-7.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-191-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-191-legacy.json"
+    },
+    {
+      "absolute_period": 192,
+      "relative_period": 64,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 28,
+        "timestamp_us": 1793459791748389,
+        "high_water_us": 1793459791748389,
+        "kind": "Drop"
+      },
+      "pool_revision": 28,
+      "unrelated_pools_unchanged": 5,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-192.json.context-9144256699004584323-8.jsonl",
+      "public_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-192-pools.json",
+      "legacy_pools": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-period-192-legacy.json"
+    }
+  ],
+  "unrelated_comparison": "All public fields and complete publication descriptors compared; only volatile lease health excluded. Status does not expose floors; successful Context replies bind each requested floor.",
+  "original_advancing_context_incident": "open / not reproduced; successful bounded campaigns do not identify the original physical trigger"
+}

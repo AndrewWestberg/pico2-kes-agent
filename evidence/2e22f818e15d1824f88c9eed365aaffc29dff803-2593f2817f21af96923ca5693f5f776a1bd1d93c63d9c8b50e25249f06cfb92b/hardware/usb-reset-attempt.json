@@ -1,0 +1,18 @@
+{
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "method": "USBDEVFS_RESET (0x5514), production USB reset, not a power cycle",
+  "usb_path": "/dev/bus/usb/001/061",
+  "usb_parent": {
+    "sysfs": "/sys/devices/pci0000:60/0000:60:03.1/0000:62:00.0/0000:63:08.0/0000:64:00.1/usb1/1-3/1-3.4/1-3.4.2",
+    "vendor": "1209",
+    "product": "4b45",
+    "serial": "00afd9003906a634",
+    "serial_raw": "00afd9003906a634"
+  },
+  "daemon_pid": 2316365,
+  "journal_sha256_before": "b94a35daadf62b4733e5e91fecb405fb03225c8867ebfdbc4a4d60bca6d1be28",
+  "started_utc": "2026-10-31T15:20:34.610437+00:00"
+}

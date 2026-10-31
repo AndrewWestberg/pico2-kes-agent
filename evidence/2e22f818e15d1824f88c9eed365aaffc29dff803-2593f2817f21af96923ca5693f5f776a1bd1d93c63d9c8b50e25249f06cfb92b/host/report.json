@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "verdict": "pass",
+  "execution": "local direct commands, not a claim about the untriggered quality workflow",
+  "commands": [
+    "cargo fmt --all --check",
+    "cargo check --locked",
+    "cargo test --locked --workspace --exclude pico2-kes-firmware",
+    "cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings",
+    "cargo check --locked -p kes-core --no-default-features",
+    "cargo check --locked -p kes-protocol --no-default-features",
+    "cargo audit",
+    "cargo deny check",
+    "cargo check --locked -p pico2-kes-firmware --target thumbv8m.main-none-eabihf",
+    "cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf",
+    "cargo clippy --locked -p pico2-kes-firmware --target thumbv8m.main-none-eabihf -- -D warnings",
+    "python3 -I -m unittest discover -s tools/tests",
+    "python3 tools/check_picotool_signatures.py --source target/picotool-signature-fix/picotool --build target/picotool-signature-fix/build --sdk target/picotool-signature-fix/pico-sdk",
+    "cargo run --locked -p qualification -- foundation",
+    "cargo run --locked -p qualification -- load",
+    "cargo build --locked --release --bin pico2-kes-agentd --bin pico2-kes-agent-cli"
+  ],
+  "workspace_tests_passed": 218,
+  "python_tests_passed": 61,
+  "native_crypto_tests_passed": 5,
+  "patched_picotool_signature_boundary_cases_passed": 4096,
+  "firmware_target_check_release_build_and_clippy": "pass",
+  "installed_host_binary_sha256": {
+    "pico2-kes-agentd": "3ec10c862ab36d688951d72b8af6c46b80ec354fb7a6cdb140185f3431d40aaf",
+    "pico2-kes-agent-cli": "9c1fa8002dab3014969f156a968c0dded27e603df9fc69ffd4694481ba707976"
+  },
+  "warnings": {
+    "audit_unmaintained": [
+      "bare-metal 0.2.5",
+      "paste 1.0.15",
+      "proc-macro-error2 2.0.1"
+    ],
+    "cargo_deny": "allowed duplicate versions and unused license allowances",
+    "firmware": "proc-macro-error2 future-incompatibility warning"
+  },
+  "command_output": "commands.log",
+  "measured_reduction": {
+    "changed_files": 48,
+    "added_lines": 1680,
+    "removed_lines": 3160,
+    "locked_packages_before": 262,
+    "locked_packages_after": 224,
+    "dependencies_removed": 38,
+    "dependencies_added": 0,
+    "net_lines_removed": 1480
+  }
+}

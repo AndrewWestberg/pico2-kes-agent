@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "8c18fe9ed2987d5c97a0c3890b0927566bea7ee0",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "verdict": "pass",
+  "command": "cargo +nightly-2026-10-22 fuzz run TARGET PRIVATE_OUTPUT_CORPUS fuzz/corpus/TARGET -- -max_total_time=60",
+  "max_seconds": 60,
+  "observed_seconds_per_target": 61,
+  "executions": {
+    "usb": 2436781,
+    "management": 6259758,
+    "node_service": 24720436,
+    "certificate": 17820008,
+    "artifact": 11029643
+  },
+  "exit_codes": {
+    "usb": 0,
+    "management": 0,
+    "node_service": 0,
+    "certificate": 0,
+    "artifact": 0
+  },
+  "output_corpus": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/generated-corpus",
+  "limitation": "Bounded runs do not prove absence of crashes or invariants outside the explored inputs."
+}
