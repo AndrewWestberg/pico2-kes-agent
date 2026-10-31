@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -463,34 +464,51 @@ fn poll_pools(
 struct LiveEndpoints {
     sockets: SocketRegistry,
     pools: PoolRegistry,
+    management_path: PathBuf,
 }
 
 impl LiveEndpoints {
     fn new(sockets: SocketRegistry, config: &Config) -> Self {
         Self {
             sockets,
-            pools: PoolRegistry::new(config.socket_directory.clone(), config.socket_gid),
+            pools: PoolRegistry::new(config.socket_gid),
+            management_path: config.management_socket.clone(),
         }
     }
 
     fn reconcile(&mut self, bindings: &[PoolBinding]) -> Result<(), Error> {
-        let desired: Vec<_> = bindings
-            .iter()
-            .map(|binding| PoolTarget {
-                pool: binding.pool,
-                incarnation: binding.incarnation,
-            })
-            .collect();
+        for (index, binding) in bindings.iter().enumerate() {
+            if binding.socket_path == self.management_path
+                || bindings[..index].iter().any(|other| {
+                    other.pool == binding.pool || other.socket_path == binding.socket_path
+                })
+            {
+                return Err(io::Error::other("conflicting pool endpoint binding").into());
+            }
+        }
         let stale: Vec<_> = self
             .pools
             .targets()
-            .filter(|target| !desired.contains(target))
+            .filter(|target| {
+                !bindings.iter().any(|binding| {
+                    binding.pool == target.pool
+                        && binding.incarnation == target.incarnation
+                        && self.pools.path(*target) == Some(binding.socket_path.as_path())
+                })
+            })
             .collect();
         for target in stale {
             self.pools.remove(&mut self.sockets, target)?;
         }
-        for target in desired {
-            if self.pools.upsert(&mut self.sockets, target)? {
+        for binding in bindings {
+            let target = PoolTarget {
+                pool: binding.pool,
+                incarnation: binding.incarnation,
+            };
+            if self
+                .pools
+                .upsert(&mut self.sockets, target, &binding.socket_path)?
+            {
                 let listener = self
                     .sockets
                     .listener(

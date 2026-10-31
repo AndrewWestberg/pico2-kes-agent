@@ -1,13 +1,15 @@
 use std::{
     ffi::CStr,
     fs,
-    io::Read,
+    io::{Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+
+use sha2::{Digest, Sha256};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -131,4 +133,81 @@ fn seventeenth_idle_management_connection_is_rejected_busy_before_admission() {
     );
     let status = daemon.0.wait().unwrap();
     assert!(status.success());
+}
+
+#[test]
+fn configured_custom_pool_socket_serves_service_v2_without_default_socket() {
+    let fixture = Fixture::new();
+    let byron = r#"{"startTime":10,"protocolConsts":{"k":3,"protocolMagic":42},"blockVersionData":{"slotDuration":100}}"#;
+    let shelley =
+        r#"{"networkMagic":42,"slotLength":1,"slotsPerKESPeriod":100,"maxKESEvolutions":64}"#;
+    let byron_path = fixture.root.join("byron.json");
+    let shelley_path = fixture.root.join("shelley.json");
+    fs::write(&byron_path, byron).unwrap();
+    fs::write(&shelley_path, shelley).unwrap();
+    let digest: String = Sha256::digest(shelley.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let config_path = fixture.root.join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let custom = fixture.root.join("run/custom.sock");
+    let pool = "01".repeat(28);
+    config["device"]["id"] = "02".repeat(16).into();
+    config["device"]["identity_public_key"] = "03".repeat(32).into();
+    config["networks"] = serde_json::json!({
+        "test": {
+            "byron_genesis_file": byron_path,
+            "shelley_genesis_file": shelley_path,
+            "byron_to_shelley_epochs": 0,
+            "genesis_digest": digest,
+            "max_context_age_ms": 30000
+        }
+    });
+    config["pools"] = serde_json::json!([{
+        "pool_id": pool,
+        "incarnation_id": "04".repeat(16),
+        "socket_path": custom,
+        "network": "test"
+    }]);
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_pico2-kes-agentd"))
+        .args(["--config", config_path.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut daemon = Daemon(child);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !custom.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        custom.exists(),
+        "daemon did not bind custom pool socket: {:?}",
+        daemon.0.try_wait()
+    );
+    let mut stream = UnixStream::connect(&custom).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut offer = [0; 36];
+    stream.read_exact(&mut offer).unwrap();
+    let mut service = [0; 32];
+    service[..11].copy_from_slice(b"Service:2.0");
+    assert_eq!(&offer[..4], &1u32.to_be_bytes());
+    assert_eq!(&offer[4..], &service);
+    stream.write_all(&[1]).unwrap();
+    stream.write_all(&service).unwrap();
+    let mut selected = [0; 32];
+    stream.read_exact(&mut selected).unwrap();
+    assert_eq!(selected, service);
+    assert!(
+        !fixture
+            .root
+            .join("run")
+            .join(format!("{pool}.sock"))
+            .exists()
+    );
 }

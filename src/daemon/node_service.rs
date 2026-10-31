@@ -9,6 +9,7 @@ use kes_core::{
 use kes_protocol::node_service::{
     self as wire, Bundle, Choice, DIRECT_CERTIFICATE_BYTES, MAX_SERVICE_MESSAGE_BYTES, Publication,
 };
+use rustix::event::{PollFd, PollFlags, poll};
 use std::{
     io::{self, Read, Write},
     os::unix::net::UnixStream,
@@ -258,11 +259,34 @@ impl PoolSubscription {
                             .as_ref()
                             .is_none_or(|latest| Some(latest.revision) == last_revision))
                 {
-                    state = self
+                    let (next, _) = self
                         .shared
                         .changed
-                        .wait(state)
+                        .wait_timeout(state, Duration::from_millis(100))
                         .expect("subscription mutex poisoned");
+                    state = next;
+                    #[cfg(target_os = "linux")]
+                    let events = PollFlags::RDHUP;
+                    #[cfg(not(target_os = "linux"))]
+                    let events = PollFlags::empty();
+                    let mut fds = [PollFd::new(&stream, events)];
+                    match poll(
+                        &mut fds,
+                        Some(&rustix::event::Timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        }),
+                    ) {
+                        Ok(_)
+                            if fds[0].revents().intersects(
+                                events | PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL,
+                            ) =>
+                        {
+                            return Ok(());
+                        }
+                        Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                        Err(error) => return Err(io::Error::from(error).into()),
+                    }
                 }
                 if state.stopped {
                     return Ok(());

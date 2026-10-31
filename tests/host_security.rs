@@ -70,6 +70,80 @@ fn daemon_process_memory_is_locked_nondumpable_and_coreless() {
 }
 
 #[test]
+fn recipient_prompt_protects_process_before_accepting_passphrase() {
+    const CHILD: &str = "PICO2_KES_RECIPIENT_PROMPT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: openpty initializes both descriptors; optional terminal settings are null.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        // SAFETY: these fresh descriptors are uniquely owned by the files.
+        let mut master = unsafe { fs::File::from_raw_fd(master) };
+        let slave = unsafe { fs::File::from_raw_fd(slave) };
+        // SAFETY: this isolated child acquires its own session and controlling terminal.
+        unsafe {
+            assert!(libc::setsid() >= 0);
+            assert_eq!(libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY, 0), 0);
+            assert_eq!(libc::prctl(libc::PR_SET_DUMPABLE, 1), 0);
+        }
+        let observer = std::thread::spawn(move || {
+            let mut event = libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: event is initialized and writable for the duration of poll.
+            if unsafe { libc::poll(&mut event, 1, 5_000) } != 1 {
+                std::process::exit(1);
+            }
+            let mut prompt = [0; b"Recipient passphrase: ".len()];
+            master.read_exact(&mut prompt).unwrap();
+            // SAFETY: PR_GET_DUMPABLE takes no pointer arguments and observes this process.
+            let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
+            let core = getrlimit(Resource::Core);
+            master.write_all(b"disposable test passphrase\n").unwrap();
+            (master, prompt, dumpable, core)
+        });
+        let passphrase = pico2_kes_agent::backup::recipient::prompt_existing_passphrase().unwrap();
+        let (_master, prompt, dumpable, core) = observer.join().unwrap();
+        assert_eq!(&prompt, b"Recipient passphrase: ");
+        assert_eq!(passphrase.as_slice(), b"disposable test passphrase");
+        assert_eq!(dumpable, 0);
+        assert_eq!(core.current, Some(0));
+        assert_eq!(core.maximum, Some(0));
+        std::process::exit(0);
+    }
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "recipient_prompt_protects_process_before_accepting_passphrase",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn deployment_preflight_enforces_host_node_snapshot_and_backup_boundaries() {
     let dir = TestDir::new();
     let policy = dir.0.join("host-security.env");

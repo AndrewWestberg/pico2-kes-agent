@@ -68,6 +68,7 @@ impl Drop for EchoGuard {
 }
 
 fn prompt(label: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
+    crate::memory::protect_process().map_err(|_| Error::MemoryProtection)?;
     let mut terminal = OpenOptions::new()
         .read(true)
         .write(true)

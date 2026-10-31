@@ -77,6 +77,70 @@ fn no_bytes(s: &mut UnixStream) {
     s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
 }
 
+fn assert_idle_disconnects_release_slots(rig: &TestRig, published: bool) {
+    let mut first = connect(rig);
+    let mut second = connect(rig);
+    if published {
+        key(&mut first);
+        key(&mut second);
+        first.write_all(&0u32.to_be_bytes()).unwrap();
+        second.write_all(&0u32.to_be_bytes()).unwrap();
+    }
+    drop((first, second));
+    std::thread::sleep(Duration::from_millis(500));
+
+    let mut healthy = connect(rig);
+    let mut closed = connect(rig);
+    if published {
+        key(&mut healthy);
+        key(&mut closed);
+        healthy.write_all(&0u32.to_be_bytes()).unwrap();
+        closed.write_all(&0u32.to_be_bytes()).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    no_bytes(&mut healthy);
+    let mut rejected = UnixStream::connect(rig.pool_socket()).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    assert_eq!(rejected.read(&mut [0]).unwrap(), 0);
+
+    drop(closed);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut replacement = connect(rig);
+    if published {
+        key(&mut replacement);
+        replacement.write_all(&0u32.to_be_bytes()).unwrap();
+    }
+    no_bytes(&mut healthy);
+}
+
+#[test]
+fn disconnected_idle_clients_release_slots_before_first_publication() {
+    assert_idle_disconnects_release_slots(&TestRig::commissioned_pool(), false);
+}
+
+#[test]
+fn disconnected_idle_clients_release_slots_after_confirmation() {
+    assert_idle_disconnects_release_slots(&TestRig::certified_pool(), true);
+}
+
+#[test]
+fn idle_peer_confirmation_bytes_are_not_consumed() {
+    let mut rig = TestRig::certified_pool();
+    let mut s = connect(&rig);
+    key(&mut s);
+    s.write_all(&0u32.to_be_bytes()).unwrap();
+    s.write_all(&[0, 0, 0]).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    rig.advance_period(1, 10_000).unwrap();
+    key(&mut s);
+    rig.advance_period(1, 20_000).unwrap();
+    no_bytes(&mut s);
+    s.write_all(&[0]).unwrap();
+    key(&mut s);
+}
+
 #[test]
 fn fragmented_handshake_and_exact_four_byte_confirmation_gate_updates() {
     let mut rig = TestRig::certified_pool();
