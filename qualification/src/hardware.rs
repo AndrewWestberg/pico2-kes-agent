@@ -5,6 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -62,12 +63,31 @@ fn execute() -> Result<(PathBuf, bool), String> {
     let static_ram_bytes = size.data.checked_add(size.bss).ok_or("RAM-size overflow")?;
     let firmware_sha256 = file_digest(&elf)?;
 
-    let flash_path = repository.join("evidence/physical/flash-identity.json");
-    let usb_path = repository.join("evidence/physical/production-usb.json");
+    let evidence_directory = repository
+        .join("evidence")
+        .join(format!("{revision}-{dirty}"))
+        .join("hardware");
+    let flash_path = evidence_directory.join("flash-identity.json");
+    let usb_path = evidence_directory.join("production-usb.json");
     let flash = read_json(&flash_path)?;
     let usb = read_json(&usb_path)?;
+    let bundle = usb
+        .pointer("/firmware/bundle")
+        .and_then(Value::as_str)
+        .ok_or("signed release bundle path is missing")?;
+    let (verified, manifest) = evidence::command(
+        "python3",
+        &["tools/firmware.py", "verify", "--bundle", bundle],
+        Duration::from_secs(60),
+    )
+    .ok_or("signed release verification unavailable")?;
+    if !verified {
+        return Err("signed release verification failed".into());
+    }
+    let manifest: Value =
+        serde_json::from_slice(&manifest).map_err(|_| "invalid verified release manifest")?;
     let flash_ok = flash_observation_passes(&flash);
-    let usb_ok = usb_observation_passes(&usb, &firmware_sha256);
+    let usb_ok = usb_observation_passes(&usb, &firmware_sha256, &revision, &manifest);
     let definition_approved = evidence::approved_definition();
     let passed = definition_approved
         && image_bytes <= IMAGE_LIMIT
@@ -76,7 +96,7 @@ fn execute() -> Result<(PathBuf, bool), String> {
         && usb_ok;
 
     let report = json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "candidate": {"revision": revision, "dirty_sha256": dirty},
         "gate": {
             "name": "hardware",
@@ -89,6 +109,9 @@ fn execute() -> Result<(PathBuf, bool), String> {
             "firmware": {
                 "elf": elf,
                 "sha256": firmware_sha256,
+                "signed_bundle": bundle,
+                "signed_uf2_sha256": usb.pointer("/firmware/signed_uf2_sha256"),
+                "source_commit": manifest.get("commit"),
                 "text_bytes": size.text,
                 "data_bytes": size.data,
                 "bss_bytes": size.bss,
@@ -117,19 +140,17 @@ fn execute() -> Result<(PathBuf, bool), String> {
             {"name":"firmware image fits reserved image region", "passed": image_bytes <= IMAGE_LIMIT},
             {"name":"linked static RAM fits owned budget", "passed": static_ram_bytes <= STATIC_RAM_LIMIT},
             {"name":"fitted JEDEC/SFDP identity matches supported 4 MiB flash", "passed": flash_ok},
-            {"name":"production firmware was readback-verified and reached ready over assigned USB identity", "passed": usb_ok}
+            {"name":"verified signed candidate was transferred and reached pinned ready production USB", "passed": usb_ok}
         ],
         "exclusions": [
+            "Locked MSD does not expose flash readback; firmware execution is operationally inferred, not independently attested.",
             "No voltage, temperature, lifetime, or per-sector endurance claim is made.",
             "Operational erase verification covers software behavior; it is not a physical anti-extraction guarantee.",
             "Physical extraction, invasive remanence, malicious replacement firmware, captured-storage rollback, and recipient-retained backups remain outside the threat boundary."
         ],
         "verdict": if passed { "pass" } else { "fail" }
     });
-    let path = repository
-        .join("evidence")
-        .join(format!("{revision}-{dirty}"))
-        .join("hardware/report.json");
+    let path = evidence_directory.join("report.json");
     let bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     evidence::atomic_write(&path, &bytes).map_err(|error| error.to_string())?;
     Ok((path, passed))
@@ -154,10 +175,41 @@ fn flash_observation_passes(value: &Value) -> bool {
             == Some(true)
 }
 
-fn usb_observation_passes(value: &Value, firmware_sha256: &str) -> bool {
+fn usb_observation_passes(
+    value: &Value,
+    firmware_sha256: &str,
+    revision: &str,
+    manifest: &Value,
+) -> bool {
+    let Some(image) = manifest
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries.iter().find(|entry| {
+                entry.get("name").and_then(Value::as_str) == Some("pico2-kes-firmware.signed.uf2")
+            })
+        })
+        .and_then(|entry| entry.get("sha256"))
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
     value.pointer("/firmware/sha256").and_then(Value::as_str) == Some(firmware_sha256)
+        && manifest.get("commit").and_then(Value::as_str) == Some(revision)
         && value
-            .pointer("/firmware/install_readback_verified")
+            .pointer("/firmware/signed_uf2_sha256")
+            .and_then(Value::as_str)
+            == Some(image)
+        && value
+            .pointer("/firmware/transfer_method")
+            .and_then(Value::as_str)
+            == Some("signed-msd")
+        && value
+            .pointer("/firmware/transfer_flushed")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && value
+            .pointer("/startup/identity_authenticated")
             .and_then(Value::as_bool)
             == Some(true)
         && value.pointer("/usb/vendor_id").and_then(Value::as_str) == Some(PRODUCTION_VID)
@@ -236,13 +288,32 @@ mod tests {
             "matched_firmware_allowlist": true
         }});
         let usb = json!({
-            "firmware":{"sha256":"abc", "install_readback_verified":true},
+            "firmware":{"sha256":"abc", "signed_uf2_sha256":"signed", "transfer_method":"signed-msd", "transfer_flushed":true},
             "usb":{"vendor_id":PRODUCTION_VID,"product_id":PRODUCTION_PID,"serial":"0011223344556677"},
-            "startup":{"health":"ready"},
+            "startup":{"health":"ready", "identity_authenticated":true},
             "result":"pass"
         });
+        let manifest = json!({"commit":"candidate","artifacts":[
+            {"name":"pico2-kes-firmware.signed.uf2","sha256":"signed"}
+        ]});
         assert!(flash_observation_passes(&flash));
-        assert!(usb_observation_passes(&usb, "abc"));
-        assert!(!usb_observation_passes(&usb, "def"));
+        assert!(usb_observation_passes(&usb, "abc", "candidate", &manifest));
+        assert!(!usb_observation_passes(&usb, "def", "candidate", &manifest));
+        assert!(!usb_observation_passes(&usb, "abc", "another", &manifest));
+        for (pointer, wrong) in [
+            ("/firmware/signed_uf2_sha256", json!("another")),
+            ("/firmware/transfer_flushed", json!(false)),
+            ("/startup/identity_authenticated", json!(false)),
+            ("/startup/health", json!("unavailable")),
+        ] {
+            let mut changed = usb.clone();
+            *changed.pointer_mut(pointer).unwrap() = wrong;
+            assert!(!usb_observation_passes(
+                &changed,
+                "abc",
+                "candidate",
+                &manifest
+            ));
+        }
     }
 }

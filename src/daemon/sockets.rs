@@ -56,7 +56,7 @@ struct OwnedInode {
 }
 
 pub struct SocketRegistry {
-    _lock: File,
+    lock: File,
     listeners: HashMap<PathBuf, UnixListener>,
     owned: HashMap<PathBuf, OwnedInode>,
 }
@@ -79,7 +79,7 @@ impl SocketRegistry {
         }
 
         let mut registry = Self {
-            _lock: lock,
+            lock,
             listeners: HashMap::new(),
             owned: HashMap::new(),
         };
@@ -160,6 +160,8 @@ impl Drop for SocketRegistry {
                 let _ = std::fs::remove_file(path);
             }
         }
+        // Closing alone can leave the flock held by a pre-exec child.
+        let _ = fs::flock(&self.lock, FlockOperation::Unlock);
     }
 }
 
@@ -260,12 +262,15 @@ mod tests {
             SocketRegistry::bind(&config),
             Err(Error::AlreadyRunning)
         ));
+        // A helper can inherit this open-file description between fork and exec.
+        let inherited_lock = registry.lock.try_clone().unwrap();
         drop(registry);
         assert!(!config.management_socket.exists());
 
         let stale = UnixListener::bind(&config.management_socket).unwrap();
         drop(stale);
         let registry = SocketRegistry::bind(&config).unwrap();
+        drop(inherited_lock);
         assert!(config.management_socket.exists());
         drop(registry);
         assert!(!config.management_socket.exists());
