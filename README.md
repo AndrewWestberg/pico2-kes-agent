@@ -601,6 +601,8 @@ Normal `pools` may initially be empty. Management enrollment and the durable pub
 
 **Primary — administrative setup:** stop commissioning, install the reviewed normal configuration, remove **only** the dedicated runtime override, and check as the service UID. Do not use `systemctl revert`, which could erase unrelated operator overrides. Runtime/state directories must already exist and belong to that UID; systemd's runtime directory may disappear when the service stops, so create it before a manual check.
 
+Shutdown removes only daemon-owned sockets, then explicitly releases the runtime-directory lock; a helper's inherited descriptor must not prevent a replacement daemon from starting.
+
 ```bash
 sudo systemctl stop pico2-kes-agentd
 sudo install -o root -g pico2-kes-agent -m 0640 "$OPS/config.json" /etc/pico2-kes-agent/config.json
