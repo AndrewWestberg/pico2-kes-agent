@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "firmware": {
+    "sha256": "038bdb9ff4df93b36522d16ac8d75aa59be5f116c35e0f3f2772e7b45b94bbee",
+    "bundle": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/github-v0.1.0-rc.9",
+    "signed_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+    "manifest_sha256": "d025e97236fbe449352b501e67dec994ac771ec68b6f3effe3edac61a633a0b5",
+    "transfer_method": "signed-msd",
+    "transfer_flushed": true,
+    "transfer_record": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc9-transfer.json",
+    "identity_limit": "Verified signed bundle plus flushed firmware-only transfer and nonce-authenticated application startup; not firmware readback or attestation."
+  },
+  "usb": {
+    "vendor_id": "1209",
+    "product_id": "4b45",
+    "serial": "00afd9003906a634",
+    "sysfs_parent": "/sys/devices/pci0000:60/0000:60:03.1/0000:62:00.0/0000:63:08.0/0000:64:00.1/usb1/1-3/1-3.4/1-3.4.2"
+  },
+  "startup": {
+    "identity_authenticated": true,
+    "authentication": "Installed normal-mode Transport verified the pinned identity by nonce challenge before serving management",
+    "device_id": "f39127e9e0ab25f8341401048acf629d",
+    "identity_public_key": "a3cd5edfccee6bef4b640a591e80afd47a69ef1970b9abe0de63514df56b6e7f",
+    "health": "ready",
+    "preview_pool_health": "ready",
+    "installed_reset_record": "/home/westbam/Development/pico2-kes-agent/evidence/2e22f818e15d1824f88c9eed365aaffc29dff803-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/hardware/installed-usb-reset.json"
+  },
+  "result": "pass"
+}

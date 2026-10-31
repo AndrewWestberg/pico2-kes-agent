@@ -1,0 +1,16 @@
+{
+  "candidate_commit": "8c18fe9ed2987d5c97a0c3890b0927566bea7ee0",
+  "outcome": "pass",
+  "old_pool_id": "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1",
+  "old_incarnation": "b48722f793b1ee4f2ad2179f348a5990",
+  "new_incarnation": "2e1833bc66a5c98a35ecd4a7820d22c2",
+  "delete_revision": 25,
+  "prior_pool_revision": 24,
+  "terminal_timestamp_us": 1793457227666436,
+  "prior_high_water_us": 1793457227666435,
+  "reconciliation_matches_original_receipt": true,
+  "old_v2_connection_closed_before_any_daemon_restart": true,
+  "new_enrollment_preserves_terminal_high_water": true,
+  "new_network": "preview",
+  "production_node_credentials_changed": false
+}

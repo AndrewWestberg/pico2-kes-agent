@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "source": "Installed CLI device security after signed rc9 transfer and production USB reset",
+  "source_record": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/kes-lab-dafa3a76/rc9-reset-after-security.json",
+  "decoded": {
+    "jedec_id_hex": "ef4016",
+    "sfdp_header_hex": "534644500a0100ff00080117800000ff",
+    "density_bytes": 4194304,
+    "matched_firmware_allowlist": true
+  },
+  "chip_revision": 2,
+  "stepping": "A2"
+}

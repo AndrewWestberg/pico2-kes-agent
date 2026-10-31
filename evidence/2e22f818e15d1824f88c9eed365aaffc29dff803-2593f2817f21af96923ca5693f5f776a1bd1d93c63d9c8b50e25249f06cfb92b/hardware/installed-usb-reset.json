@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b"
+  },
+  "signed_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+  "outcome": "pass",
+  "method": "USBDEVFS_RESET (0x5514); not a power cycle",
+  "reset_ioctl_result": 0,
+  "reset_duration_seconds": 0.1952315669914242,
+  "device_ready_seconds": 0.2661774789885385,
+  "before_device": {
+    "commissioning_state": "committed",
+    "device_id": "f39127e9e0ab25f8341401048acf629d",
+    "health": "ready",
+    "receipt_pending": false,
+    "revision": 16
+  },
+  "after_device": {
+    "commissioning_state": "committed",
+    "device_id": "f39127e9e0ab25f8341401048acf629d",
+    "health": "ready",
+    "receipt_pending": false,
+    "revision": 16
+  },
+  "before_pools": {
+    "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1": {
+      "active": {
+        "artifact_digest": "3b96e878b8b28f28370b4250d2588d395933d5c9a137d2757f68a884161fabf0",
+        "generation_id": "3e7bfa379e8abd5b5c3e51bed9930845",
+        "health": "ready",
+        "period": 0,
+        "revision": 5,
+        "role": "active"
+      },
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "ready",
+      "high_water_us": 1793458314864402,
+      "incarnation_id": "2e1833bc66a5c98a35ecd4a7820d22c2",
+      "pool_id": "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1",
+      "publication_revision": 5,
+      "publication_state": "key",
+      "publication_timestamp_us": 1793458314864402,
+      "receipt_pending": false,
+      "revision": 5,
+      "staged": null
+    },
+    "432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "period_unavailable",
+      "high_water_us": 1793394008886801,
+      "incarnation_id": "e3dc5eac1a449c149ebc799bf69dc08c",
+      "pool_id": "432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94",
+      "publication_revision": 0,
+      "publication_state": "none",
+      "publication_timestamp_us": 1793394008886801,
+      "receipt_pending": false,
+      "revision": 0,
+      "staged": null
+    },
+    "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "expired",
+      "high_water_us": 1793453414429429,
+      "incarnation_id": "08b2f0036c366d958e494a91b16fb8c5",
+      "pool_id": "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a",
+      "publication_revision": 8,
+      "publication_state": "drop",
+      "publication_timestamp_us": 1793453414429429,
+      "receipt_pending": false,
+      "revision": 18,
+      "staged": null
+    },
+    "65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6": {
+      "active": {
+        "artifact_digest": "93b6316f548b528e80f3725e537e041b2f03a6adcda3990bca5258cd02c6a51f",
+        "generation_id": "0fc16a78916a3aa0607152b36e37d4d2",
+        "health": "ready",
+        "period": 0,
+        "revision": 11,
+        "role": "active"
+      },
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "ready",
+      "high_water_us": 1793458940194788,
+      "incarnation_id": "a395f5542d4eb1a5942c87aa5642d70d",
+      "pool_id": "65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6",
+      "publication_revision": 9,
+      "publication_state": "key",
+      "publication_timestamp_us": 1793458940194788,
+      "receipt_pending": false,
+      "revision": 11,
+      "staged": {
+        "artifact_digest": "f981891143e37d9c8ec4865dee00bfc8f9303dcdc19a48d885d24ac6317771d1",
+        "generation_id": "aa94b4f377a64724a468ce843b6a740b",
+        "health": "not_yet_valid",
+        "period": 0,
+        "revision": 11,
+        "role": "staged"
+      }
+    },
+    "82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "period_unavailable",
+      "high_water_us": 1793394008886801,
+      "incarnation_id": "524de1127093660165a4da60efd8c27f",
+      "pool_id": "82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896",
+      "publication_revision": 0,
+      "publication_state": "none",
+      "publication_timestamp_us": 1793394008886801,
+      "receipt_pending": false,
+      "revision": 0,
+      "staged": null
+    },
+    "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "period_unavailable",
+      "high_water_us": 1793459791748390,
+      "incarnation_id": "8faaecfd9a64f5c1f58df056088db239",
+      "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+      "publication_revision": 0,
+      "publication_state": "none",
+      "publication_timestamp_us": 1793459791748390,
+      "receipt_pending": false,
+      "revision": 1,
+      "staged": null
+    }
+  },
+  "after_pools": {
+    "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1": {
+      "active": {
+        "artifact_digest": "3b96e878b8b28f28370b4250d2588d395933d5c9a137d2757f68a884161fabf0",
+        "generation_id": "3e7bfa379e8abd5b5c3e51bed9930845",
+        "health": "ready",
+        "period": 0,
+        "revision": 5,
+        "role": "active"
+      },
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "ready",
+      "high_water_us": 1793458314864402,
+      "incarnation_id": "2e1833bc66a5c98a35ecd4a7820d22c2",
+      "pool_id": "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1",
+      "publication_revision": 5,
+      "publication_state": "key",
+      "publication_timestamp_us": 1793458314864402,
+      "receipt_pending": false,
+      "revision": 5,
+      "staged": null
+    },
+    "432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "period_unavailable",
+      "high_water_us": 1793394008886801,
+      "incarnation_id": "e3dc5eac1a449c149ebc799bf69dc08c",
+      "pool_id": "432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94",
+      "publication_revision": 0,
+      "publication_state": "none",
+      "publication_timestamp_us": 1793394008886801,
+      "receipt_pending": false,
+      "revision": 0,
+      "staged": null
+    },
+    "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "expired",
+      "high_water_us": 1793453414429429,
+      "incarnation_id": "08b2f0036c366d958e494a91b16fb8c5",
+      "pool_id": "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a",
+      "publication_revision": 8,
+      "publication_state": "drop",
+      "publication_timestamp_us": 1793453414429429,
+      "receipt_pending": false,
+      "revision": 18,
+      "staged": null
+    },
+    "65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6": {
+      "active": {
+        "artifact_digest": "93b6316f548b528e80f3725e537e041b2f03a6adcda3990bca5258cd02c6a51f",
+        "generation_id": "0fc16a78916a3aa0607152b36e37d4d2",
+        "health": "ready",
+        "period": 0,
+        "revision": 11,
+        "role": "active"
+      },
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "ready",
+      "high_water_us": 1793458940194788,
+      "incarnation_id": "a395f5542d4eb1a5942c87aa5642d70d",
+      "pool_id": "65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6",
+      "publication_revision": 9,
+      "publication_state": "key",
+      "publication_timestamp_us": 1793458940194788,
+      "receipt_pending": false,
+      "revision": 11,
+      "staged": {
+        "artifact_digest": "f981891143e37d9c8ec4865dee00bfc8f9303dcdc19a48d885d24ac6317771d1",
+        "generation_id": "aa94b4f377a64724a468ce843b6a740b",
+        "health": "not_yet_valid",
+        "period": 0,
+        "revision": 11,
+        "role": "staged"
+      }
+    },
+    "82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "period_unavailable",
+      "high_water_us": 1793394008886801,
+      "incarnation_id": "524de1127093660165a4da60efd8c27f",
+      "pool_id": "82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896",
+      "publication_revision": 0,
+      "publication_state": "none",
+      "publication_timestamp_us": 1793394008886801,
+      "receipt_pending": false,
+      "revision": 0,
+      "staged": null
+    },
+    "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71": {
+      "active": null,
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "period_unavailable",
+      "high_water_us": 1793459791748390,
+      "incarnation_id": "8faaecfd9a64f5c1f58df056088db239",
+      "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+      "publication_revision": 0,
+      "publication_state": "none",
+      "publication_timestamp_us": 1793459791748390,
+      "receipt_pending": false,
+      "revision": 1,
+      "staged": null
+    }
+  },
+  "pool_bindings": {
+    "cursor": null,
+    "pools": [
+      {
+        "incarnation_id": "2e1833bc66a5c98a35ecd4a7820d22c2",
+        "network": "preview",
+        "pool_id": "0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1",
+        "socket_path": "/run/kes-lab-dafa3a76/0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1.sock"
+      },
+      {
+        "incarnation_id": "e3dc5eac1a449c149ebc799bf69dc08c",
+        "network": "legacy-lab",
+        "pool_id": "432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94",
+        "socket_path": "/run/kes-lab-dafa3a76/432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94.sock"
+      },
+      {
+        "incarnation_id": "08b2f0036c366d958e494a91b16fb8c5",
+        "network": "legacy-lab",
+        "pool_id": "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a",
+        "socket_path": "/run/kes-lab-dafa3a76/65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a.sock"
+      },
+      {
+        "incarnation_id": "a395f5542d4eb1a5942c87aa5642d70d",
+        "network": "lab",
+        "pool_id": "65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6",
+        "socket_path": "/run/kes-lab-dafa3a76/65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6.sock"
+      },
+      {
+        "incarnation_id": "524de1127093660165a4da60efd8c27f",
+        "network": "legacy-lab",
+        "pool_id": "82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896",
+        "socket_path": "/run/kes-lab-dafa3a76/82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896.sock"
+      },
+      {
+        "incarnation_id": "8faaecfd9a64f5c1f58df056088db239",
+        "network": "lab",
+        "pool_id": "edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71",
+        "socket_path": "/run/kes-lab-dafa3a76/edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71.sock"
+      }
+    ]
+  },
+  "security_policy_unchanged": true,
+  "journal_sha256_before": "b94a35daadf62b4733e5e91fecb405fb03225c8867ebfdbc4a4d60bca6d1be28",
+  "journal_sha256_after": "b94a35daadf62b4733e5e91fecb405fb03225c8867ebfdbc4a4d60bca6d1be28",
+  "journal_rewritten": false,
+  "reenrolled_after_reset": false,
+  "daemon_restarted": false,
+  "daemon_pid": 2316365,
+  "installed_host_binary_sha256": {
+    "pico2-kes-agentd": "3ec10c862ab36d688951d72b8af6c46b80ec354fb7a6cdb140185f3431d40aaf",
+    "pico2-kes-agent-cli": "9c1fa8002dab3014969f156a968c0dded27e603df9fc69ffd4694481ba707976"
+  },
+  "process_security": {
+    "Uid": "1000\t1000\t1000\t1000",
+    "CapEff": "0000000000000000",
+    "CapBnd": "0000000000000000",
+    "NoNewPrivs": "1",
+    "Seccomp": "2"
+  },
+  "fresh_v2_public_delivery": {
+    "kind": "key",
+    "publication_timestamp_us": 1793458314864402,
+    "seconds_after_usb_reset": 88.40504468300787,
+    "client_wait_seconds": 0.03477090300293639,
+    "pre_reset_30_second_lease_expired_before_connect": true,
+    "bytes_read_after_handshake": 9,
+    "secret_key_payload_read_or_persisted": false
+  },
+  "sandbox_limit": "Installed binaries in isolated daemon sandbox with real preview tip input; production cardano-node hardening and its ExecStartPre check deliberately excluded."
+}

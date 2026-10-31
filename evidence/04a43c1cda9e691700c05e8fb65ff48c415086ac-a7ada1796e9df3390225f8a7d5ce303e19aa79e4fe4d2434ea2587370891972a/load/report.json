@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "revision": "04a43c1cda9e691700c05e8fb65ff48c415086ac",
+    "dirty_sha256": "a7ada1796e9df3390225f8a7d5ce303e19aa79e4fe4d2434ea2587370891972a"
+  },
+  "scope": "SC-001/SC-003/SC-004 full-capacity and client-isolation qualification",
+  "checks": [
+    {
+      "name": "full-capacity-pool-isolation",
+      "expected": "64 active plus 64 staged; pool-correct requests under 10s; enrollment 65 rejected; recovery under 60s",
+      "observed": "all assertions passed",
+      "executions": 1,
+      "elapsed_seconds": 3.618707785,
+      "passed": true
+    },
+    {
+      "name": "client-isolation",
+      "expected": "stalled and malformed clients do not delay valid requests beyond 10s",
+      "observed": "all assertions passed",
+      "executions": 1,
+      "elapsed_seconds": 2.839957544,
+      "passed": true
+    }
+  ],
+  "verdict": "pass",
+  "acceptance_claim": true
+}

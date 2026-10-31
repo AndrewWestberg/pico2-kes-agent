@@ -1,0 +1,126 @@
+{
+  "candidate_commit": "8c18fe9ed2987d5c97a0c3890b0927566bea7ee0",
+  "release": "v0.1.0-rc.8",
+  "outcome": "pass",
+  "active_certificate_start": 32,
+  "transitions": [
+    {
+      "absolute_period": 33,
+      "relative_period": 1,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 12,
+        "timestamp_us": 1793457202146376,
+        "high_water_us": 1793457202146376,
+        "kind": "Key"
+      },
+      "pool_revision": 12,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-33.json.context-8863834440184351556-1.jsonl"
+    },
+    {
+      "absolute_period": 33,
+      "relative_period": 1,
+      "equal_refresh": true,
+      "publication": {
+        "revision": 12,
+        "timestamp_us": 1793457202146376,
+        "high_water_us": 1793457202146376,
+        "kind": "Key"
+      },
+      "pool_revision": 12,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-33-equal.json.context-2652789198817471285-1.jsonl"
+    },
+    {
+      "absolute_period": 34,
+      "relative_period": 2,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 14,
+        "timestamp_us": 1793457222077163,
+        "high_water_us": 1793457222077163,
+        "kind": "Key"
+      },
+      "pool_revision": 14,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-34.json.context-9099568265082745547-1.jsonl"
+    },
+    {
+      "absolute_period": 63,
+      "relative_period": 31,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 16,
+        "timestamp_us": 1793457223188514,
+        "high_water_us": 1793457223188514,
+        "kind": "Key"
+      },
+      "pool_revision": 16,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-63.json.context-4032144903404630881-1.jsonl"
+    },
+    {
+      "absolute_period": 64,
+      "relative_period": 32,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 18,
+        "timestamp_us": 1793457224351898,
+        "high_water_us": 1793457224351898,
+        "kind": "Key"
+      },
+      "pool_revision": 18,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-64.json.context-7867978053503480201-1.jsonl"
+    },
+    {
+      "absolute_period": 65,
+      "relative_period": 33,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 20,
+        "timestamp_us": 1793457225456664,
+        "high_water_us": 1793457225456664,
+        "kind": "Key"
+      },
+      "pool_revision": 20,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-65.json.context-6791042685270083393-1.jsonl"
+    },
+    {
+      "absolute_period": 95,
+      "relative_period": 63,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 22,
+        "timestamp_us": 1793457226561807,
+        "high_water_us": 1793457226561807,
+        "kind": "Key"
+      },
+      "pool_revision": 22,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-95.json.context-2079405028090603244-1.jsonl"
+    },
+    {
+      "absolute_period": 96,
+      "relative_period": 64,
+      "equal_refresh": false,
+      "publication": {
+        "revision": 24,
+        "timestamp_us": 1793457227666435,
+        "high_water_us": 1793457227666435,
+        "kind": "Drop"
+      },
+      "pool_revision": 24,
+      "unrelated_pools_unchanged": 4,
+      "context_evidence": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/rc8-period-96.json.context-7618683855171613623-1.jsonl"
+    }
+  ],
+  "original_context_incident": "open / not reproduced",
+  "limitations": [
+    "Finite bounded campaign does not establish the original intermittent cause.",
+    "No Current plaintext or state digest was retained."
+  ],
+  "harness_note": "The first successful transition was not repeated after correcting a local assertion to count intent, raw reply, and decoded result as three evidence records."
+}

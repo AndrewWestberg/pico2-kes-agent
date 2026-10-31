@@ -1,0 +1,70 @@
+{
+  "candidate": {
+    "dirty_sha256": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b",
+    "revision": "2e22f818e15d1824f88c9eed365aaffc29dff803"
+  },
+  "checks": [
+    {
+      "name": "firmware image fits reserved image region",
+      "passed": true
+    },
+    {
+      "name": "linked static RAM fits owned budget",
+      "passed": true
+    },
+    {
+      "name": "fitted JEDEC/SFDP identity matches supported 4 MiB flash",
+      "passed": true
+    },
+    {
+      "name": "verified signed candidate was transferred and reached pinned ready production USB",
+      "passed": true
+    }
+  ],
+  "command": "cargo run --locked -p qualification -- hardware",
+  "exclusions": [
+    "Locked MSD does not expose flash readback; firmware execution is operationally inferred, not independently attested.",
+    "No voltage, temperature, lifetime, or per-sector endurance claim is made.",
+    "Operational erase verification covers software behavior; it is not a physical anti-extraction guarantee.",
+    "Physical extraction, invasive remanence, malicious replacement firmware, captured-storage rollback, and recipient-retained backups remain outside the threat boundary."
+  ],
+  "gate": {
+    "definition_approved": true,
+    "definition_sha256": "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce",
+    "name": "hardware",
+    "scope": "Pico2 A2 production firmware boots and communicates on the observed fitted device"
+  },
+  "measurements": {
+    "firmware": {
+      "bss_bytes": 548,
+      "data_bytes": 0,
+      "elf": "/home/westbam/Development/pico2-kes-agent/target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware",
+      "image_bytes": 355252,
+      "image_limit_bytes": 1048576,
+      "sha256": "038bdb9ff4df93b36522d16ac8d75aa59be5f116c35e0f3f2772e7b45b94bbee",
+      "signed_bundle": "/home/westbam/Development/pico2-kes-agent/.recovery/kes-advancing-baseline-m6pr43ik/github-v0.1.0-rc.9",
+      "signed_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+      "source_commit": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+      "static_ram_bytes": 548,
+      "static_ram_limit_bytes": 131072,
+      "text_bytes": 355252
+    },
+    "fitted_flash": {
+      "capacity_bytes": 4194304,
+      "evidence": "/home/westbam/Development/pico2-kes-agent/evidence/2e22f818e15d1824f88c9eed365aaffc29dff803-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/hardware/flash-identity.json",
+      "jedec_id": "ef4016",
+      "passes": true,
+      "sfdp_header": "534644500a0100ff00080117800000ff"
+    },
+    "production_usb": {
+      "evidence": "/home/westbam/Development/pico2-kes-agent/evidence/2e22f818e15d1824f88c9eed365aaffc29dff803-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/hardware/production-usb.json",
+      "health": "ready",
+      "passes": true,
+      "product_id": "4b45",
+      "serial": "00afd9003906a634",
+      "vendor_id": "1209"
+    }
+  },
+  "schema_version": 3,
+  "verdict": "pass"
+}
