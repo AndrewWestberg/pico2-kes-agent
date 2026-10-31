@@ -5,7 +5,7 @@ use pico2_kes_agent::daemon::usb::{IdentityPin, Mode, Transport, UsbSelection};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
-    fs,
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -67,7 +67,12 @@ pub fn run(arguments: &[String]) -> i32 {
 }
 
 fn execute(path: &Path) -> Result<(), String> {
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(16 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
     if bytes.len() > 16 * 1024 {
         return Err("input exceeds 16 KiB".into());
     }
@@ -117,7 +122,6 @@ fn execute(path: &Path) -> Result<(), String> {
             lease_seconds: input.lease_seconds,
             publication_time_us: input.publication_time_us,
         },
-        None,
     )?;
     println!(
         "accepted pool={} incarnation={} period={} floor={}",
@@ -139,7 +143,6 @@ fn request_context(
     transport: &mut Transport,
     path: &Path,
     request: Request,
-    expected_floor: Option<u64>,
 ) -> Result<ContextResponse, String> {
     let Request::Context {
         target,
@@ -199,18 +202,7 @@ fn request_context(
         }
     };
     let decoded = format!("{response:?}");
-    let failure = if response.target != target
-        || response.session != session
-        || response.sequence != sequence
-    {
-        Some("mismatched context binding")
-    } else if response.result.is_err() {
-        Some("device rejected context")
-    } else if expected_floor.is_some_and(|floor| response.floor != floor) {
-        Some("context period floor mismatch")
-    } else {
-        None
-    };
+    let failure = context_failure(&response, target, period, session, sequence);
     evidence
         .event(&json!({"event":"decoded","response":decoded,"failure":failure}))
         .map_err(|error| {
@@ -222,6 +214,24 @@ fn request_context(
         ));
     }
     Ok(response)
+}
+
+fn context_failure(
+    response: &ContextResponse,
+    target: PoolTarget,
+    period: u64,
+    session: u64,
+    sequence: u64,
+) -> Option<&'static str> {
+    if response.target != target || response.session != session || response.sequence != sequence {
+        Some("mismatched context binding")
+    } else if response.result.is_err() {
+        Some("device rejected context")
+    } else if response.floor != period {
+        Some("context period floor mismatch")
+    } else {
+        None
+    }
 }
 
 fn parse_hex<const N: usize>(value: &str) -> Result<[u8; N], String> {
@@ -241,4 +251,34 @@ fn parse_hex<const N: usize>(value: &str) -> Result<[u8; N], String> {
             | nibble(pair[1]).ok_or("invalid hexadecimal input")?;
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_response_requires_floor_and_full_binding() {
+        let target = PoolTarget {
+            pool: PoolId::from_bytes([1; 28]),
+            incarnation: IncarnationId::from_bytes([2; 16]),
+        };
+        let response = ContextResponse {
+            target,
+            session: 3,
+            sequence: 4,
+            floor: 5,
+            result: Ok(()),
+            diagnostics: None,
+        };
+        assert_eq!(context_failure(&response, target, 5, 3, 4), None);
+        assert!(context_failure(&response, target, 6, 3, 4).is_some());
+        assert!(context_failure(&response, target, 5, 7, 4).is_some());
+        assert!(context_failure(&response, target, 5, 3, 7).is_some());
+        let other = PoolTarget {
+            incarnation: IncarnationId::from_bytes([3; 16]),
+            ..target
+        };
+        assert!(context_failure(&response, other, 5, 3, 4).is_some());
+    }
 }

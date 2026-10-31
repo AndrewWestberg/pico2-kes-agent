@@ -11,7 +11,7 @@ The artifact is 8-byte ASCII `KESBKP01` followed by the predecessor's determinis
 | `version` | Integer 1 |
 | `kem`, `kdf`, `aead` | Integers 32, 1, 3: X25519-HKDF-SHA256, HKDF-SHA256, ChaCha20-Poly1305 |
 | `device`, `pool`, `incarnation`, `generation` | Respectively 16, 28, 16 and 16 identity bytes; pool is the Cardano Blake2b-224 cold-key hash |
-| `generation_number` | Positive monotonic generation number |
+| `generation_number` | Positive, strictly increasing within a pool incarnation, including across discard, expiry, and reboot; gaps are permitted |
 | `verification_key` | 32-byte Sum6KES root verification key |
 | `period` | Integer 0 only |
 | `recipient_public_key`, `recipient_id` | 32-byte X25519 public key; SHA-256 of that exact key |
@@ -24,6 +24,8 @@ HPKE base-mode `info` is ASCII `cardano-kes-forge/backup/v1` concatenated with t
 ## Generation and retirement
 
 Generation uses health-checked device entropy; no caller seed or plaintext import exists. Construct the period-zero state, produce exactly one artifact using a snapshot of the shared recipient policy, and durably commit it with the new staged generation and automatic-activation intent before returning success. Public export retrieval does not authorize a second encryption and has no recipient override. It returns the same retained bytes even after evolution, daemon restart or recipient-policy change.
+
+Artifact numbers use the positive pre-generation pool revision, not the currently active key's number. New pools begin at revision 1. Existing zero-revision pools or old active-number/revision ties are advanced in memory before the same generation commit; no additional record or storage-format migration is required. Exhausted ordering counters fail before generating a new key or artifact.
 
 Uncertified generations stay at period zero. A valid certificate and period context cause ordinary evolution/automatic activation without requiring artifact download, backup acknowledgment, decryption, remote notification or a separate activation command. Download is not a lifecycle transition.
 

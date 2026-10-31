@@ -4,7 +4,7 @@
 
 **Input**: `specs/001-pico2-kes-agent/spec.md`
 
-**Status**: Phase 0 research and Phase 1 design refined for executable verification contracts and corrected feature metadata. The C1 node contract, quickstart and approved gate definition are synchronized; foundation smoke and separate core/host benchmark ownership are explicit. Existing 100 task IDs are preserved, not regenerated. The maintainer explicitly approved the refined definition as recorded in `contracts/quality-gates.md`; the definition-approval prerequisite is satisfied. This is a documentation deliverable, not implementation or qualification acceptance. No source changes, firmware installation or irreversible operations are included.
+**Status**: The historical refinement and approval are recorded below. Current qualification uses the direct commands in [quality-gates.md](contracts/quality-gates.md); pending benchmark scaffolding and the duplicate gate dispatcher have been removed. Approval of a definition is not implementation or qualification acceptance.
 
 ## Summary
 
@@ -132,7 +132,7 @@ External integration: `cardano-node` credential decoder/loader/source types/nati
 
 **Structure decision:** core/protocol separation permits firmware and host-model checking without importing Linux dependencies; root host package shares lifecycle-independent CLI/daemon code; firmware owns hardware operations; qualification owns real cross-language/hardware measurements. Avoid a framework, database service, updater, cloud subsystem or generic HSM abstraction.
 
-Verification ownership: T014/T016 provide `qualification/src/foundation.rs` and its main/gate dispatch; T020 runs it against T010/T011/T013 without depending on T042's binaries. T015 supplies the native adapter/dispatch used by T047/T055's real regressions. T019 registers both benchmark manifests and aggregate runner; T096 completes workload/baseline evidence. Keep production entities, USB/storage/management/backup formats and the [data model](data-model.md) unchanged.
+Verification ownership: `qualification foundation` exercises T010/T011/T013 without depending on T042's binaries; `qualification native-regression` runs the native regressions. Host and firmware checks run directly in CI. Performance diagnostics remain optional, without a supplied benchmark runner. Keep production entities, USB/storage/management/backup formats and the [data model](data-model.md) unchanged.
 
 ## Delivery sequence and proof obligations
 

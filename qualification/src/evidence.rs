@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,7 +15,7 @@ const DEFINITION: &str = "specs/001-pico2-kes-agent/contracts/quality-gates.md";
 pub(crate) const APPROVED_DIGEST: &str =
     "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce";
 const APPROVED_STORAGE_DIGEST: &str =
-    "2e8f615650cbd09f156827a4716e1411df25c91aff4f87e10ec324b34ede93c7";
+    "9b0616cbd3e3ef3e5ee5e82f276e61e83df38faa6653a1c1fd45fea96ba6862b";
 const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -46,16 +47,31 @@ impl Verdict {
 
 // Never retain stderr or print raw command output. Drain stdout concurrently so
 // the child cannot deadlock on a full pipe; enforce both byte and time limits.
-fn command(program: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let mut child = Command::new(program)
+pub(crate) fn command(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, Vec<u8>)> {
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(ROOT)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
+        .stdout(Stdio::piped());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = command.spawn().ok()?;
+    let pid = child.id() as i32;
+    let Some(stdout) = child.stdout.take() else {
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
     let reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout
@@ -64,12 +80,16 @@ fn command(program: &str, args: &[&str]) -> Option<Vec<u8>> {
             .ok()?;
         (bytes.len() <= OUTPUT_LIMIT).then_some(bytes)
     });
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => {
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+                break Some(status);
+            }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
             _ => {
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
@@ -77,7 +97,12 @@ fn command(program: &str, args: &[&str]) -> Option<Vec<u8>> {
         }
     };
     let bytes = reader.join().ok().flatten()?;
-    status.filter(|s| s.success()).map(|_| bytes)
+    status.map(|s| (s.success(), bytes))
+}
+
+fn metadata_command(program: &str, args: &[&str]) -> Option<Vec<u8>> {
+    let (success, bytes) = command(program, args, TIMEOUT)?;
+    success.then_some(bytes)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -118,13 +143,13 @@ fn public_label(value: &str) -> bool {
 }
 
 fn version(program: &str) -> Option<String> {
-    let bytes = command(program, &["--version"])?;
+    let bytes = metadata_command(program, &["--version"])?;
     let text = std::str::from_utf8(&bytes).ok()?.trim();
     public_label(text).then(|| text.to_owned())
 }
 
 pub(crate) fn candidate() -> Option<(String, String)> {
-    let revision = command("git", &["rev-parse", "--verify", "HEAD"])?;
+    let revision = metadata_command("git", &["rev-parse", "--verify", "HEAD"])?;
     let revision = std::str::from_utf8(&revision).ok()?.trim();
     if !matches!(revision.len(), 40 | 64)
         || !revision
@@ -133,7 +158,7 @@ pub(crate) fn candidate() -> Option<(String, String)> {
     {
         return None;
     }
-    let staged = command(
+    let staged = metadata_command(
         "git",
         &[
             "diff",
@@ -144,11 +169,11 @@ pub(crate) fn candidate() -> Option<(String, String)> {
             "--",
         ],
     )?;
-    let unstaged = command(
+    let unstaged = metadata_command(
         "git",
         &["diff", "--binary", "--no-ext-diff", "--no-textconv", "--"],
     )?;
-    let untracked = command("git", &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let untracked = metadata_command("git", &["ls-files", "--others", "--exclude-standard", "-z"])?;
     let mut hash = Sha256::new();
     hash.update(b"qualification-dirty-v1\0");
     for diff in [&staged, &unstaged] {
@@ -455,6 +480,52 @@ pub fn run(checks: &[Check]) -> io::Result<(Verdict, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn descendant_is_stopped(timeout_case: bool) {
+        let path = std::env::temp_dir().join(format!(
+            "qualification-child-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path_arg = path.to_str().unwrap();
+        let script = if timeout_case {
+            "sleep 30 & echo $! > \"$1\"; wait"
+        } else {
+            "sleep 30 & echo $! > \"$1\"; exit 0"
+        };
+        let started = Instant::now();
+        let result = command(
+            "sh",
+            &["-c", script, "sh", path_arg],
+            Duration::from_millis(500),
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(result.is_some(), !timeout_case);
+        let pid: u32 = fs::read_to_string(&path).unwrap().trim().parse().unwrap();
+        fs::remove_file(path).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = fs::read_to_string(format!("/proc/{pid}/status"));
+            if match status {
+                Ok(s) => s.lines().any(|line| line.starts_with("State:\tZ")),
+                Err(_) => true,
+            } {
+                break;
+            }
+            assert!(Instant::now() < deadline, "descendant still running");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn leader_exit_closes_descendant_stdout() {
+        descendant_is_stopped(false);
+    }
+
+    #[test]
+    fn timeout_terminates_descendant() {
+        descendant_is_stopped(true);
+    }
     #[test]
     fn verdict_rejects_missing_execution_metadata_and_unavailable() {
         let pass = Check {

@@ -184,14 +184,6 @@ impl Generation {
         self.role = role;
     }
 
-    pub(crate) fn set_period(&mut self, period: u8) -> Result<(), GenerationError> {
-        if period >= KES_PERIODS {
-            return Err(GenerationError::PeriodOutOfRange);
-        }
-        self.relative_period = period;
-        Ok(())
-    }
-
     pub(crate) fn install_certificate(
         &mut self,
         certificate: Certificate,

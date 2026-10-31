@@ -1,6 +1,5 @@
 use crate::identity::{DeviceId, Digest32, OperationId};
-use crate::operation::{CommissioningRecord, PoolTarget, UsbSerial};
-use crate::pool::{Enrollment, PoolDirectory, PoolError};
+use crate::operation::{CommissioningRecord, UsbSerial};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -159,14 +158,7 @@ pub enum DeviceError {
     InvalidRecipient,
     RecipientRegressive,
     RevisionOverflow,
-    Pool(PoolError),
     InvalidConfiguration,
-}
-
-impl From<PoolError> for DeviceError {
-    fn from(value: PoolError) -> Self {
-        Self::Pool(value)
-    }
 }
 
 pub struct Device {
@@ -179,7 +171,6 @@ pub struct Device {
     next_management_sequence: u64,
     recipient: Option<SharedRecipient>,
     enrollment_record: EnrollmentRecord,
-    pools: PoolDirectory,
 }
 
 impl Device {
@@ -222,7 +213,6 @@ impl Device {
             next_management_sequence: 1,
             recipient: None,
             enrollment_record,
-            pools: PoolDirectory::new(),
         })
     }
 
@@ -266,30 +256,6 @@ impl Device {
         self.identity_signing_key().sign(message).to_bytes()
     }
 
-    pub const fn pools(&self) -> &PoolDirectory {
-        &self.pools
-    }
-
-    pub fn enroll(&mut self, enrollment: Enrollment) -> Result<PoolTarget, DeviceError> {
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or(DeviceError::RevisionOverflow)?;
-        let target = self.pools.enroll(enrollment)?;
-        self.revision = revision;
-        Ok(target)
-    }
-
-    pub fn delete_pool(&mut self, target: PoolTarget) -> Result<(), DeviceError> {
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or(DeviceError::RevisionOverflow)?;
-        self.pools.delete(target)?;
-        self.revision = revision;
-        Ok(())
-    }
-
     pub fn set_recipient(&mut self, recipient: SharedRecipient) -> Result<(), DeviceError> {
         if self
             .recipient
@@ -319,7 +285,6 @@ impl Device {
             || self.revision != 1
             || self.next_management_sequence != 1
             || self.recipient.is_some()
-            || !self.pools.is_empty()
             || public.device() != self.id
             || public.identity_public_key() != &signing_key.verifying_key().to_bytes()
             || public.device_revision() != 1
@@ -425,7 +390,6 @@ impl Device {
             next_management_sequence,
             recipient: None,
             enrollment_record,
-            pools: PoolDirectory::new(),
         })
     }
 }
@@ -465,7 +429,6 @@ impl Drop for Device {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::{IncarnationId, NetworkBinding};
 
     fn hardware() -> HardwareIdentity {
         HardwareIdentity::new(Digest32::from_bytes([1; 32]), Digest32::from_bytes([2; 32]))
@@ -540,32 +503,5 @@ mod tests {
             Device::restore_initial_configuration(&encoded[..len], hardware()),
             Err(DeviceError::InvalidConfiguration)
         ));
-    }
-
-    #[test]
-    fn device_enrollment_rejects_duplicate_and_capacity_without_revision_change() {
-        let mut device = commissioned();
-        let network = NetworkBinding::new(Digest32::from_bytes([8; 32]), 42, 100, 64).unwrap();
-        for value in 0..64u8 {
-            device
-                .enroll(Enrollment {
-                    cold_verification_key: [value; 32],
-                    incarnation: IncarnationId::from_bytes([value; 16]),
-                    network,
-                    publication_floor_us: 0,
-                })
-                .unwrap();
-        }
-        let revision = device.revision();
-        assert_eq!(
-            device.enroll(Enrollment {
-                cold_verification_key: [64; 32],
-                incarnation: IncarnationId::from_bytes([64; 16]),
-                network,
-                publication_floor_us: 0,
-            }),
-            Err(DeviceError::Pool(PoolError::CapacityExceeded))
-        );
-        assert_eq!(device.revision(), revision);
     }
 }

@@ -80,6 +80,8 @@ Management retries combine a durable public daemon request/receipt journal and o
 
 **Decision:** reuse the forge `KESBKP01` CBOR artifact and domain strings. RFC 9180 HPKE base mode: X25519/HKDF-SHA256/ChaCha20-Poly1305, plus Ed25519 device-origin signature. Pin `hpke =0.13.0`, `hkdf =0.12.4`, `hmac =0.12.1`, `x25519-dalek =2.0.1`, `chacha20poly1305 =0.10.1`; apply only reviewed no_std dependency-manifest fixes needed for firmware. Recipient-file protection uses predecessor `argon2 =0.5.3` and existing authenticated recipient-file scheme.
 
+The host selects HPKE's `alloc` and `x25519` features without defaults; the unused P-256 backend and its `crypto-bigint` dependency are excluded. This does not change the artifact's cryptographic suite.
+
 Generate artifact once from exact key0 before success; preserve immutable bytes through evolution and recipient changes. Remove on generation retirement. Restore entirely on backup host into `KesSigningKey_ed25519_kes_2^6`, CBOR bytestring prefix `590260` plus 608 state bytes, validating trusted device/pool/generation/vkey first. Use independent decoder and in-memory disposable key0 comparison. No backup producer test or backup approval is required.
 
 **Rationale:** reuses existing Rust producer/recovery semantics and conventional Cardano file representation.
@@ -106,7 +108,7 @@ Use protected zeroizing transient buffers, locked memory with startup failure on
 
 ## R10 — Quality tools and qualification
 
-**Decision:** apply the MCP-derived sensor/gate definition in [quality-gates.md](contracts/quality-gates.md). Rust behavioral/proptest/mutation/coverage/fuzz/model checks complement actual A2 power cuts, Haskell differential decoding, real producer blocks and measured full-capacity load. Tool versions and sensitivity probes are explicit there. Benchmarks get an approved correct baseline, not a skeleton baseline.
+**Decision:** apply the MCP-derived sensor/gate definition in [quality-gates.md](contracts/quality-gates.md). Rust behavioral/proptest/fuzz/model checks complement actual A2 observations, Haskell differential decoding and measured full-capacity load. Optional diagnostics do not constitute acceptance evidence.
 
 **Rationale:** source inspection and host simulations cannot prove flash erasure, 64-pool timings or accepted blocks. Planning approval is not gate activation or implementation acceptance.
 
@@ -146,13 +148,9 @@ The earlier U1/U2/I1 refinements kept the existing crypto, tool pins, 64-pool ge
 
 **Alternatives considered:** delaying all smoke until T042 creates a foundation/story dependency cycle; tests alone violate executable-proof policy; a mocked memory error would not exercise the OS boundary. The host-only result explicitly leaves firmware and story scopes pending.
 
-## R15 — Separate benchmark targets with one P0 verdict
+## R15 — Benchmark scaffolding removed
 
-**Decision:** retain core target `lifecycle` at `benches/lifecycle.rs`, explicitly registered by `crates/kes-core/Cargo.toml`; add root-package target `host` at `benches/host.rs`, registered by root `Cargo.toml`. Both use Criterion 0.8.2 with `harness = false`. T019 owns registrations and `qualification benchmarks --baseline`; T096 supplies real workloads and approved first-correct baseline. Both targets and both revisions contribute three separately retained runs under the unchanged P0 sampling, 1.05 interval rule and combined 30-minute budget. See [benchmark execution](contracts/quality-gates.md#core-and-host-benchmark-execution).
-
-**Rationale:** real framing and durable journal fsync/reconciliation belong to host modules, not the no_std lifecycle library. Explicit targets prevent a green core-only command from omitting host measurements. One aggregate verdict prevents cross-workload averaging from hiding a regression.
-
-**Alternatives considered:** importing Linux journaling into core breaks the architectural boundary; a synthetic in-memory journal omits durability cost; separate unaggregated Criterion exits do not implement the approved comparison oracle. No new benchmark library or invented sensor is needed.
+The proposed benchmark targets and aggregate P0 runner were pending, not meaningful measurements. They have been removed; performance diagnostics remain optional and no baseline or benchmark runner is supplied.
 
 ## R16 — Synchronized C1 verification and honest approval metadata
 

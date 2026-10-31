@@ -126,7 +126,8 @@ fn commissioning_preflight_needs_no_node_but_retains_host_protections() {
     let policy = dir.0.join("host-security.env");
     let swaps = dir.0.join("swaps");
     let systemctl = dir.0.join("systemctl");
-    let acknowledgements = b"SNAPSHOT_POLICY=disabled-or-encrypted-off-host\nBACKUP_PRIVATE_POLICY=off-primary\n";
+    let acknowledgements =
+        b"SNAPSHOT_POLICY=disabled-or-encrypted-off-host\nBACKUP_PRIVATE_POLICY=off-primary\n";
     fs::write(&policy, acknowledgements).unwrap();
     fs::write(&swaps, b"Filename Type Size Used Priority\n").unwrap();
     fs::write(
@@ -147,7 +148,14 @@ fn commissioning_preflight_needs_no_node_but_retains_host_protections() {
             .unwrap()
     };
     assert!(run(&["--commission"]).status.success());
-    for state in ["masked-runtime", "static", "disabled", "enabled", "unknown", ""] {
+    for state in [
+        "masked-runtime",
+        "static",
+        "disabled",
+        "enabled",
+        "unknown",
+        "",
+    ] {
         fs::write(
             &systemctl,
             format!(
@@ -169,16 +177,29 @@ fn commissioning_preflight_needs_no_node_but_retains_host_protections() {
     assert!(!run(&[]).status.success());
     fs::write(
         &policy,
-        [acknowledgements.as_slice(), b"NODE_MEMORY_POLICY=core-and-swap-disabled\n"].concat(),
+        [
+            acknowledgements.as_slice(),
+            b"NODE_MEMORY_POLICY=core-and-swap-disabled\n",
+        ]
+        .concat(),
     )
     .unwrap();
-    assert!(!run(&[]).status.success(), "missing node must fail normal mode");
+    assert!(
+        !run(&[]).status.success(),
+        "missing node must fail normal mode"
+    );
     assert!(run(&["--commission"]).status.success());
     assert_eq!(run(&["--unknown"]).status.code(), Some(2));
-    assert_eq!(run(&["--commission", "--commission"]).status.code(), Some(2));
+    assert_eq!(
+        run(&["--commission", "--commission"]).status.code(),
+        Some(2)
+    );
 
-    fs::write(&swaps, b"Filename Type Size Used Priority\n/dev/zram0 partition 1 0 1\n")
-        .unwrap();
+    fs::write(
+        &swaps,
+        b"Filename Type Size Used Priority\n/dev/zram0 partition 1 0 1\n",
+    )
+    .unwrap();
     assert!(!run(&["--commission"]).status.success());
     fs::write(&swaps, b"Filename Type Size Used Priority\n").unwrap();
     fs::write(

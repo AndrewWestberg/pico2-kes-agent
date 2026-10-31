@@ -297,6 +297,11 @@ impl Snapshot {
         self.meta
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_revision_for_test(&mut self, revision: u64) {
+        self.meta.revision = revision;
+    }
+
     pub const fn digest(&self) -> Digest32 {
         self.digest
     }

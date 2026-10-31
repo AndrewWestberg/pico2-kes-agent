@@ -162,6 +162,7 @@ cargo run --locked -p qualification -- native-regression
 
 This builds the pinned node source and runs the exact node-service protocol regressions. Live SIGHUP and peer-accepted-block campaigns are optional integration diagnostics, not release gates.
 
+The native CI job also runs `cargo test --locked -p kes-core --features qualification --test crypto_compatibility -- --test-threads=1` with the pinned `KES_ORACLE_*` source, archive, tool, executable and Cabal-plan paths set in `.github/workflows/quality.yml`. Running without the feature selects no crypto tests and is not evidence. Artifact retention is checked against the persistent lifecycle in `recovery`; decryption, every identity binding and byte-tampering rejection are checked against the host implementation in `backup_restore`.
 
 Exercise discard with exact generation ID and expected revision. Observe the warning, then confirm deliberately (`--yes` only for automated disposable qualification):
 
@@ -223,14 +224,8 @@ cargo run --locked -p qualification -- native-regression
 
 Also exercise stale/missing/future/regressive context, expired active and staged generations, failed entropy/erase, wrong USB device, live socket collision, startup/reconnect, deleted-pool slot reuse, 64-way boundary catch-up, 64 future-certified staged replacements, and uncertified staged keys remaining at period zero. Pause/disconnect one agent pool and prove healthy file/other pools keep operating; no implicit file fallback. Temporary USB loss must not emit key deletion or stop the node.
 
-### Optional performance diagnostics
+### Optional diagnostics
 
-When a separately approved baseline is available, run:
-
-```sh
-cargo run --locked -p qualification -- benchmarks --baseline "$BASELINE_REV"
-```
-
-Retain raw samples and environment details. Benchmark ratios, mutation scores and coverage percentages are diagnostics, not functional acceptance gates.
+Performance measurements, mutation scores and coverage percentages are diagnostics, not functional acceptance gates. No benchmark runner or baseline is supplied.
 
 Run all functional commands selected in [quality-gates.md](contracts/quality-gates.md). Retain revision-linked public evidence; never add a production plaintext-export interface to simplify qualification.

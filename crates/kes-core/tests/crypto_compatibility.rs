@@ -5,13 +5,10 @@
 //! contains a persistent seed or key; a no-swap, locked-memory lab is required.
 use ed25519_dalek::{Signer, SigningKey};
 use kes_core::{
-    backup::{self, BackupBindings},
     certificate::{CertificateHistory, OperationalCertificate},
-    generation::Generation,
-    identity::{DeviceId, GenerationId, IncarnationId, PoolId},
+    identity::PoolId,
     kes::Sum6Kes,
     platform::{Entropy, EntropyError},
-    recipient::RecipientPolicy,
 };
 use std::{env, io::Read, ops::Deref, path::PathBuf, sync::Once};
 #[path = "../../../qualification/src/oracle.rs"]
@@ -333,231 +330,27 @@ fn certificates_bind_cold_hot_signature_and_monotonic_counter() {
 #[test]
 fn entropy_failure_never_produces_a_generation() {
     assert!(Sum6Kes::generate(&mut BrokenEntropy, 64).is_err());
-    let identity = SigningKey::from_bytes(&*random::<32>());
-    let recipient = x25519_dalek::StaticSecret::from(*random::<32>());
-    let policy =
-        RecipientPolicy::new(x25519_dalek::PublicKey::from(&recipient).to_bytes(), 1).unwrap();
-    let pool = PoolId::from_cold_verification_key(&identity.verifying_key().to_bytes());
-    assert!(
-        Generation::generate(
-            DeviceId::from_bytes(*random::<16>()),
-            pool,
-            IncarnationId::from_bytes(*random::<16>()),
-            1,
-            64,
-            &policy,
-            &identity,
-            &mut BrokenEntropy,
-        )
-        .is_err()
-    );
-}
-#[test]
-fn generation_retains_artifact_across_certification_and_evolution() {
-    let native = oracle();
-    let identity = SigningKey::from_bytes(&*random::<32>());
-    let cold = SigningKey::from_bytes(&*random::<32>());
-    let recipient = x25519_dalek::StaticSecret::from(*random::<32>());
-    let policy =
-        RecipientPolicy::new(x25519_dalek::PublicKey::from(&recipient).to_bytes(), 1).unwrap();
-    let pool = PoolId::from_cold_verification_key(&cold.verifying_key().to_bytes());
-    let mut generation = Generation::generate(
-        DeviceId::from_bytes(*random::<16>()),
-        pool,
-        IncarnationId::from_bytes(*random::<16>()),
-        1,
-        64,
-        &policy,
-        &identity,
-        &mut OsEntropy,
-    )
-    .unwrap();
-    let key0_artifact = generation.artifact().unwrap().to_vec();
-    assert!(key0_artifact.starts_with(b"KESBKP01"));
-    let cert_bytes = cert(&cold, &generation.verification_key(), 1, 0);
-    assert!(
-        native
-            .opcert(&hex(&cert_bytes))
-            .expect("native certificate")
-            .verified
-    );
-    generation
-        .install_certificate(&cert_bytes, &cold.verifying_key().to_bytes())
-        .unwrap();
-    generation.evolve_to(32).unwrap();
-    assert_eq!(generation.artifact().unwrap(), key0_artifact);
-    generation.evolve_to(63).unwrap();
-    assert_eq!(generation.artifact().unwrap(), key0_artifact);
 }
 
 #[test]
-fn artifact_retains_original_key0_and_all_identity_bindings() {
+fn canonical_key_zero_envelope_matches_native() {
     let native = oracle();
     let seed = random::<32>();
     let mut entropy = OneSeed(Zeroizing::new(*seed), false);
-    let mut key = Sum6Kes::generate(&mut entropy, 64).unwrap();
-    let original = Zeroizing::new(key.canonical_state());
-    let identity = SigningKey::from_bytes(&*random::<32>());
-    let recipient_secret = x25519_dalek::StaticSecret::from(*random::<32>());
-    let recipient_public = x25519_dalek::PublicKey::from(&recipient_secret).to_bytes();
-    let policy = RecipientPolicy::new(recipient_public, 1).unwrap();
-    let bindings = BackupBindings {
-        device: DeviceId::from_bytes(*random::<16>()),
-        pool: PoolId::from_cold_verification_key(
-            &SigningKey::from_bytes(&*random::<32>())
-                .verifying_key()
-                .to_bytes(),
-        ),
-        incarnation: IncarnationId::from_bytes(*random::<16>()),
-        generation: GenerationId::from_bytes(*random::<16>()),
-        generation_number: 1,
-        verification_key: key.verification_key(),
-    };
-    let mut os = OsEntropy;
-    let artifact = backup::create(&key, &bindings, &policy, &identity, &mut os).unwrap();
-    let saved = artifact.as_bytes().to_vec();
-    assert!(saved.starts_with(b"KESBKP01") && saved.len() <= 2048);
-    key.evolve_to(32).unwrap();
-    let recovered = Zeroizing::new(
-        backup::recover(
-            &saved,
-            &bindings,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret,
-        )
-        .unwrap(),
-    );
-    assert!(
-        &*recovered == &*original,
-        "key0 differs from generation-time state"
-    );
+    let key = Sum6Kes::generate(&mut entropy, 64).unwrap();
+    let state = Zeroizing::new(key.canonical_state());
     let mut envelope = SecretString(String::from(
         "{\"type\":\"KesSigningKey_ed25519_kes_2^6\",\"description\":\"disposable\",\"cborHex\":\"590260",
     ));
-    envelope.push_str(&hex(&*recovered));
+    envelope.push_str(&hex(&*state));
     envelope.push_str("\"}");
     let decoded = native
         .envelope(&EnvelopeRequest {
             envelope: &hex(envelope.as_bytes()),
-            expected_state: &hex(&*original),
+            expected_state: &hex(&*state),
         })
         .expect("native envelope decoder");
     assert!(decoded.state_matches);
     assert_eq!(decoded.state_len, 608);
-    assert_eq!(decoded.vkey, hex(&bindings.verification_key).as_str());
-    let wrong_secret = x25519_dalek::StaticSecret::from(*random::<32>());
-    assert!(
-        backup::recover(
-            &saved,
-            &bindings,
-            &identity.verifying_key().to_bytes(),
-            &wrong_secret
-        )
-        .is_err()
-    );
-    let mut changed = bindings.clone();
-    changed.device = DeviceId::from_bytes(*random::<16>());
-    assert!(
-        backup::recover(
-            &saved,
-            &changed,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    changed = bindings.clone();
-    changed.pool = PoolId::from_cold_verification_key(
-        &SigningKey::from_bytes(&*random::<32>())
-            .verifying_key()
-            .to_bytes(),
-    );
-    assert!(
-        backup::recover(
-            &saved,
-            &changed,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    changed = bindings.clone();
-    changed.incarnation = IncarnationId::from_bytes(*random::<16>());
-    assert!(
-        backup::recover(
-            &saved,
-            &changed,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    changed = bindings.clone();
-    changed.generation = GenerationId::from_bytes(*random::<16>());
-    assert!(
-        backup::recover(
-            &saved,
-            &changed,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    changed = bindings.clone();
-    changed.generation_number += 1;
-    assert!(
-        backup::recover(
-            &saved,
-            &changed,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    changed = bindings.clone();
-    changed.verification_key[0] ^= 1;
-    assert!(
-        backup::recover(
-            &saved,
-            &changed,
-            &identity.verifying_key().to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    assert!(
-        backup::recover(
-            &saved,
-            &bindings,
-            &SigningKey::from_bytes(&*random::<32>())
-                .verifying_key()
-                .to_bytes(),
-            &recipient_secret
-        )
-        .is_err()
-    );
-    for i in 0..saved.len() {
-        let mut tampered = saved.clone();
-        tampered[i] ^= 1;
-        assert!(
-            backup::recover(
-                &tampered,
-                &bindings,
-                &identity.verifying_key().to_bytes(),
-                &recipient_secret
-            )
-            .is_err(),
-            "tamper at {i}"
-        );
-    }
-    let mut discarded = saved;
-    discarded.zeroize();
-}
-struct OsEntropy;
-impl Entropy for OsEntropy {
-    fn fill(&mut self, output: &mut [u8]) -> Result<(), EntropyError> {
-        std::fs::File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(output))
-            .map_err(|_| EntropyError)
-    }
+    assert_eq!(decoded.vkey, hex(&key.verification_key()).as_str());
 }

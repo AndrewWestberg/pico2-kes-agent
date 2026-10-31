@@ -245,11 +245,11 @@ pub struct Device<F: Flash, E: Entropy> {
 
 impl<F: Flash, E: Entropy> Device<F, E> {
     pub fn open(flash: F, mut entropy: E) -> Self {
-        let mut root = [0; 32];
-        let failed = fill_secret(&mut entropy, &mut root).is_err();
+        let mut root = Zeroizing::new([0; 32]);
+        let failed = fill_secret(&mut entropy, &mut *root).is_err();
         let hardware =
             HardwareIdentity::new(Digest32::from_bytes([0; 32]), Digest32::from_bytes([0; 32]));
-        let mut device = Self::open_with_root(flash, entropy, root, hardware)
+        let mut device = Self::open_with_root(flash, entropy, *root, hardware)
             .expect("lifecycle requires qualified geometry");
         device.failed = failed;
         device
@@ -322,8 +322,12 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         }
         self.config
             .as_ref()
-            .map(|config| config.snapshot.meta().revision.saturating_add(1))
-            .ok_or(Error::Uncommissioned)
+            .ok_or(Error::Uncommissioned)?
+            .snapshot
+            .meta()
+            .revision
+            .checked_add(1)
+            .ok_or(Error::StorageFailure)
     }
 
     pub fn pool_count(&self) -> u8 {
@@ -599,6 +603,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         let index = (0..SLOT_COUNT)
             .find(|index| config.occupied & (1u64 << index) == 0)
             .ok_or(Error::CapacityExceeded)?;
+        self.require_config_capacity()?;
         let slot = StorageSlot::new(index as u8).map_err(|_| Error::CapacityExceeded)?;
         let publication = Publication {
             revision: 0,
@@ -610,7 +615,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         let len = encode_pool_fields(
             enrollment,
             slot,
-            0,
+            1,
             None,
             None,
             publication,
@@ -666,10 +671,15 @@ impl<F: Flash, E: Entropy> Device<F, E> {
 
     pub fn set_recipient(&mut self, public_key: [u8; 32]) -> Result<(), Error> {
         self.require_ready()?;
+        self.require_config_capacity()?;
         let config = self.config.as_mut().ok_or(Error::Uncommissioned)?;
-        let revision = config
-            .recipient
-            .map_or(1, |current| current.revision().saturating_add(1));
+        let revision = match config.recipient {
+            Some(current) => current
+                .revision()
+                .checked_add(1)
+                .ok_or(Error::StorageFailure)?,
+            None => 1,
+        };
         config.recipient =
             Some(RecipientPolicy::new(public_key, revision).map_err(|_| Error::InvalidRequest)?);
         self.commit_config()
@@ -727,6 +737,14 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             self.put_pool(index, pool);
             return Err(Error::StagedOccupied);
         }
+        // Legacy pools may start at zero or have an artifact numbered at their revision.
+        let number = match pool.active.as_ref() {
+            Some(active) if active.number >= pool.revision => {
+                active.number.checked_add(1).ok_or(Error::StorageFailure)?
+            }
+            _ => pool.revision.max(1),
+        };
+        let next_revision = number.checked_add(1).ok_or(Error::StorageFailure)?;
         let mut generation_bytes = [0; 16];
         fill_secret(self.storage.entropy_mut(), &mut generation_bytes)
             .map_err(|_| Error::EntropyFailure)?;
@@ -737,10 +755,6 @@ impl<F: Flash, E: Entropy> Device<F, E> {
             pool.enrollment.network.lifetime(),
         )
         .map_err(|_| Error::EntropyFailure)?;
-        let number = pool
-            .active
-            .as_ref()
-            .map_or(1, |active| active.number.saturating_add(1));
         let bindings = BackupBindings {
             device: device_id,
             pool: pool.enrollment.pool_id,
@@ -793,7 +807,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         } else {
             pool.staged = Some(generation);
         }
-        pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
+        pool.revision = next_revision;
         let reference = PublicObjectRef {
             generation: *generation_id.as_bytes(),
             digest: object_digest,
@@ -1178,20 +1192,26 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         if status.incarnation_id != target.incarnation {
             return Err(Error::TargetMismatch);
         }
+        let revision = status
+            .revision
+            .checked_add(1)
+            .ok_or(Error::StorageFailure)?;
+        let next_timestamp = status
+            .publication
+            .high_water_us
+            .checked_add(1)
+            .ok_or(Error::StorageFailure)?;
+        let timestamp = cmp::max(
+            publication_time_us.unwrap_or(next_timestamp),
+            next_timestamp,
+        );
+        self.require_config_capacity()?;
         let index = usize::from(status.slot.get());
-        let timestamp = publication_time_us
-            .unwrap_or_else(|| status.publication.high_water_us.saturating_add(1));
         let terminal = Publication {
-            revision: status.publication.revision.saturating_add(1),
+            revision,
             kind: PublicationKind::Drop,
-            timestamp_us: cmp::max(
-                timestamp,
-                status.publication.high_water_us.saturating_add(1),
-            ),
-            high_water_us: cmp::max(
-                timestamp,
-                status.publication.high_water_us.saturating_add(1),
-            ),
+            timestamp_us: timestamp,
+            high_water_us: timestamp,
         };
         let config = self.config.as_mut().ok_or(Error::Uncommissioned)?;
         config.occupied &= !(1u64 << index);
@@ -1344,7 +1364,22 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         }
     }
 
+    fn require_config_capacity(&mut self) -> Result<(), Error> {
+        let revision = self
+            .config
+            .as_ref()
+            .ok_or(Error::Uncommissioned)?
+            .snapshot
+            .meta()
+            .revision;
+        if !config_revision_can_advance(revision) {
+            return Err(self.shared_failure());
+        }
+        Ok(())
+    }
+
     fn commit_config(&mut self) -> Result<(), Error> {
+        self.require_config_capacity()?;
         let config = self.config.as_mut().ok_or(Error::Uncommissioned)?;
         let mut payload = Zeroizing::new([0; MAX_SNAPSHOT_BYTES]);
         let len = encode_config(
@@ -1725,14 +1760,19 @@ fn apply_period_context(pool: &mut PoolState) -> Result<PeriodTransition, Error>
     Ok(transition)
 }
 
+fn config_revision_can_advance(stored: u64) -> bool {
+    stored.checked_add(2).is_some()
+}
+
 fn publish(pool: &mut PoolState, kind: PublicationKind, sample: u64) -> Result<(), Error> {
-    let timestamp = cmp::max(sample, pool.publication.high_water_us.saturating_add(1));
+    let next = pool
+        .publication
+        .high_water_us
+        .checked_add(1)
+        .ok_or(Error::StorageFailure)?;
+    let timestamp = cmp::max(sample, next);
     pool.publication = Publication {
-        revision: pool
-            .publication
-            .revision
-            .checked_add(1)
-            .ok_or(Error::StorageFailure)?,
+        revision: pool.revision,
         kind,
         timestamp_us: timestamp,
         high_water_us: timestamp,
@@ -2302,6 +2342,356 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate std;
+    use crate::platform::{EntropyError, FlashError, Geometry};
+    use std::{cell::Cell, rc::Rc, vec, vec::Vec};
+
+    struct TestFlash(Vec<u8>);
+
+    impl Flash for TestFlash {
+        fn geometry(&self) -> Geometry {
+            Geometry::new(self.0.len() as u32, PAGE_SIZE, SECTOR_SIZE).unwrap()
+        }
+        fn read(&mut self, address: u32, output: &mut [u8]) -> Result<(), FlashError> {
+            self.geometry().range(address, output.len())?;
+            output.copy_from_slice(&self.0[address as usize..address as usize + output.len()]);
+            Ok(())
+        }
+        fn program_page(&mut self, address: u32, data: &[u8]) -> Result<(), FlashError> {
+            self.geometry().program(address, data.len())?;
+            let bytes = &mut self.0[address as usize..address as usize + data.len()];
+            if bytes.iter().zip(data).any(|(&old, &new)| old & new != new) {
+                return Err(FlashError::RequiresErase);
+            }
+            for (old, new) in bytes.iter_mut().zip(data) {
+                *old &= *new;
+            }
+            Ok(())
+        }
+        fn erase_sector(&mut self, address: u32) -> Result<(), FlashError> {
+            self.geometry().erase(address)?;
+            self.0[address as usize..address as usize + SECTOR_SIZE as usize].fill(0xff);
+            Ok(())
+        }
+        fn read_marker(&mut self, address: u32, output: &mut [u8]) -> Result<(), FlashError> {
+            self.read(address, output)
+        }
+        fn program_marker(&mut self, address: u32, data: &[u8]) -> Result<(), FlashError> {
+            self.program_page(address, data)
+        }
+    }
+
+    struct TestEntropy {
+        state: u64,
+        calls: Rc<Cell<usize>>,
+    }
+    impl Entropy for TestEntropy {
+        fn fill(&mut self, output: &mut [u8]) -> Result<(), EntropyError> {
+            self.calls.set(self.calls.get() + 1);
+            for byte in output {
+                self.state ^= self.state << 13;
+                self.state ^= self.state >> 7;
+                self.state ^= self.state << 17;
+                *byte = self.state as u8;
+            }
+            Ok(())
+        }
+    }
+
+    type TestDevice = Device<TestFlash, TestEntropy>;
+
+    fn test_device() -> (TestDevice, Rc<Cell<usize>>) {
+        let calls = Rc::new(Cell::new(0));
+        let entropy = TestEntropy {
+            state: 0x1234_5678_9abc_def1,
+            calls: calls.clone(),
+        };
+        let mut device = Device::open(TestFlash(vec![0xff; 0x400000]), entropy);
+        device
+            .commission(&CommissionRequest {
+                serial: b"test-board",
+                operation_id: OperationId::from_bytes([1; 16]),
+                request_digest: Digest32::from_bytes([1; 32]),
+                expected_revision: 0,
+                sequence: 0,
+            })
+            .unwrap();
+        (device, calls)
+    }
+    fn reboot(device: TestDevice) -> TestDevice {
+        let entropy = TestEntropy {
+            state: 0x1234_5678_9abc_def1,
+            calls: Rc::new(Cell::new(0)),
+        };
+        let mut device = Device::open(device.into_flash(), entropy);
+        device.recover().unwrap();
+        device
+    }
+
+    fn test_enrollment(n: u8) -> Enrollment {
+        let cold = [n; 32];
+        Enrollment {
+            pool_id: PoolId::from_cold_verification_key(&cold),
+            cold_verification_key: cold,
+            incarnation_id: IncarnationId::from_bytes([n; 16]),
+            network: NetworkBinding::new(Digest32::from_bytes([9; 32]), 42, 100, 64).unwrap(),
+            publication_floor_us: 0,
+        }
+    }
+
+    fn target(enrollment: Enrollment) -> PoolTarget {
+        PoolTarget {
+            pool: enrollment.pool_id,
+            incarnation: enrollment.incarnation_id,
+        }
+    }
+
+    fn edit_pool(device: &mut TestDevice, pool_id: PoolId, edit: impl FnOnce(&mut PoolState)) {
+        let index = device.find_pool(pool_id).unwrap();
+        let mut pool = device.take_pool(index).unwrap();
+        edit(&mut pool);
+        let pool = device.commit_pool_for(index, pool, None).unwrap();
+        device.put_pool(index, pool);
+    }
+
+    #[test]
+    fn publication_uses_pool_revision_and_fails_at_timestamp_exhaustion() {
+        let (mut device, _) = test_device();
+        let enrollment = test_enrollment(2);
+        device.enroll(&enrollment).unwrap();
+        let index = device.find_pool(enrollment.pool_id).unwrap();
+        let mut pool = device.take_pool(index).unwrap();
+        pool.revision = 9;
+        pool.publication.high_water_us = u64::MAX - 1;
+        publish(&mut pool, PublicationKind::Drop, 0).unwrap();
+        assert_eq!(pool.publication.revision, 9);
+        assert_eq!(pool.publication.timestamp_us, u64::MAX);
+        let previous = pool.publication;
+        pool.revision = 10;
+        assert_eq!(
+            publish(&mut pool, PublicationKind::Drop, u64::MAX),
+            Err(Error::StorageFailure)
+        );
+        assert_eq!(pool.publication, previous);
+    }
+
+    #[test]
+    fn recipient_revision_exhaustion_preserves_durable_state() {
+        let (mut device, _) = test_device();
+        device.config.as_mut().unwrap().recipient =
+            Some(RecipientPolicy::new([3; 32], u64::MAX - 1).unwrap());
+        device.set_recipient([4; 32]).unwrap();
+        assert_eq!(device.recipient().unwrap(), Some(([4; 32], u64::MAX)));
+        let before = device.flash().0.clone();
+        assert_eq!(device.set_recipient([5; 32]), Err(Error::StorageFailure));
+        assert_eq!(device.flash().0, before);
+        assert_eq!(device.recipient().unwrap(), Some(([4; 32], u64::MAX)));
+        device.recover().unwrap();
+        assert_eq!(device.recipient().unwrap(), Some(([4; 32], u64::MAX)));
+    }
+
+    #[test]
+    fn configuration_revision_exhaustion_fails_closed_without_flash_write() {
+        let (mut device, _) = test_device();
+        // The injected metadata is an in-memory boundary fixture, not an authenticated flash record.
+        device
+            .config
+            .as_mut()
+            .unwrap()
+            .snapshot
+            .set_revision_for_test(u64::MAX - 2);
+        assert_eq!(device.revision(), Ok(u64::MAX - 1));
+        device.set_recipient([3; 32]).unwrap();
+        assert_eq!(device.revision(), Ok(u64::MAX));
+        let before = device.flash().0.clone();
+        assert_eq!(device.set_recipient([4; 32]), Err(Error::StorageFailure));
+        assert_eq!(device.flash().0, before);
+        assert_eq!(device.revision(), Err(Error::StorageFailure));
+        let device = reboot(device);
+        assert_eq!(device.recipient().unwrap(), Some(([3; 32], 1)));
+        assert_eq!(device.revision(), Ok(u64::MAX));
+    }
+
+    #[test]
+    fn deletion_at_config_exhaustion_preserves_directory_and_receipt() {
+        let (mut device, _) = test_device();
+        let pool = test_enrollment(2);
+        let prior = test_enrollment(3);
+        device.enroll(&pool).unwrap();
+        device.enroll(&prior).unwrap();
+        let receipt = device.delete_pool(target(prior), None).unwrap();
+        device
+            .config
+            .as_mut()
+            .unwrap()
+            .snapshot
+            .set_revision_for_test(u64::MAX - 1);
+        let before = device.flash().0.clone();
+        assert_eq!(
+            device.delete_pool(target(pool), None),
+            Err(Error::StorageFailure)
+        );
+        assert_eq!(device.flash().0, before);
+        let mut device = reboot(device);
+        assert_eq!(device.pool_count(), 1);
+        assert_eq!(
+            device.pool_status(pool.pool_id).unwrap().incarnation_id,
+            pool.incarnation_id
+        );
+        assert_eq!(
+            device
+                .config
+                .as_ref()
+                .unwrap()
+                .last_deletion
+                .unwrap()
+                .publication,
+            receipt
+        );
+        assert_eq!(
+            device
+                .config
+                .as_ref()
+                .unwrap()
+                .last_deletion
+                .unwrap()
+                .target,
+            target(prior)
+        );
+    }
+
+    #[test]
+    fn deletion_exhaustion_preserves_pool_directory_and_prior_receipt() {
+        for (revision, high_water) in [(u64::MAX, 0), (7, u64::MAX)] {
+            let (mut device, _) = test_device();
+            let pool = test_enrollment(2);
+            let prior = test_enrollment(3);
+            device.enroll(&pool).unwrap();
+            device.enroll(&prior).unwrap();
+            let receipt = device.delete_pool(target(prior), None).unwrap();
+            edit_pool(&mut device, pool.pool_id, |state| {
+                state.revision = revision;
+                state.publication.high_water_us = high_water;
+            });
+            let before = device.flash().0.clone();
+            assert_eq!(
+                device.delete_pool(target(pool), None),
+                Err(Error::StorageFailure)
+            );
+            assert_eq!(device.flash().0, before);
+            device.recover().unwrap();
+            assert_eq!(device.pool_count(), 1);
+            assert_eq!(device.pool_status(pool.pool_id).unwrap().revision, revision);
+            assert_eq!(
+                device
+                    .config
+                    .as_ref()
+                    .unwrap()
+                    .last_deletion
+                    .unwrap()
+                    .publication,
+                receipt
+            );
+            assert_eq!(
+                device
+                    .config
+                    .as_ref()
+                    .unwrap()
+                    .last_deletion
+                    .unwrap()
+                    .target,
+                target(prior)
+            );
+        }
+    }
+
+    #[test]
+    fn deletion_reaches_max_revision_and_timestamp_once() {
+        let (mut device, _) = test_device();
+        let pool = test_enrollment(2);
+        device.enroll(&pool).unwrap();
+        edit_pool(&mut device, pool.pool_id, |state| {
+            state.revision = u64::MAX - 1;
+            state.publication.high_water_us = u64::MAX - 1;
+        });
+        let terminal = device.delete_pool(target(pool), None).unwrap();
+        assert_eq!(terminal.revision, u64::MAX);
+        assert_eq!(terminal.timestamp_us, u64::MAX);
+        device.recover().unwrap();
+        assert_eq!(device.pool_count(), 0);
+        assert_eq!(
+            device
+                .config
+                .as_ref()
+                .unwrap()
+                .last_deletion
+                .unwrap()
+                .publication,
+            terminal
+        );
+    }
+
+    #[test]
+    fn generation_exhaustion_precedes_entropy_and_flash_writes() {
+        let (mut device, calls) = test_device();
+        let pool = test_enrollment(2);
+        device.enroll(&pool).unwrap();
+        device.set_recipient([3; 32]).unwrap();
+        edit_pool(&mut device, pool.pool_id, |state| {
+            state.revision = u64::MAX - 1
+        });
+        device
+            .generate(pool.pool_id, OperationId::from_bytes([4; 16]))
+            .unwrap();
+        assert_eq!(
+            device
+                .pool_generations(pool.pool_id)
+                .unwrap()
+                .active
+                .unwrap()
+                .number,
+            u64::MAX - 1
+        );
+        let before = device.flash().0.clone();
+        let entropy_calls = calls.get();
+        assert_eq!(
+            device.generate(pool.pool_id, OperationId::from_bytes([5; 16])),
+            Err(Error::StorageFailure)
+        );
+        assert_eq!(calls.get(), entropy_calls);
+        assert_eq!(device.flash().0, before);
+        assert_eq!(device.pool_status(pool.pool_id).unwrap().revision, u64::MAX);
+    }
+
+    #[test]
+    fn legacy_generation_revisions_remain_positive_and_monotonic() {
+        let (mut device, _) = test_device();
+        let pool = test_enrollment(2);
+        device.enroll(&pool).unwrap();
+        device.set_recipient([3; 32]).unwrap();
+        edit_pool(&mut device, pool.pool_id, |state| state.revision = 0);
+        device
+            .generate(pool.pool_id, OperationId::from_bytes([4; 16]))
+            .unwrap();
+        let first = device
+            .pool_generations(pool.pool_id)
+            .unwrap()
+            .active
+            .unwrap();
+        assert_eq!(first.number, 1);
+        // Old firmware could persist its first artifact at revision one.
+        edit_pool(&mut device, pool.pool_id, |state| state.revision = 1);
+        device
+            .generate(pool.pool_id, OperationId::from_bytes([5; 16]))
+            .unwrap();
+        let staged = device
+            .pool_generations(pool.pool_id)
+            .unwrap()
+            .staged
+            .unwrap();
+        assert_eq!(staged.number, 2);
+        assert_eq!(device.pool_status(pool.pool_id).unwrap().revision, 3);
+    }
 
     #[test]
     fn configuration_v2_round_trips_without_a_deletion() {

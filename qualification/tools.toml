@@ -29,12 +29,6 @@ kind = "lock"
 version = "1.11.0"
 
 [[tool]]
-id = "criterion"
-role = "benchmarking crate"
-kind = "lock"
-version = "0.8.2"
-
-[[tool]]
 id = "cargo-mutants"
 role = "mutation testing"
 kind = "command"

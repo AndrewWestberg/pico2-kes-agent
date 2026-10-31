@@ -1,8 +1,6 @@
 use crate::evidence;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
@@ -53,26 +51,42 @@ pub fn run() -> i32 {
 
 fn execute() -> Result<(bool, PathBuf), String> {
     let (revision, dirty) = evidence::candidate().ok_or("candidate identity unavailable")?;
-    let capacity = command(&[
-        "test",
-        "--locked",
-        "-p",
-        "kes-core",
-        "--test",
-        "recovery",
-        "full_capacity_keeps_pool_delivery_isolated_and_recovers_within_budget",
-        "--",
-        "--exact",
-    ])?;
-    let isolation = command(&[
-        "test",
-        "--locked",
-        "--test",
-        "operator_cli",
-        "stalled_and_malformed_clients_do_not_block_valid_requests",
-        "--",
-        "--exact",
-    ])?;
+    let capacity_name = "full_capacity_keeps_pool_delivery_isolated_and_recovers_within_budget";
+    let capacity = command(
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "kes-core",
+            "--test",
+            "recovery",
+            capacity_name,
+            "--",
+            "--exact",
+            "--format",
+            "pretty",
+            "--color",
+            "never",
+        ],
+        capacity_name,
+    );
+    let isolation_name = "stalled_and_malformed_clients_do_not_block_valid_requests";
+    let isolation = command(
+        &[
+            "test",
+            "--locked",
+            "--test",
+            "operator_cli",
+            isolation_name,
+            "--",
+            "--exact",
+            "--format",
+            "pretty",
+            "--color",
+            "never",
+        ],
+        isolation_name,
+    );
     let checks = [
         Check {
             name: "full-capacity-pool-isolation",
@@ -82,8 +96,8 @@ fn execute() -> Result<(bool, PathBuf), String> {
             } else {
                 "test failed or timed out"
             },
-            executions: 1,
-            elapsed_seconds: capacity.1.as_secs_f64(),
+            executions: capacity.1,
+            elapsed_seconds: capacity.2.as_secs_f64(),
             passed: capacity.0,
         },
         Check {
@@ -94,8 +108,8 @@ fn execute() -> Result<(bool, PathBuf), String> {
             } else {
                 "test failed or timed out"
             },
-            executions: 1,
-            elapsed_seconds: isolation.1.as_secs_f64(),
+            executions: isolation.1,
+            elapsed_seconds: isolation.2.as_secs_f64(),
             passed: isolation.0,
         },
     ];
@@ -120,28 +134,65 @@ fn execute() -> Result<(bool, PathBuf), String> {
     Ok((passed, path))
 }
 
-fn command(arguments: &[&str]) -> Result<(bool, Duration), String> {
+fn selected_result(success: bool, output: &[u8], name: &str) -> (bool, u64) {
+    let Ok(output) = std::str::from_utf8(output) else {
+        return (false, 0);
+    };
+    let passed = format!("test {name} ... ok");
+    let failed = format!("test {name} ... FAILED");
+    let mut lines = output
+        .lines()
+        .filter(|line| *line == passed || *line == failed);
+    let first = lines.next();
+    let exactly_one = first.is_some() && lines.next().is_none();
+    (
+        success && exactly_one && first == Some(passed.as_str()),
+        u64::from(exactly_one),
+    )
+}
+
+fn command(arguments: &[&str], name: &str) -> (bool, u64, Duration) {
     let started = Instant::now();
-    let mut child = Command::new("cargo")
-        .args(arguments)
-        .current_dir(ROOT)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("cannot start cargo: {error}"))?;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok((status.success(), started.elapsed())),
-            Ok(None) if started.elapsed() < CAMPAIGN_TIMEOUT => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok((false, started.elapsed()));
-            }
-            Err(error) => return Err(format!("cannot observe cargo: {error}")),
-        }
+    let (passed, executions) = evidence::command("cargo", arguments, CAMPAIGN_TIMEOUT)
+        .map(|(success, output)| selected_result(success, &output, name))
+        .unwrap_or((false, 0));
+    (passed, executions, started.elapsed())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_test_requires_exact_success_record() {
+        let name = "selected";
+        assert_eq!(
+            selected_result(true, b"running 1 test\ntest selected ... ok\n", name),
+            (true, 1)
+        );
+        assert_eq!(
+            selected_result(false, b"test selected ... ok\n", name),
+            (false, 1)
+        );
+        assert_eq!(
+            selected_result(true, b"test selected ... FAILED\n", name),
+            (false, 1)
+        );
+        assert_eq!(
+            selected_result(true, b"running 0 tests\n", name),
+            (false, 0)
+        );
+        assert_eq!(
+            selected_result(true, b"test selected ... ignored\n", name),
+            (false, 0)
+        );
+        assert_eq!(
+            selected_result(true, b"test other_selected ... ok\n", name),
+            (false, 0)
+        );
+        assert_eq!(
+            selected_result(true, b"test selected ... ok\ntest selected ... ok\n", name),
+            (false, 0)
+        );
     }
 }

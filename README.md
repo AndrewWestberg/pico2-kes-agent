@@ -82,7 +82,7 @@ Requirements:
 - Trusted genesis, network parameters, and actual era/slot-length history; synchronized host clock; access to the local node's query socket and the intended USB device.
 - The node's ordinary network, topology, database, VRF key, and service configuration remain necessary. Building successfully or connecting a socket does not demonstrate live forging or peer-accepted blocks.
 
-**Readiness limitation:** the current daemon recognizes clock synchronization only when `/run/systemd/timesync/synchronized` or `/run/systemd/timesync/synchronized-clock` contains trimmed `yes`, `1`, or `true`. Generic NTP enablement or an empty marker does not satisfy this implementation. It fails closed and withholds period-dependent delivery. If the host cannot provide genuine recognized synchronization state, stop at this prerequisite; do not fabricate markers or disable the check.
+**Clock readiness:** the daemon queries kernel time discipline with read-only `adjtimex`. Synchronized and leap-transition states are accepted; syscall failure, unknown states, `TIME_ERROR`, `STA_UNSYNC`, and `STA_CLOCKERR` fail closed. The service permits time-discipline queries with no effective or bounding capabilities; clock-setting calls remain denied. Clock synchronization alone does not establish readiness: trusted genesis/era history, a fresh node tip, and valid device leases are still required. Do not fabricate synchronization markers or disable these checks.
 
 ## Build, flash, and install
 
@@ -584,7 +584,7 @@ Obtain actual slot-length transitions from authoritative network history, includ
 ]
 ```
 
-The parser accepts 1–32 segments with positive slot lengths. `max_context_age_ms=30000` and `query_timeout_ms=5000` are example settings: maximum context age must be positive and at most 255000 ms; query timeout must be positive. A stale tip, failed query, bad genesis/history, or unrecognized synchronization state withholds fresh context/key delivery. Recheck the [clock-marker limitation](#requirements-and-compatibility) before relying on delivery; configuration validation does not test it.
+The parser accepts 1–32 segments with positive slot lengths. `max_context_age_ms=30000` and `query_timeout_ms=5000` are example settings: maximum context age must be positive and at most 255000 ms; query timeout must be positive. A stale tip, failed query, bad genesis/history, or unsynchronized kernel clock withholds fresh context/key delivery. Recheck [clock readiness](#requirements-and-compatibility) before relying on delivery; configuration validation does not test it.
 
 Normal `pools` may initially be empty. Management enrollment and the durable public journal reconstruct bindings; **preserve the journal**. Default enrollment creates `<pool-id>.sock` directly under `socket_directory`. For migration/custom socket names, an optional explicit binding has this shape (replace IDs with returned values and insert into `pools`):
 
@@ -1005,7 +1005,7 @@ Read-only diagnosis first. No blanket chmod, journal deletion, pin reset, reform
 | `revision_conflict` | Rejected, not success. Refresh correct device/pool status; reconsider intent before a new operation with a new receipt. |
 | Staged slot occupied | Inspect staged state; finish its certificate workflow or deliberately discard the exact target after exporting required materials. |
 | `target_not_staged` | Refresh state; it may have activated. Never redirect a destructive retry to another generation. |
-| Period unavailable / clock / genesis / history / stale tip | Verify genuine recognized sync-marker content, trusted digest/history and synchronized node tip. Correct context; never roll time back or create markers. |
+| Period unavailable / clock / genesis / history / stale tip | Verify kernel clock synchronization, trusted digest/history and synchronized node tip. Correct context; never roll time back or create markers. |
 | Expired generation | Create and certify a replacement; an expired key/restore cannot extend validity. |
 | Artifact retired | Use an already archived copy; retrieval ends at replacement, expiry, discard or deletion. |
 | Recipient / passphrase / binding error | Verify original bundle IDs, trusted device record, recipient and original vkey envelope; do not substitute identity from ciphertext. Lost credentials cannot decrypt old backups. |
@@ -1032,6 +1032,10 @@ Some device errors are coarsely mapped; not every failure has a unique fine-grai
 Context rejections from diagnostic-capable firmware include the failing phase, first storage substage/error, and any latched entropy-health cause. For example, `CatchUp / TransactionNonce / Entropy` distinguishes nonce acquisition from `CatchUp / RecoveryScan / Flash(Io)`; neither changes quarantine or authorizes a retry. A latched entropy cause describes device state, not necessarily the cause of an unrelated rejection. Older firmware replies can omit these details. Upgrade host tools before diagnostic-capable firmware: older hosts reject the extended failure response.
 
 The daemon reports these public rejection details on stderr (the service journal under systemd). Attended `qualification physical-context` records an owner-only, no-clobber JSONL sidecar beside its input: `<input>.context-<session>-<sequence>.jsonl`. The `--preserve-update` path records `<output>.context-<offset>-<session>-<sequence>.jsonl` beside its configured output. Each sidecar fsyncs intent before sending, then retains the complete Context payload and decoded response or transport/parse failure before returning an error. Payloads of other response kinds, especially `Current`, are never recorded. Preserve sidecars and attempt markers; an existing sidecar prevents dispatch, and a failed attempt is not automatically resumed.
+
+Successful Context replies must match the requested target, session, sequence, and absolute floor. Preservation attempts reserve an owner-only record before device work and refuse an existing report or attempt path. Final reports are also no-clobber and retain a bounded public failure reason. Use fresh paths for a new attended attempt; never remove an uncertain attempt marker to replay it.
+
+Preservation compares the complete public publication descriptor, pool/snapshot revision, and active relative period, as well as certificate/artifact bindings and Current held only in protected memory. Immutable hardware/security-policy observations must match; `storage_blank_at_boot` remains diagnostic because it can change across boots. Incomplete historical observations are not accepted by the current strict schema and must not be rewritten as new evidence. Installed-image identity remains an operational inference, not firmware attestation.
 
 Diagnostics do not establish key loss or repair: a pool may be quarantined after an otherwise durable commit. Stop and inspect the recorded failure before another context, reset, or firmware transfer. Offline fault-injection and firmware compilation validate diagnostic reporting, not the board's entropy/flash health or upgrade preservation.
 

@@ -1,5 +1,5 @@
 use super::{node_service::PoolSubscription, sockets};
-use kes_core::{operation::PoolTarget, pool::MAX_POOLS};
+use kes_core::{identity::StorageSlot, operation::PoolTarget};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -22,7 +22,7 @@ impl PoolRegistry {
         Self {
             directory,
             gid,
-            entries: HashMap::with_capacity(MAX_POOLS),
+            entries: HashMap::with_capacity(usize::from(StorageSlot::CAPACITY)),
         }
     }
 
@@ -42,7 +42,7 @@ impl PoolRegistry {
             previous.subscription.stop();
             sockets.remove_dynamic(&previous.path)?;
         }
-        if self.entries.len() >= MAX_POOLS {
+        if self.entries.len() >= usize::from(StorageSlot::CAPACITY) {
             return Err(sockets::Error::Io(std::io::Error::other(
                 "dynamic pool registry capacity exceeded",
             )));
@@ -81,7 +81,7 @@ impl PoolRegistry {
         sockets: &mut sockets::SocketRegistry,
         desired: &[PoolTarget],
     ) -> Result<(), sockets::Error> {
-        if desired.len() > MAX_POOLS {
+        if desired.len() > usize::from(StorageSlot::CAPACITY) {
             return Err(sockets::Error::Io(std::io::Error::other(
                 "dynamic pool registry capacity exceeded",
             )));

@@ -1,5 +1,5 @@
 //! Attended public observations; current KES material never leaves zeroizing memory.
-use super::{context_evidence_path, parse_hex, request_context};
+use super::{ContextEvidence, context_evidence_path, parse_hex, request_context};
 use crate::evidence;
 use kes_core::{
     certificate::OperationalCertificate,
@@ -7,19 +7,21 @@ use kes_core::{
     operation::{GenerationTarget, PoolTarget},
 };
 use kes_protocol::usb::{
-    ArtifactResult, CurrentResult, PublicKeyResult, PublicationKind, Request, Response,
+    ArtifactResult, CurrentResponse, CurrentResult, PoolStatus, PublicKeyResult, PublicationKind,
+    Request, Response,
 };
 use pico2_kes_agent::memory::{SecretBuffer, protect_process};
 use pico2_kes_agent::{
     backup::recover::{Expectations, artifact_recipient},
     daemon::usb::{IdentityPin, Mode, Transport, UsbSelection},
+    files::publish_no_clobber,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
@@ -73,7 +75,16 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     if !metadata.is_file() || metadata.len() > limit as u64 {
         return Err("input file is not a bounded regular file".into());
     }
-    fs::read(path).map_err(|e| e.to_string())
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(|e| e.to_string())?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > limit {
+        return Err("input file is not a bounded regular file".into());
+    }
+    Ok(bytes)
 }
 fn bundle(path: &Path) -> Result<(String, String, String, String), String> {
     // The checked-out verifier is trusted, not the verifier inside the bundle.
@@ -163,7 +174,6 @@ fn context(
             lease_seconds: input.lease_seconds,
             publication_time_us: time,
         },
-        Some(period),
     )?;
     Ok(response.floor)
 }
@@ -331,6 +341,7 @@ fn capture(
     let expected_cert = active_cert.certificate().direct_bytes();
     if current.target != target
         || generation != active.generation
+        || !matching_snapshot(&p, &current, period)
         || active_cert.certificate().start_period().checked_add(period) != Some(input.period)
         || certificate != expected_cert
         || !matches!(current.publication.kind, PublicationKind::Key { generation: g, period: p, certificate_digest } if g == generation && p == period && certificate_digest == active_cert.certificate().digest())
@@ -348,7 +359,7 @@ fn capture(
     }
     let saved = SecretBuffer::copy_from_slice(state)
         .map_err(|_| "cannot lock current KES comparison memory")?;
-    let public = json!({"pool_id": pool.pool_id, "incarnation": pool.incarnation_id, "recipient": hex(&recipient), "active_generation": active.generation.to_string(), "staged_generation": staged.generation.to_string(), "active_verification_key": hex(&ak), "staged_verification_key": hex(&sk), "active_certificate_sha256": active_cert.certificate().digest().to_string(), "staged_certificate_sha256": staged_cert.certificate().digest().to_string(), "active_artifact_sha256": active.artifact_digest.to_string(), "staged_artifact_sha256": staged.artifact_digest.to_string(), "period_floor": floor});
+    let public = json!({"pool_id": pool.pool_id, "incarnation": pool.incarnation_id, "recipient": hex(&recipient), "active_generation": active.generation.to_string(), "staged_generation": staged.generation.to_string(), "active_verification_key": hex(&ak), "staged_verification_key": hex(&sk), "active_certificate_sha256": active_cert.certificate().digest().to_string(), "staged_certificate_sha256": staged_cert.certificate().digest().to_string(), "active_artifact_sha256": active.artifact_digest.to_string(), "staged_artifact_sha256": staged.artifact_digest.to_string(), "period_floor": floor, "pool_revision": p.revision, "relative_period": period, "publication_revision": current.publication.revision, "publication_timestamp_us": current.publication.timestamp_us, "publication_high_water_us": current.publication.high_water_us});
     Ok(Capture {
         public,
         state: saved,
@@ -359,6 +370,12 @@ fn capture(
         staged_start: staged_cert.certificate().start_period(),
         floor,
     })
+}
+
+fn matching_snapshot(pool: &PoolStatus, current: &CurrentResponse<'_>, period: u64) -> bool {
+    pool.revision == current.snapshot_revision
+        && pool.publication == current.publication
+        && pool.active.is_some_and(|active| active.period == period)
 }
 fn security(transport: &mut Transport) -> Result<Value, String> {
     let reply = transport
@@ -389,18 +406,71 @@ pub(super) fn execute(path: &Path) -> Result<(), String> {
     if input.output == path {
         return Err("output must not replace input".into());
     }
+    let mut attempt = reserve_attempt(&input.output, &input.scenario)?;
     match execute_attended(&input) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            attempt.event(&json!({"event":"success"}))?;
+            Ok(())
+        }
         Err(error) => {
-            let candidate = evidence::candidate();
-            let failure = json!({"outcome":"fail","candidate":candidate,"scenario":input.scenario,"description":"Attended preservation observation failed; see operator diagnostics."});
-            let bytes = serde_json::to_vec_pretty(&failure).map_err(|e| e.to_string())?;
-            evidence::atomic_write(&input.output, &bytes).map_err(|e| {
-                format!("cannot write failure evidence: {e}; original error: {error}")
-            })?;
+            record_failure(&mut attempt, &input.output, &input.scenario, &error)?;
             Err(error)
         }
     }
+}
+
+fn reserve_attempt(output: &Path, scenario: &str) -> Result<ContextEvidence, String> {
+    match fs::symlink_metadata(output) {
+        Ok(_) => return Err("output already exists".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot inspect output: {e}")),
+    }
+    let mut name = output.as_os_str().to_os_string();
+    name.push(".attempt.jsonl");
+    ContextEvidence::reserve(
+        Path::new(&name),
+        &json!({"event":"intent","scenario":scenario}),
+    )
+}
+
+fn public_reason(error: &str) -> String {
+    let mut reason = String::new();
+    for c in error.chars() {
+        let c = if c.is_control() { ' ' } else { c };
+        if reason.len() + c.len_utf8() > 1024 {
+            break;
+        }
+        reason.push(c);
+    }
+    reason
+}
+
+fn same_security_policy(before: &Value, after: &Value) -> bool {
+    let (Some(before), Some(after)) = (before.as_object(), after.as_object()) else {
+        return false;
+    };
+    before
+        .iter()
+        .filter(|(key, _)| key.as_str() != "storage_blank_at_boot")
+        .eq(after
+            .iter()
+            .filter(|(key, _)| key.as_str() != "storage_blank_at_boot"))
+}
+
+fn record_failure(
+    attempt: &mut ContextEvidence,
+    output: &Path,
+    scenario: &str,
+    error: &str,
+) -> Result<(), String> {
+    let reason = public_reason(error);
+    attempt
+        .event(&json!({"event":"failure","reason":reason}))
+        .map_err(|e| format!("cannot persist failure: {e}; original error: {error}"))?;
+    let failure = json!({"outcome":"fail","candidate":evidence::candidate(),"scenario":scenario,"reason":reason});
+    let bytes = serde_json::to_vec_pretty(&failure).map_err(|e| e.to_string())?;
+    publish_no_clobber(output, &bytes, 0o600)
+        .map_err(|e| format!("cannot write failure evidence: {e}; original error: {error}"))
 }
 fn validate_bundle_transition(
     scenario: &str,
@@ -503,6 +573,9 @@ fn execute_attended(input: &Input) -> Result<(), String> {
     let after_security = security(&mut transport)?;
     if after_security["usb_serial"] != input.usb_serial {
         return Err("security report serial mismatch".into());
+    }
+    if !same_security_policy(&before_security, &after_security) {
+        return Err("immutable security policy changed after update".into());
     }
     let mut after = Vec::with_capacity(input.pools.len());
     for (i, pool) in input.pools.iter().enumerate() {
@@ -619,7 +692,7 @@ fn execute_attended(input: &Input) -> Result<(), String> {
     let observation = json!({"scenario":input.scenario,"from_version":before_bundle.2,"to_version":after_bundle.2,"from_commit":before_bundle.1,"to_commit":after_bundle.1,"from_image_sha256":before_bundle.3,"to_image_sha256":after_bundle.3,"storage_version":2,"period":input.period,"before":before.iter().map(|x| &x.public).collect::<Vec<_>>(),"after":after.iter().map(|x| &x.public).collect::<Vec<_>>(),"current_kes_equal":true,"staged_activated":true,"activated":activated,"description":"Attended signed UF2 transfer; image execution is operationally inferred, not independently attested."});
     let report = json!({"outcome":"pass","candidate_commit":candidate.0,"candidate_dirty":candidate.1,"before_manifest_sha256":before_bundle.0,"after_manifest_sha256":after_bundle.0,"before_security":before_security,"after_security":after_security,"observation":observation,"replenished":replenished});
     let bytes = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
-    evidence::atomic_write(&input.output, &bytes).map_err(|e| e.to_string())?;
+    publish_no_clobber(&input.output, &bytes, 0o600).map_err(|e| e.to_string())?;
     println!(
         "Public preservation observation written; full security qualification requires the other independent checks."
     );
@@ -628,7 +701,88 @@ fn execute_attended(input: &Input) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_bundle_transition;
+    use super::*;
+    use kes_core::identity::GenerationId;
+    use kes_protocol::usb::{GenerationStatus, Publication};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn snapshot_requires_matching_publication_revision_timestamp_and_period() {
+        let target = PoolTarget {
+            pool: PoolId::from_bytes([1; 28]),
+            incarnation: IncarnationId::from_bytes([2; 16]),
+        };
+        let publication = Publication {
+            revision: 4,
+            timestamp_us: 10,
+            high_water_us: 10,
+            kind: PublicationKind::Drop,
+        };
+        let mut pool = PoolStatus {
+            target,
+            revision: 5,
+            health: 0,
+            active: Some(GenerationStatus {
+                generation: GenerationId::from_bytes([3; 16]),
+                revision: 1,
+                role: 0,
+                period: 2,
+                health: 0,
+                artifact_digest: Digest32::from_bytes([4; 32]),
+            }),
+            staged: None,
+            publication,
+        };
+        let current = CurrentResponse {
+            target,
+            snapshot_revision: 5,
+            publication,
+            result: CurrentResult::Drop,
+        };
+        assert!(matching_snapshot(&pool, &current, 2));
+        pool.publication.timestamp_us += 1;
+        assert!(!matching_snapshot(&pool, &current, 2));
+        pool.publication = publication;
+        pool.publication.revision += 1;
+        assert!(!matching_snapshot(&pool, &current, 2));
+        pool.publication = publication;
+        pool.revision += 1;
+        assert!(!matching_snapshot(&pool, &current, 2));
+        pool.revision -= 1;
+        assert!(!matching_snapshot(&pool, &current, 3));
+    }
+
+    #[test]
+    fn security_policy_ignores_only_boot_diagnostic() {
+        let before = json!({"critical": 1, "storage_blank_at_boot": false});
+        let boot_changed = json!({"critical": 1, "storage_blank_at_boot": true});
+        let policy_changed = json!({"critical": 2, "storage_blank_at_boot": false});
+        assert!(same_security_policy(&before, &boot_changed));
+        assert!(!same_security_policy(&before, &policy_changed));
+    }
+
+    #[test]
+    fn failure_is_durable_and_attempt_and_output_cannot_be_reused() {
+        let dir = std::env::temp_dir().join(format!("kes-preservation-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let output = dir.join("report.json");
+        let mut attempt = reserve_attempt(&output, "upgrade").unwrap();
+        assert!(reserve_attempt(&output, "upgrade").is_err());
+        let reason = format!("non-Context failure: {}", "é".repeat(600));
+        record_failure(&mut attempt, &output, "upgrade", &reason).unwrap();
+        let report: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(report["reason"], public_reason(&reason));
+        assert!(report["reason"].as_str().unwrap().len() <= 1024);
+        let log = fs::read_to_string(dir.join("report.json.attempt.jsonl")).unwrap();
+        assert!(log.contains("non-Context failure"));
+        let original = fs::read(&output).unwrap();
+        assert!(reserve_attempt(&output, "upgrade").is_err());
+        assert!(record_failure(&mut attempt, &output, "upgrade", "replacement").is_err());
+        assert_eq!(fs::read(&output).unwrap(), original);
+        drop(attempt);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn reinstall_requires_all_bundle_fields_equal() {
