@@ -95,7 +95,8 @@ def publish(bundle, tag, commit):
     with tempfile.TemporaryDirectory(prefix="pico2-release-notes-") as temporary:
         notes = Path(temporary) / "notes.txt"
         notes.write_text(NOTES, encoding="utf-8")
-        gh("release", "create", tag, "--repo", REPOSITORY, "--verify-tag", "--target", commit,
+        # The tag already pins the source; --target unnecessarily requires workflow-write authority.
+        gh("release", "create", tag, "--repo", REPOSITORY, "--verify-tag",
            "--draft", "--title", tag, "--notes-file", notes, *classification_args)
     # Any failure leaves a reported draft, never a published partial bundle.
     gh("release", "upload", tag, "--repo", REPOSITORY,
