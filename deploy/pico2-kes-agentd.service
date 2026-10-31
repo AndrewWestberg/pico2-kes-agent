@@ -30,7 +30,6 @@ ProtectSystem=strict
 ProtectHome=yes
 ProtectHostname=yes
 SystemCallFilter=~@clock
-SystemCallFilter=adjtimex clock_adjtime clock_adjtime64
 SystemCallErrorNumber=EPERM
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

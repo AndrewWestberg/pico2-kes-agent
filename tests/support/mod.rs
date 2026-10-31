@@ -24,7 +24,7 @@ use pico2_kes_agent::{
     cli,
     config::{Config, PoolBinding, RunMode},
     daemon::{
-        context::{EraSegment, NetworkConfig, NetworkSelector},
+        context::{NetworkConfig, SlotTiming},
         journal::{Journal, MutationKey},
         management::Management,
         node_service::{PoolSubscription, PublicationKind, PublicationUpdate},
@@ -1853,6 +1853,17 @@ impl TestRig {
     pub fn reconnect_usb_without_context(&mut self) -> Result<(), RigError> {
         Ok(())
     }
+    pub fn accept_regressive_context(&mut self) -> Result<(), LifecycleError> {
+        let target = self.target.unwrap();
+        let mut state = self.state.lock().unwrap();
+        accept_context(
+            state.usb.device_mut(),
+            target,
+            self.period - 1,
+            self.timestamp,
+            self.period + 3,
+        )
+    }
     pub fn expire_generation(&mut self, timestamp: u64) -> Result<(), RigError> {
         let remaining = 64u64.saturating_sub(self.period);
         self.advance_period(remaining, timestamp)
@@ -2089,19 +2100,13 @@ fn config(
     networks.insert(
         "test".to_owned(),
         NetworkConfig {
-            cardano_cli: PathBuf::from("/bin/true"),
-            node_socket: root.join("node.sock"),
-            genesis_file: root.join("genesis.json"),
-            expected_genesis_digest: Digest32::from_bytes([7; 32]),
-            selector: NetworkSelector::Testnet(42),
             binding,
-            era_history: vec![EraSegment {
+            timing: SlotTiming {
                 start_slot: 0,
                 start_time_us: 0,
                 slot_length_us: 1_000_000,
-            }],
+            },
             max_age: Duration::from_secs(30),
-            query_timeout: Duration::from_secs(1),
         },
     );
     let pools = target

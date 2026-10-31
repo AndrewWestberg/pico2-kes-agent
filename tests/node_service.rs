@@ -166,6 +166,23 @@ fn reconnect_requires_fresh_context_and_unavailability_never_sends_drop() {
 }
 
 #[test]
+fn regressive_context_after_reconnect_withholds_publication() {
+    let mut rig = TestRig::certified_pool();
+    let first = key(&mut connect(&rig));
+    rig.advance_period(1, first.0 + 1).unwrap();
+    let advanced = key(&mut connect(&rig));
+    rig.disconnect_usb();
+    let mut next = connect(&rig);
+    assert_eq!(
+        rig.accept_regressive_context(),
+        Err(kes_core::lifecycle::Error::PeriodRegressive)
+    );
+    no_bytes(&mut next);
+    rig.refresh_context().unwrap();
+    assert_eq!(key(&mut next), advanced);
+}
+
+#[test]
 fn overflow_is_rejected_without_wrapping_or_drop() {
     let mut rig = TestRig::certified_pool_at(u64::MAX);
     let mut s = connect(&rig);
@@ -214,6 +231,11 @@ fn durable_expiry_sends_one_drop_with_device_timestamp() {
     let mut repeated = [0; 9];
     reconnect.read_exact(&mut repeated).unwrap();
     assert_eq!(repeated, drop_wire);
+    rig.restart_device_and_refresh_context().unwrap();
+    let persisted_payload = rig.current_usb_payload();
+    let persisted = decode_current_response(&persisted_payload).unwrap();
+    assert!(matches!(persisted.result, CurrentResult::Drop));
+    assert_eq!(persisted.publication, current.publication);
 }
 
 #[test]

@@ -79,10 +79,10 @@ Requirements:
 - [Picotool 2.3.1](https://github.com/raspberrypi/picotool), Python 3, OpenSSL and GPG/GPGV for bundle verification and attended provisioning. Picotool must include signing/verification and libusb support. Offline verification needs the program installed, but not access to a USB device. Locked-device updates use the verified UF2 through physical mass-storage BOOTSEL, not PICOBOOT.
 - Pico 2 with the fitted 4-MiB flash profile checked by [firmware/src/flash.rs](firmware/src/flash.rs): JEDEC `ef4016`, SFDP `534644500a0100ff00080117800000ff`, density-minus-one `0x01ffffff`. The shared profile identifies A2/A4; A4 is expected-compatible and hardware-unverified. A2 secure-boot qualification is separate from the existing storage evidence. A3, RP2040, unknown revisions and other flash profiles are not admitted for this profile.
 - A `cardano-node` release supporting the standard `--shelley-kes-agent-socket` interface and a matching `cardano-cli`. Obtain these using the [Cardano node installation guide](https://developers.cardano.org/docs/get-started/infrastructure/node/installing-cardano-node/). Check your installed node's help before cutover.
-- Trusted genesis, network parameters, and actual era/slot-length history; synchronized host clock; access to the local node's query socket and the intended USB device.
+- Trusted matching Byron and Shelley genesis files, the actual Byron-to-Shelley transition epoch, an accurately maintained host UTC clock, and access to the intended USB device.
 - The node's ordinary network, topology, database, VRF key, and service configuration remain necessary. Building successfully or connecting a socket does not demonstrate live forging or peer-accepted blocks.
 
-**Clock readiness:** the daemon queries kernel time discipline with read-only `adjtimex`. Synchronized and leap-transition states are accepted; syscall failure, unknown states, `TIME_ERROR`, `STA_UNSYNC`, and `STA_CLOCKERR` fail closed. The service permits time-discipline queries with no effective or bounding capabilities; clock-setting calls remain denied. Clock synchronization alone does not establish readiness: trusted genesis/era history, a fresh node tip, and valid device leases are still required. Do not fabricate synchronization markers or disable these checks.
+**Clock readiness:** the daemon uses host UTC as the KES period authority, without checking kernel synchronization status or querying the node. Operators must maintain and independently monitor accurate time. An incorrect clock or genesis/transition configuration can irreversibly advance or expire a key; synchronization alone does not establish correct network configuration. The service still prohibits clock-setting calls.
 
 ## Build, flash, and install
 
@@ -524,7 +524,7 @@ If the outcome is uncertain, keep the receipt and use [reconciliation](#reconcil
 
 ### Normal configuration and trusted context
 
-Create `$OPS/config.json` using the complete **normal-mode JSON template** below. Replace all synthetic identity, digest, network parameters, and paths. In `device`, set `id` from the record's `.device_id`, `identity_public_key` from `.identity_public_key`, and `usb_serial` from `.usb_serial`. The zero identity below is not a live device pin.
+Create `$OPS/config.json` using the complete **normal-mode JSON template** below. Replace the identity, digest placeholder, network transition count, and paths with your actual values. In `device`, set `id` from the record's `.device_id`, `identity_public_key` from `.identity_public_key`, and `usb_serial` from `.usb_serial`. The zero identity below is not a live device pin.
 
 ```json
 {
@@ -541,52 +541,44 @@ Create `$OPS/config.json` using the complete **normal-mode JSON template** below
   "state_directory": "/var/lib/pico2-kes-agent",
   "networks": {
     "pool-network": {
-      "genesis_file": "/etc/cardano/pool-network/genesis.json",
-      "genesis_digest": "0000000000000000000000000000000000000000000000000000000000000000",
-      "network_magic": 42,
-      "mainnet": false,
-      "node_socket": "/run/cardano-node/node.socket",
-      "cardano_cli": "/usr/local/bin/cardano-cli",
-      "era_history": "/etc/pico2-kes-agent/pool-network-history.json",
-      "slots_per_kes_period": 100,
-      "kes_lifetime": 64,
-      "max_context_age_ms": 30000,
-      "query_timeout_ms": 5000
+      "byron_genesis_file": "/etc/cardano/pool-network/byron-genesis.json",
+      "shelley_genesis_file": "/etc/cardano/pool-network/shelley-genesis.json",
+      "byron_to_shelley_epochs": 208,
+      "genesis_digest": "<SHA-256 of exact Shelley genesis bytes>",
+      "max_context_age_ms": 30000
     }
   },
   "pools": []
 }
 ```
 
-The `42`/`100` values are illustrative, **not production defaults**. Use the selected network's trusted genesis for `networkMagic`, `slotsPerKESPeriod`, and `maxKESEvolutions`, and verify those values against its authoritative configuration. `mainnet=true` requires magic `764824073`. Compute the exact selected genesis file's SHA-256:
+The transition count shown is for mainnet; select the actual value for your network. Compute the SHA-256 of the exact Shelley genesis file and replace the placeholder with its hexadecimal output. This is a raw-byte SHA-256 pin, not the Cardano node genesis hash:
 
 ```bash
-GENESIS=/etc/cardano/pool-network/genesis.json
+GENESIS=/etc/cardano/pool-network/shelley-genesis.json
 sha256sum "$GENESIS"
 DEVICE_RECORD="$OPS/device.json"
 jq -e '{id: .device_id, identity_public_key: .identity_public_key, usb_serial: .usb_serial}' "$DEVICE_RECORD"
 ```
 
-Use absolute paths visible inside the service sandbox, not `/home` or `/tmp`. Make public genesis/history files readable by the service. Give the daemon access to the node query socket **and traversal of each parent directory**, using the node's controlled group/ACL and, if necessary, a unit `SupplementaryGroups=` drop-in. Do not make sockets/directories world writable. This node-query access is distinct from the node's access to the agent's per-pool delivery sockets and from the operator's private receipts.
+Use absolute paths visible inside the service sandbox, not `/home` or `/tmp`. Both genesis files are trusted local inputs, must be readable by the service, and are limited to 16 MiB each. They and the configuration are loaded as immutable snapshots; restart the daemon to load changes. The daemon does not need access to the node query socket. Separately, give the node access to its agent delivery socket and traversal of every parent directory using controlled group/ACL permissions; do not make sockets or directories world writable. Keep operator receipts private.
 
-Era history is an operator-supplied JSON array of `{start_slot, start_time_us, slot_length_us}`. The first slot must be zero; times are **absolute Unix microseconds**, not offsets from Shelley genesis. Successive segments must satisfy:
+`byron_to_shelley_epochs` is required even when zero. These are documented examples, not daemon defaults:
 
-`next.start_time_us = current.start_time_us + (next.start_slot - current.start_slot) * current.slot_length_us`
+| Network | `byron_to_shelley_epochs` |
+|---|---:|
+| Mainnet | 208 |
+| Preprod | 4 |
+| Preview | 0 |
+| Guild | 2 |
 
-Obtain actual slot-length transitions from authoritative network history, including pre-Shelley history where applicable. A single-Shelley-genesis shortcut is not valid for all networks. There is no automatic history generator in this repository.
+Verify the actual transition and matching genesis files for your network rather than relying on magic alone. The daemon checks Byron `protocolConsts.protocolMagic` against Shelley `networkMagic` and derives binding magic, `slotsPerKESPeriod`, and `maxKESEvolutions` from Shelley genesis.
 
-**Synthetic arithmetic example only — not mainnet or testnet history:** ten slots of two seconds end at Unix time `1700000020000000` microseconds, followed by one-second slots.
+For Byron `startTime` in Unix seconds, `k`, and `slotDuration` in milliseconds, the transition slot is `B = byron_to_shelley_epochs * 10 * k` and its Unix microsecond time is `T = startTime * 1_000_000 + B * slotDuration * 1_000`. At or after `T`, the absolute slot is `B + (now_us - T) / shelley_slot_length_us` using integer division, and the absolute KES period is `absolute_slot / slotsPerKESPeriod`. Before `T`, KES context is unavailable. The origin is Byron `startTime`, not Shelley `systemStart`. This model assumes a constant Shelley slot duration through later eras; a network with a later slot-duration change requires a timing-model update.
 
-```json
-[
-  {"start_slot": 0, "start_time_us": 1700000000000000, "slot_length_us": 2000000},
-  {"start_slot": 10, "start_time_us": 1700000020000000, "slot_length_us": 1000000}
-]
-```
+`max_context_age_ms` sets the device lease, not a tip-age threshold. Values from 1000 through 30999 are accepted and truncated to whole seconds, producing a 1–30-second lease. The daemon samples time for each context and wakes for the next KES boundary or transition, half the encoded lease, or five seconds, whichever comes first. OS scheduling, USB work, and contention can add latency; delivery is not hard real-time.
 
-The parser accepts 1–32 segments with positive slot lengths. `max_context_age_ms=30000` and `query_timeout_ms=5000` are example settings. Maximum context age must produce a 1–30-second lease after truncating to whole seconds (1000–30999 ms); unsupported bounds fail configuration validation. Query timeout must be positive. A stale tip, failed query, bad genesis/history, or unsynchronized kernel clock withholds fresh context/key delivery. Recheck [clock readiness](#requirements-and-compatibility) before relying on delivery; configuration validation does not test it.
-
-The strict tip parser accepts the standard `slotInEpoch` and `slotsToEpochEnd` unsigned-integer fields; the absolute `slot` remains authoritative. Unknown fields and malformed values are rejected.
+**Migrating an existing configuration:** rename `genesis_file` to `shelley_genesis_file`, add `byron_genesis_file` and the required `byron_to_shelley_epochs`, and retain the existing Shelley digest and lease. Remove `cardano_cli`, `node_socket`, `query_timeout_ms`, `era_history`, `mainnet`, `network_magic`, `slots_per_kes_period`, and `kes_lifetime`; strict validation rejects these obsolete fields. If the existing enrollment used the same Shelley bytes and the same genesis-derived binding values, its binding is unchanged: no device reset, certificate rewrite, or re-enrollment is needed. Different bytes or binding values fail closed on mismatch. Investigate the original trusted configuration; never automatically lower durable period floors, reset the device, delete or re-enroll pools, or rewrite certificates to bypass a mismatch.
 
 Normal `pools` may initially be empty for management-only setup. Management enrollment and the durable public journal reconstruct socket bindings; **preserve the journal**. Context polling uses the explicit `pools` bindings loaded at startup, so configure each intended delivery pool and restart before expecting readiness. Default enrollment creates `<pool-id>.sock` directly under `socket_directory`; use that returned path or choose a custom socket name. A binding has this shape (replace IDs with returned values and insert into `pools`):
 
@@ -1006,14 +998,14 @@ Read-only diagnosis first. No blanket chmod, journal deletion, pin reset, reform
 | Symptom | Action |
 | --- | --- |
 | Missing socket / service preflight failure | Inspect `systemctl status` and journal; verify policy file, actual no-swap policy, four masked targets and both units' memory limits. |
-| Permission / new membership / sandbox / node query failure | New login and controlled node restart for group changes; inspect ownership and parent traversal. Check sandbox-visible absolute paths and daemon node-query access separately from management/delivery sockets. |
+| Permission / new membership / sandbox failure | New login and controlled node restart for group changes; inspect ownership and parent traversal. Check sandbox-visible genesis paths and management/delivery socket access separately. |
 | USB renumbered / denied / BOOTSEL | Rediscover with `lsusb`/udev; expect `1209:4b45` and group mode `0660` only in application mode. Unlocked pre-lock maintenance may use attended privileged picotool; locked devices use physical BOOTSEL mass storage. |
 | Wrong pin / identity failure | Stop; compare trusted original record and physical device. Do not silently re-pin. |
 | Busy / recovering / uncertain receipt | Preserve original receipt and reconcile after recovery. Do not create a replacement mutation. |
 | `revision_conflict` | Rejected, not success. Refresh correct device/pool status; reconsider intent before a new operation with a new receipt. |
 | Staged slot occupied | Inspect staged state; finish its certificate workflow or deliberately discard the exact target after exporting required materials. |
 | `target_not_staged` | Refresh state; it may have activated. Never redirect a destructive retry to another generation. |
-| Period unavailable / clock / genesis / history / stale tip | Verify kernel clock synchronization, trusted digest/history and synchronized node tip. Correct context; never roll time back or create markers. |
+| Period unavailable / clock / genesis / binding | Verify accurate host UTC, trusted matching genesis files, Shelley digest and actual transition epoch; check that Shelley has started and the configured binding matches the enrollment. Correct the underlying configuration and restart if needed; never roll time back, lower floors or reset/re-enroll to bypass a mismatch. |
 | Expired generation | Create and certify a replacement; an expired key/restore cannot extend validity. |
 | Artifact retired | Use an already archived copy; retrieval ends at replacement, expiry, discard or deletion. |
 | Recipient / passphrase / binding error | Verify original bundle IDs, trusted device record, recipient and original vkey envelope; do not substitute identity from ciphertext. Lost credentials cannot decrypt old backups. |
@@ -1065,7 +1057,7 @@ Builds, configuration checks, firmware flashing, device status, and socket conne
 ### Before leaving the producer unattended
 
 - [ ] Physical board/firmware trusted; original device pin independently archived and verified.
-- [ ] Service and host policies ready, with genuine recognized clock synchronization.
+- [ ] Service and host policies ready, with independently monitored accurate UTC.
 - [ ] Recipient private file/passphrase secured off-primary; old recipients retained when needed.
 - [ ] Current pool active with trustworthy network context and certificate validity.
 - [ ] Actual node consumption checked; production-forging claims require actual network evidence.
