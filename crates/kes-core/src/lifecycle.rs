@@ -996,13 +996,18 @@ impl<F: Flash, E: Entropy> Device<F, E> {
                 return Err(Error::CertificateRegressive);
             }
         }
+        let defer_future = generation.certificate.is_none()
+            && pool
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id == generation_id);
         find_generation_mut(&mut pool, generation_id)
             .expect("generation checked")
             .certificate = Some(*certificate);
         pool.highest_certificate_counter = Some(certificate.counter());
         pool.revision = pool.revision.checked_add(1).ok_or(Error::StorageFailure)?;
         let cleanup = if pool.lease.is_some() {
-            apply_period_context(&mut pool)?
+            apply_period_context(&mut pool, defer_future)?
         } else {
             PeriodTransition::unchanged()
         };
@@ -1052,7 +1057,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         let mut pool = self.take_pool(index)?;
         let lease = pool.lease.ok_or(Error::PeriodUnavailable)?;
         validate_context_time(&lease, now_us)?;
-        let transition = apply_period_context(&mut pool)?;
+        let transition = apply_period_context(&mut pool, false)?;
         if transition.changed {
             pool = self.commit_pool_for(index, pool, None)?;
             self.erase_retired_objects(pool.slot, transition)?;
@@ -1671,7 +1676,10 @@ impl PeriodTransition {
     }
 }
 
-fn apply_period_context(pool: &mut PoolState) -> Result<PeriodTransition, Error> {
+fn apply_period_context(
+    pool: &mut PoolState,
+    defer_future: bool,
+) -> Result<PeriodTransition, Error> {
     let context = pool.lease.ok_or(Error::PeriodUnavailable)?;
     let lifetime = u64::from(pool.enrollment.network.lifetime());
     let mut transition = PeriodTransition::unchanged();
@@ -1727,10 +1735,16 @@ fn apply_period_context(pool: &mut PoolState) -> Result<PeriodTransition, Error>
         };
     };
     let certificate = active.certificate.ok_or(Error::PeriodUnavailable)?;
-    let relative = context
+    let Some(relative) = context
         .absolute_period
         .checked_sub(certificate.start_period())
-        .ok_or(Error::PeriodUnavailable)?;
+    else {
+        return if defer_future {
+            Ok(transition)
+        } else {
+            Err(Error::PeriodUnavailable)
+        };
+    };
     if relative >= lifetime {
         let mut expired = pool.active.take().expect("active generation checked");
         expired.key.erase();

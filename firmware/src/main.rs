@@ -61,6 +61,7 @@ pub struct Runtime<'d> {
     device: Device<'d>,
     serial: UsbSerial,
     handoff: Handoff,
+    handoff_uncertain: bool,
     scheduler: Scheduler,
     handoff_buffer: [u8; MAX_HANDOFF_BYTES],
     flash_identity: Identity,
@@ -112,6 +113,7 @@ impl<'d> Runtime<'d> {
             device,
             serial,
             handoff,
+            handoff_uncertain: false,
             scheduler: Scheduler::new(),
             handoff_buffer: [0; MAX_HANDOFF_BYTES],
             flash_identity,
@@ -163,11 +165,15 @@ impl<'d> Runtime<'d> {
     }
 
     pub fn persist_handoff(&mut self) -> Result<(), LifecycleError> {
-        let length = self
+        let result = self
             .handoff
             .encode(&mut self.handoff_buffer)
-            .map_err(|_| LifecycleError::StorageFailure)?;
-        self.device.persist_handoff(&self.handoff_buffer[..length])
+            .map_err(|_| LifecycleError::StorageFailure)
+            .and_then(|length| self.device.persist_handoff(&self.handoff_buffer[..length]));
+        if result.is_err() {
+            self.handoff_uncertain = true;
+        }
+        result
     }
 
     pub fn serial(&self) -> UsbSerial {

@@ -1963,3 +1963,60 @@ fn context_before_certificate_start_withholds_key_without_underflow() {
     assert_eq!(current.relative_period, 0);
     assert_eq!(current.verification_key, key);
 }
+
+#[test]
+fn future_certificate_installed_after_context_survives_reboot_and_releases_at_start() {
+    let mut device = enrolled(2);
+    let pool = enrollment(2);
+    device.set_recipient([3; 32]).unwrap();
+    device
+        .accept_context(&context(2, 9, 1_000, 1), 100)
+        .unwrap();
+    let generation = device
+        .generate(pool.pool_id, OperationId::from_bytes([98; 16]))
+        .unwrap();
+    let key = device.public_key(pool.pool_id, generation).unwrap();
+    let signature = cold(2)
+        .sign(&Certificate::signing_bytes(&key, 1, 10))
+        .to_bytes();
+    let certificate = Certificate::new(key, 1, 10, signature);
+    device
+        .install_certificate(pool.pool_id, generation, &certificate)
+        .unwrap();
+    assert_eq!(
+        device
+            .installed_certificate(pool.pool_id, generation)
+            .unwrap(),
+        Some(certificate)
+    );
+    assert_eq!(
+        device.catch_up(pool.pool_id, 100),
+        Err(Error::PeriodUnavailable)
+    );
+    assert!(matches!(
+        device.current(pool.pool_id, pool.incarnation_id, 100),
+        Err(Error::PeriodUnavailable)
+    ));
+    assert_eq!(
+        device.publication(pool.pool_id).unwrap().kind,
+        PublicationKind::None
+    );
+
+    let mut device = reboot(device);
+    recovery(&mut device);
+    assert_eq!(
+        device
+            .installed_certificate(pool.pool_id, generation)
+            .unwrap(),
+        Some(certificate)
+    );
+    device
+        .accept_context(&context(2, 10, 2_000, 2), 100)
+        .unwrap();
+    device.catch_up(pool.pool_id, 100).unwrap();
+    let current = current(&mut device, 2);
+    assert_eq!(current.generation_id, generation);
+    assert_eq!(current.relative_period, 0);
+    assert_eq!(current.verification_key, key);
+    assert_eq!(current.certificate, certificate);
+}

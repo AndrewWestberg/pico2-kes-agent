@@ -126,6 +126,7 @@ pub struct Journal {
     pending: Option<PendingMutation>,
     completed: Vec<CompletedMutation>,
     recovered_torn_tail: bool,
+    failed: bool,
 }
 
 impl Journal {
@@ -171,6 +172,7 @@ impl Journal {
             pending: None,
             completed: Vec::new(),
             recovered_torn_tail: torn,
+            failed: false,
         };
         for record in records {
             journal.apply(record, valid_length)?;
@@ -331,6 +333,11 @@ impl Journal {
     }
 
     fn append(&mut self, kind: Kind, key: MutationKey, payload: &[u8]) -> Result<(), Error> {
+        if self.failed {
+            return Err(Error::Io(io::Error::other(
+                "journal write failed; reopen before appending",
+            )));
+        }
         let encoded = encode_record(kind, key, payload)?;
         let new_length = self
             .length
@@ -339,9 +346,11 @@ impl Journal {
         if new_length > JOURNAL_LIMIT {
             return Err(Error::Full);
         }
+        self.failed = true;
         self.file.write_all(&encoded)?;
         self.file.sync_data()?;
         self.length = new_length;
+        self.failed = false;
         Ok(())
     }
 
@@ -615,6 +624,39 @@ mod tests {
         drop(journal);
         let journal = Journal::open(&path).unwrap();
         assert_eq!(journal.pending().unwrap().intent, b"intent");
+    }
+
+    #[test]
+    fn write_or_sync_failure_blocks_appends_until_reopen() {
+        for failing_device in ["/dev/full", "/dev/null"] {
+            let dir = TestDir::new();
+            let path = dir.0.join("journal");
+            let mut journal = Journal::open(&path).unwrap();
+            let file = std::mem::replace(
+                &mut journal.file,
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(failing_device)
+                    .unwrap(),
+            );
+            assert!(matches!(
+                journal.append_intent(key(0), b"intent"),
+                Err(Error::Io(_))
+            ));
+            journal.file = file;
+            assert!(matches!(
+                journal.append_intent(key(0), b"retry"),
+                Err(Error::Io(_))
+            ));
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+            drop(journal);
+
+            let mut journal = Journal::open(&path).unwrap();
+            journal.append_intent(key(0), b"retry").unwrap();
+            drop(journal);
+            let journal = Journal::open(&path).unwrap();
+            assert_eq!(journal.pending().unwrap().intent, b"retry");
+        }
     }
 
     #[test]

@@ -41,8 +41,11 @@ Run service commands through the daemon management socket. No direct USB mode ex
 pub fn run(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
     match execute(args) {
         Ok(result) => {
-            if let Some(output) = result.output {
-                let _ = writeln!(stdout, "{output}");
+            if let Some(output) = result.output
+                && let Err(error) = writeln!(stdout, "{output}").and_then(|()| stdout.flush())
+            {
+                let _ = writeln!(stderr, "failed to write command output: {error}");
+                return EXIT_FAILURE;
             }
             if let Some(diagnostic) = result.diagnostic {
                 let _ = writeln!(stderr, "{diagnostic}");

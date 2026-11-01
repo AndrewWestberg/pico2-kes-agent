@@ -605,7 +605,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         let result_digest = match observed.outcome {
             PublicOutcome::Committed { result_digest, .. }
             | PublicOutcome::Rejected { result_digest, .. } => result_digest,
-            PublicOutcome::Unknown => {
+            PublicOutcome::Unknown | PublicOutcome::Pending => {
                 let encoded = pending.device_request.as_deref().ok_or(Error::Protocol)?;
                 let (kind, payload) = encoded.split_at_checked(2).ok_or(Error::Protocol)?;
                 let kind = wire::Kind::try_from(u16::from_be_bytes([kind[0], kind[1]]))
@@ -621,7 +621,6 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                 self.usb.clear_outstanding(pending.key.sequence, digest)?;
                 return self.submit_mutation(mutation);
             }
-            PublicOutcome::Pending => return Err(Error::Usb(UsbError::Busy)),
             PublicOutcome::Stale => return Err(Error::Protocol),
         };
         let original = original_terminal_response(&pending, observed)?;

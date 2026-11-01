@@ -139,6 +139,19 @@ fn commissioning_lost_reply_reconciles_original_identity_and_no_clobber() {
         assert_eq!(std::fs::read(rig.pin_record_path()).unwrap(), first);
     }
 }
+#[test]
+fn commissioning_storage_error_after_commit_recovers_identity() {
+    let mut rig = TestRig::blank_commissioning("attended-board01");
+    rig.fail_commission_after_marker();
+    assert_ne!(rig.commission_cli("attended-board01", ID).exit_code, 0);
+    assert!(!rig.pin_record_path().exists());
+    rig.reboot_device();
+    rig.restart_commissioning().unwrap();
+    assert_eq!(rig.reconcile_cli().exit_code, 0);
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(rig.pin_record_path()).unwrap()).unwrap();
+    assert_eq!(record["operation_id"], ID);
+}
 
 #[test]
 fn commissioning_rejects_wrong_selection_and_nonblank_partial_state() {
