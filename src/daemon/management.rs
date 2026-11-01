@@ -27,6 +27,7 @@ use std::{collections::HashMap, fs::File, io::Read};
 pub enum Error {
     Protocol,
     InvalidInput,
+    OperationConflict,
     ModeDenied,
     ArtifactRetired,
     GenerationUnknown,
@@ -120,13 +121,18 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                 {
                     return Err(Error::Protocol);
                 }
-                let mutation = self.mutation(
-                    action,
-                    operation_id,
-                    expected_revision.ok_or(Error::Protocol)?,
-                    &envelope.arguments,
-                )?;
-                self.execute_mutation(bytes, mutation)?
+                match self.replay_mutation(&envelope)? {
+                    Some(result) => result,
+                    None => {
+                        let mutation = self.mutation(
+                            action,
+                            operation_id,
+                            expected_revision.ok_or(Error::Protocol)?,
+                            &envelope.arguments,
+                        )?;
+                        self.execute_mutation(bytes, mutation)?
+                    }
+                }
             }
             _ => return Err(Error::Protocol),
         };
@@ -310,6 +316,30 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         Ok(registry)
     }
 
+    fn replay_mutation(&mut self, request: &Envelope) -> Result<Option<Value>, Error> {
+        let operation_id =
+            OperationId::parse_hex(request.operation_id.as_deref().ok_or(Error::Protocol)?)
+                .map_err(|_| Error::Protocol)?;
+        if let Some(pending) = self.journal.pending()
+            && pending.key.operation_id == operation_id.into_bytes()
+        {
+            validate_repeated_intent(&pending.intent, request)?;
+            let digest = Digest32::from_bytes(pending.key.request_digest);
+            return self.reconcile_operation(operation_id, digest).map(Some);
+        }
+        if let Some(completed) = self
+            .journal
+            .completed()
+            .iter()
+            .rev()
+            .find(|entry| entry.key.operation_id == operation_id.into_bytes())
+        {
+            validate_repeated_intent(&completed.intent, request)?;
+            return decode_durable_response(&completed.terminal.public_result).map(Some);
+        }
+        Ok(None)
+    }
+
     fn mutation(
         &self,
         action: Action,
@@ -377,16 +407,9 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 
     fn execute_mutation(&mut self, intent: &[u8], mutation: Mutation) -> Result<Value, Error> {
-        let request = if matches!(mutation.binding(), Binding::Commission { .. }) {
-            Request::Commission(mutation)
-        } else {
-            Request::Mutate(mutation)
-        };
-        let key = MutationKey {
-            sequence: mutation.sequence(),
-            operation_id: mutation.operation_id().into_bytes(),
-            request_digest: mutation.usb_digest().into_bytes(),
-        };
+        self.usb.prepare_mutation()?;
+        let request = mutation_request(mutation);
+        let key = mutation_key(&mutation);
         let mut encoded = [0; wire::MAX_PAYLOAD];
         let (kind, len) =
             wire::encode_request(&request, &mut encoded).map_err(|_| Error::Protocol)?;
@@ -396,12 +419,30 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         self.journal.append_intent(key, intent)?;
         self.journal.append_device_request(key, &durable_request)?;
 
-        let reply = self.usb.request(&request)?;
+        self.submit_mutation(mutation)
+    }
+
+    fn submit_mutation(&mut self, mutation: Mutation) -> Result<Value, Error> {
+        let request = mutation_request(mutation);
+        let key = mutation_key(&mutation);
+        let reply = self
+            .usb
+            .request(&request)
+            .map_err(|_| UsbError::Uncertain {
+                sequence: key.sequence,
+                digest: mutation.usb_digest(),
+            })?;
         let response = reply.decode().map_err(|_| Error::Protocol)?;
         let receipt = match &response {
             Response::Mutate(receipt) | Response::Commission(receipt) => *receipt,
             _ => return Err(Error::Protocol),
         };
+        validate_reconciled_receipt(
+            &receipt,
+            key,
+            mutation.operation_id(),
+            mutation.usb_digest(),
+        )?;
         let (result_digest, retained_receipt) = match receipt.outcome {
             PublicOutcome::Committed { result_digest, .. } => (result_digest, true),
             PublicOutcome::Rejected {
@@ -426,19 +467,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             return Ok(value);
         }
 
-        let ack = self.usb.request(&Request::ReceiptAck {
-            sequence: mutation.sequence(),
-            result_digest,
-        })?;
-        match ack.decode().map_err(|_| Error::Protocol)? {
-            Response::ReceiptAck(response) if response.result.is_ok() => {
-                self.usb
-                    .clear_outstanding(mutation.sequence(), mutation.usb_digest())?;
-                self.journal
-                    .append_acknowledged(key, result_digest.into_bytes())?;
-            }
-            _ => return Err(Error::Protocol),
-        }
+        self.acknowledge(key, mutation.usb_digest(), result_digest)?;
         Ok(value)
     }
 
@@ -473,11 +502,36 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         operation_id: OperationId,
         digest: Digest32,
     ) -> Result<Value, Error> {
-        let pending = self.journal.pending().cloned().ok_or(Error::InvalidInput)?;
+        let mut pending = self.journal.pending().cloned().ok_or(Error::InvalidInput)?;
         if pending.key.operation_id != operation_id.into_bytes()
             || pending.key.request_digest != digest.into_bytes()
         {
             return Err(Error::InvalidInput);
+        }
+        if pending.device_request.is_none() {
+            let message = Message::decode(&pending.intent).map_err(|_| Error::Protocol)?;
+            let ManagementKind::Request { action, .. } = message.kind() else {
+                return Err(Error::Protocol);
+            };
+            let intent: Envelope =
+                serde_json::from_slice(&pending.intent).map_err(|_| Error::Protocol)?;
+            let mutation = self.mutation(
+                action,
+                operation_id,
+                intent.expected_revision.ok_or(Error::Protocol)?,
+                &intent.arguments,
+            )?;
+            if mutation_key(&mutation) != pending.key {
+                return Err(Error::Protocol);
+            }
+            let mut payload = [0; wire::MAX_PAYLOAD];
+            let (kind, length) = wire::encode_request(&mutation_request(mutation), &mut payload)
+                .map_err(|_| Error::Protocol)?;
+            let mut encoded = Vec::with_capacity(length + 2);
+            encoded.extend_from_slice(&(kind as u16).to_be_bytes());
+            encoded.extend_from_slice(&payload[..length]);
+            self.journal.append_device_request(pending.key, &encoded)?;
+            pending.device_request = Some(encoded);
         }
         let binding = self.config.pin.map_or_else(
             || {
@@ -492,6 +546,22 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             ReceiptBinding::Device(device) => wire::ReconcileBinding::Device(device),
         };
         if let Some(terminal) = pending.terminal {
+            let declined = matches!(
+                decode_durable(&terminal.public_result)?,
+                Response::Mutate(wire::PublicReceipt {
+                    outcome: PublicOutcome::Rejected { code: 100.., .. },
+                    ..
+                }) | Response::Commission(wire::PublicReceipt {
+                    outcome: PublicOutcome::Rejected { code: 100.., .. },
+                    ..
+                })
+            );
+            if declined {
+                self.usb.clear_outstanding(pending.key.sequence, digest)?;
+                self.journal
+                    .append_declined(pending.key, terminal.result_digest)?;
+                return decode_durable_response(&terminal.public_result);
+            }
             let result = decode_durable_response(&terminal.public_result)?;
             let observed = self.usb.request(&Request::Reconcile {
                 sequence: pending.key.sequence,
@@ -518,7 +588,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             if observed_digest.into_bytes() != terminal.result_digest {
                 return Err(Error::Protocol);
             }
-            self.acknowledge_reconciled(pending.key, digest, observed_digest)?;
+            self.acknowledge(pending.key, digest, observed_digest)?;
             return Ok(result);
         }
 
@@ -535,9 +605,23 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         let result_digest = match observed.outcome {
             PublicOutcome::Committed { result_digest, .. }
             | PublicOutcome::Rejected { result_digest, .. } => result_digest,
-            PublicOutcome::Pending | PublicOutcome::Unknown => {
-                return Err(Error::Usb(UsbError::Busy));
+            PublicOutcome::Unknown => {
+                let encoded = pending.device_request.as_deref().ok_or(Error::Protocol)?;
+                let (kind, payload) = encoded.split_at_checked(2).ok_or(Error::Protocol)?;
+                let kind = wire::Kind::try_from(u16::from_be_bytes([kind[0], kind[1]]))
+                    .map_err(|_| Error::Protocol)?;
+                let request = wire::decode_request(kind, payload).map_err(|_| Error::Protocol)?;
+                let mutation = match request {
+                    Request::Mutate(mutation) | Request::Commission(mutation) => mutation,
+                    _ => return Err(Error::Protocol),
+                };
+                if mutation_key(&mutation) != pending.key {
+                    return Err(Error::Protocol);
+                }
+                self.usb.clear_outstanding(pending.key.sequence, digest)?;
+                return self.submit_mutation(mutation);
             }
+            PublicOutcome::Pending => return Err(Error::Usb(UsbError::Busy)),
             PublicOutcome::Stale => return Err(Error::Protocol),
         };
         let original = original_terminal_response(&pending, observed)?;
@@ -550,20 +634,26 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         durable.extend_from_slice(&payload[..length]);
         self.journal
             .append_terminal(pending.key, result_digest.into_bytes(), &durable)?;
-        self.acknowledge_reconciled(pending.key, digest, result_digest)?;
+        self.acknowledge(pending.key, digest, result_digest)?;
         Ok(value)
     }
 
-    fn acknowledge_reconciled(
+    fn acknowledge(
         &mut self,
         key: MutationKey,
         digest: Digest32,
         result_digest: Digest32,
     ) -> Result<(), Error> {
-        let ack = self.usb.request(&Request::ReceiptAck {
-            sequence: key.sequence,
-            result_digest,
-        })?;
+        let ack = self
+            .usb
+            .request(&Request::ReceiptAck {
+                sequence: key.sequence,
+                result_digest,
+            })
+            .map_err(|_| UsbError::Uncertain {
+                sequence: key.sequence,
+                digest,
+            })?;
         match ack.decode().map_err(|_| Error::Protocol)? {
             Response::ReceiptAck(response) if response.result.is_ok() => {
                 self.usb.clear_outstanding(key.sequence, digest)?;
@@ -647,6 +737,35 @@ fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
         return Err(Error::ModeDenied);
     }
     Ok(())
+}
+
+fn validate_repeated_intent(bytes: &[u8], request: &Envelope) -> Result<(), Error> {
+    let saved: Envelope = serde_json::from_slice(bytes).map_err(|_| Error::Protocol)?;
+    if saved.version != request.version
+        || saved.action != request.action
+        || saved.operation_id != request.operation_id
+        || saved.expected_revision != request.expected_revision
+        || saved.arguments != request.arguments
+    {
+        return Err(Error::OperationConflict);
+    }
+    Ok(())
+}
+
+fn mutation_key(mutation: &Mutation) -> MutationKey {
+    MutationKey {
+        sequence: mutation.sequence(),
+        operation_id: mutation.operation_id().into_bytes(),
+        request_digest: mutation.usb_digest().into_bytes(),
+    }
+}
+
+fn mutation_request(mutation: Mutation) -> Request {
+    if matches!(mutation.binding(), Binding::Commission { .. }) {
+        Request::Commission(mutation)
+    } else {
+        Request::Mutate(mutation)
+    }
 }
 
 fn validate_reconciled_receipt(

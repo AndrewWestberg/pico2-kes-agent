@@ -153,6 +153,9 @@ impl Reply {
 }
 
 pub trait DeviceTransport {
+    /// Check connectivity and admission before recording a new durable intent.
+    fn prepare_mutation(&mut self) -> Result<(), Error>;
+
     fn request(&mut self, request: &Request) -> Result<Reply, Error>;
 
     fn clear_outstanding(
@@ -235,11 +238,13 @@ impl Transport {
         sequence: u64,
         digest: kes_core::identity::Digest32,
     ) -> Result<(), Error> {
-        if self.outstanding == Some(Outstanding { sequence, digest }) {
-            self.outstanding = None;
-            Ok(())
-        } else {
-            Err(Error::Busy)
+        match self.outstanding {
+            None => Ok(()),
+            Some(outstanding) if outstanding == (Outstanding { sequence, digest }) => {
+                self.outstanding = None;
+                Ok(())
+            }
+            Some(_) => Err(Error::Busy),
         }
     }
 
@@ -285,7 +290,7 @@ impl Transport {
                 }
                 Ok(reply)
             }
-            Err(Error::Io(_)) | Err(Error::Usb(_)) if admitted => {
+            Err(_) if admitted => {
                 let outstanding = mutation.expect("admitted mutation");
                 self.outstanding = Some(outstanding);
                 Err(Error::Uncertain {
@@ -373,6 +378,14 @@ impl Transport {
 }
 
 impl DeviceTransport for Transport {
+    fn prepare_mutation(&mut self) -> Result<(), Error> {
+        if self.outstanding.is_some() {
+            Err(Error::Busy)
+        } else {
+            Ok(())
+        }
+    }
+
     fn request(&mut self, request: &Request) -> Result<Reply, Error> {
         Self::request(self, request)
     }

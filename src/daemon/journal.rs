@@ -132,10 +132,18 @@ impl Journal {
     /// Opens or creates an owner-only regular journal without following the
     /// final symlink. Existing bytes are validated before any append.
     pub fn open(path: &Path) -> Result<Self, Error> {
-        validate_parent(path)?;
+        Self::open_with_sync(path, File::sync_all)
+    }
+
+    fn open_with_sync(
+        path: &Path,
+        sync: impl FnOnce(&File) -> io::Result<()>,
+    ) -> Result<Self, Error> {
+        let parent = validate_parent(path)?;
+        let name = path.file_name().ok_or(Error::UnsafePath)?;
         let fd = fs::openat(
-            CWD,
-            path,
+            &parent,
+            name,
             OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::APPEND,
             Mode::from_raw_mode(0o600),
         )
@@ -149,6 +157,7 @@ impl Journal {
         if metadata.len() > JOURNAL_LIMIT {
             return Err(Error::Full);
         }
+        sync(&parent)?;
 
         let (records, valid_length, torn) = read_records(&mut file, metadata.len())?;
         if torn {
@@ -447,19 +456,27 @@ impl Journal {
     }
 }
 
-fn validate_parent(path: &Path) -> Result<(), Error> {
+fn validate_parent(path: &Path) -> Result<File, Error> {
     let parent = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let metadata = std::fs::metadata(parent)?;
+    let fd = fs::openat(
+        CWD,
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let parent = File::from(fd);
+    let metadata = parent.metadata()?;
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o022 != 0
     {
         return Err(Error::UnsafePath);
     }
-    Ok(())
+    Ok(parent)
 }
 
 fn checked_record_len(payload: &[u8]) -> Result<u64, Error> {
@@ -583,6 +600,21 @@ mod tests {
             operation_id: [sequence as u8; 16],
             request_digest: [sequence as u8 + 1; 32],
         }
+    }
+
+    #[test]
+    fn directory_sync_failure_prevents_admission_and_retry_reads_journal() {
+        let dir = TestDir::new();
+        let path = dir.0.join("journal");
+        let result = Journal::open_with_sync(&path, |_| Err(io::Error::other("directory sync")));
+        assert!(matches!(result, Err(Error::Io(error)) if error.to_string() == "directory sync"));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+
+        let mut journal = Journal::open(&path).unwrap();
+        journal.append_intent(key(0), b"intent").unwrap();
+        drop(journal);
+        let journal = Journal::open(&path).unwrap();
+        assert_eq!(journal.pending().unwrap().intent, b"intent");
     }
 
     #[test]

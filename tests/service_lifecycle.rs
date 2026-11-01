@@ -85,6 +85,66 @@ fn current_group() -> String {
 }
 
 #[test]
+fn absent_device_mutation_does_not_leave_recovery_pending_across_restart() {
+    use pico2_kes_agent::{cli::client, daemon::journal::Journal};
+    use serde_json::{Value, json};
+
+    let fixture = Fixture::new();
+    let request = serde_json::to_vec(&json!({
+        "version": 1,
+        "request_id": "11".repeat(16),
+        "operation_id": "22".repeat(16),
+        "expected_revision": 0,
+        "action": "device.commission",
+        "arguments": { "usb_serial": "absent-board0001" }
+    }))
+    .unwrap();
+    for _ in 0..2 {
+        let mut daemon = Daemon(
+            Command::new(env!("CARGO_BIN_EXE_pico2-kes-agentd"))
+                .args([
+                    "--config",
+                    fixture.root.join("config.json").to_str().unwrap(),
+                    "--commission",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !fixture.socket().exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let response: Value =
+            serde_json::from_slice(&client::request(&fixture.socket(), &request).unwrap()).unwrap();
+        assert_eq!(response["error"]["code"], "device_unavailable");
+        let status: Value = serde_json::from_slice(
+            &client::request(
+                &fixture.socket(),
+                &serde_json::to_vec(&json!({
+                    "version": 1, "request_id": "33".repeat(16),
+                    "action": "device.status", "arguments": {}
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["result"]["health"], "disconnected");
+        // SAFETY: the PID belongs to the retained child.
+        assert_eq!(
+            unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },
+            0
+        );
+        assert!(daemon.0.wait().unwrap().success());
+        let journal = Journal::open(&fixture.root.join("state/operations.journal")).unwrap();
+        assert!(journal.pending().is_none());
+        assert_eq!(journal.next_sequence(), 0);
+    }
+}
+
+#[test]
 fn seventeenth_idle_management_connection_is_rejected_busy_before_admission() {
     let fixture = Fixture::new();
     let child = Command::new(env!("CARGO_BIN_EXE_pico2-kes-agentd"))
