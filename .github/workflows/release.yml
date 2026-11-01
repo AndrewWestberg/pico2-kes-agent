@@ -54,6 +54,10 @@ jobs:
           PICO2_REQUIRE_FIRMWARE_AUTHORITY: '1'
         run: |
           set -euo pipefail
+          ulimit -c 0
+          sudo swapoff -a
+          python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
+          sudo prlimit --pid "$$" --memlock=268435456:268435456
           python3 -c 'import runpy; runpy.run_path("tools/firmware.py")["verify_authority"]("security")'
           cargo test --locked -p kes-protocol
           cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore
@@ -64,6 +68,7 @@ jobs:
           PICO2_PERMISSIONS_HELPER: ${{ github.workspace }}/target/otp-permissions/pico2-otp-permissions.elf
         run: |
           set -euo pipefail
+          ulimit -c 0
           python3 -m unittest discover -s tools/tests -p 'test_*.py'
           cp target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware release-build/pico2-kes-firmware.elf
           cp target/otp-permissions/pico2-otp-permissions.elf release-build/pico2-otp-permissions.elf
@@ -101,6 +106,9 @@ jobs:
           path: release-build/
       - name: Prepare native verifier runtime
         run: |
+          set -euo pipefail
+          sudo swapoff -a
+          python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
           sudo apt-get update
           sudo apt-get install -y libusb-1.0-0 gpg openssl
           chmod +x release-build/toolchain/bin/picotool
@@ -113,6 +121,7 @@ jobs:
         run: |
           set +x
           set -euo pipefail
+          ulimit -c 0
           umask 077
           PRIVATE_DIR="$(mktemp -d /dev/shm/pico2-signing.XXXXXXXX)"
           trap 'rm -rf -- "$PRIVATE_DIR"' EXIT HUP INT TERM
