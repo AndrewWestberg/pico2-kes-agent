@@ -852,6 +852,10 @@ Create a new recipient on the backup host using new paths, transfer only its pub
 
 After timeout, uncertain/pending status, or a lost response, retain the original receipt, operation ID, target, revision, and digest. Do not submit a new operation merely because the result is unknown.
 
+Reconciliation works even when the original CLI response was lost: the daemon matches the saved operation ID, action, arguments and expected revision against its journal. A completed exact retry returns the original durable result without another device mutation; a pending exact retry resumes reconciliation. Reusing the operation ID with changed inputs is rejected as `operation_conflict`.
+
+A device missing at the initial admission check is rejected without creating a pending journal entry. Once the request is journaled, a transport failure remains uncertain. After reconnect, if the device has no record of that request, recovery resubmits the saved request with its original sequence and digest; it does not create a replacement operation. Preserve the same receipt and configuration through recovery.
+
 **Primary — same original receipt:**
 
 ```bash
@@ -940,7 +944,7 @@ Uninstall preserves configuration, state, service account/group, and device stor
 
 ### Journal capacity or corruption
 
-Preserve the public journal under `/var/lib/pico2-kes-agent`; it reconstructs management outcomes and pool bindings. Admission has a **64-MiB bound**, with no documented compaction CLI. Do not delete/truncate it to clear an error. Stop mutations, preserve diagnostics and cleanly stopped copies, and obtain a reviewed recovery procedure.
+Preserve the public journal under `/var/lib/pico2-kes-agent`; it reconstructs management outcomes and pool bindings. The daemon syncs the journal's parent directory before admitting mutations and syncs each appended record before advancing the handoff. Admission has a **64-MiB bound**, with no documented compaction CLI. Do not delete/truncate it to clear an error. Stop mutations, preserve diagnostics and cleanly stopped copies, and obtain a reviewed recovery procedure.
 
 ## Offline restoration and failover
 

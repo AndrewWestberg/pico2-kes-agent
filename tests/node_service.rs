@@ -202,7 +202,9 @@ fn lost_confirmation_and_metadata_commits_do_not_republish() {
     let first = key(&mut first_socket);
     drop(first_socket); // sent, but confirmation was lost
     rig.refresh_same_period().unwrap();
+    let recipient = rig.recipient_public_key();
     rig.commit_metadata_only().unwrap();
+    assert_ne!(rig.recipient_public_key(), recipient);
     rig.poll_status().unwrap();
     let repeated = key(&mut connect(&rig));
     assert_eq!(repeated, first);
@@ -220,8 +222,10 @@ fn reconnect_requires_fresh_context_and_unavailability_never_sends_drop() {
     let first = key(&mut s);
     s.write_all(&0u32.to_be_bytes()).unwrap();
     rig.disconnect_usb();
+    assert_eq!(rig.current_usb_result(), "disconnected");
     no_bytes(&mut s);
     rig.reconnect_usb_without_context().unwrap();
+    assert_eq!(rig.current_usb_result(), "unavailable");
     let mut next = connect(&rig);
     no_bytes(&mut next);
     rig.refresh_context().unwrap();
@@ -236,6 +240,7 @@ fn regressive_context_after_reconnect_withholds_publication() {
     rig.advance_period(1, first.0 + 1).unwrap();
     let advanced = key(&mut connect(&rig));
     rig.disconnect_usb();
+    rig.reconnect_usb_without_context().unwrap();
     let mut next = connect(&rig);
     assert_eq!(
         rig.accept_regressive_context(),

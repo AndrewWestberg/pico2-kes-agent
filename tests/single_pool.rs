@@ -212,7 +212,7 @@ fn dispatched_timeout_is_uncertain_and_reconciles_same_generation() {
         first["result"]["generation_id"],
         again["result"]["generation_id"]
     );
-    assert_eq!(rig.staged_generation_count(), 1);
+    assert_eq!(rig.generation_count(), 1);
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn unattended_recovery_reconciles_pending_result_before_resuming() {
     let reconciled = rig.reconcile_pending_unattended().unwrap().unwrap();
     assert_eq!(reconciled["outcome"]["result"]["kind"], "generated");
     assert!(!rig.journal_state().1);
-    assert_eq!(rig.staged_generation_count(), 1);
+    assert_eq!(rig.generation_count(), 1);
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn lost_acknowledgment_reply_reconciles_completed_mutation() {
 
     let reconciled = rig.reconcile_cli();
     assert_eq!(reconciled.exit_code, 0);
-    assert_eq!(rig.staged_generation_count(), 1);
+    assert_eq!(rig.generation_count(), 1);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn lost_generation_and_activation_replies_reconcile_with_stable_export() {
     let generated: Value = serde_json::from_slice(&rig.reconcile_cli().stdout).unwrap();
     let generation_id = generated["result"]["generation_id"].as_str().unwrap();
     let generation = rig.generation_from_id(generation_id);
-    assert_eq!(rig.staged_generation_count(), 1);
+    assert_eq!(rig.generation_count(), 1);
 
     let first_export = rig.export_cli(&generation, "artifact-first.bin");
     assert_eq!(first_export.exit_code, 0);
@@ -304,6 +304,7 @@ fn generate_after_staged_activation_preserves_current_and_exports() {
     // The fixture derives context sequence from period; start a fresh lease
     // before refreshing at the same period.
     rig.disconnect_usb();
+    rig.reconnect_usb_without_context().unwrap();
     rig.refresh_context().unwrap();
     assert_eq!(rig.current_usb_generation(), b.id);
 
@@ -647,7 +648,8 @@ fn recipient_rotation_is_future_only_and_private_keys_stay_off_primary() {
 fn generation_is_not_delivered_until_matching_certificate_and_fresh_context() {
     let mut rig = TestRig::commissioned_pool();
     let generation = rig.generate_with_cli().unwrap();
-    assert_eq!(rig.pool_status()["generation_id"], generation.id);
+    let status: Value = serde_json::from_slice(&rig.pool_status_cli().stdout).unwrap();
+    assert_eq!(status["result"]["active"]["generation_id"], generation.id);
     assert_eq!(rig.current_usb_result(), "unavailable");
     let wrong_certificate = rig.certificate_for_other_generation();
     assert_eq!(
@@ -666,7 +668,23 @@ fn generation_is_not_delivered_until_matching_certificate_and_fresh_context() {
     rig.refresh_context().unwrap();
     assert_eq!(rig.current_usb_result(), "key");
     assert_eq!(rig.current_usb_generation(), generation.id);
-    assert_eq!(rig.current_usb_certificate(), certificate);
+    let encoded: Vec<u8> = certificate
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let installed = kes_core::certificate::OperationalCertificate::decode(&encoded).unwrap();
+    let payload = rig.current_usb_payload();
+    let kes_protocol::usb::CurrentResult::Key { certificate, .. } =
+        kes_protocol::usb::decode_current_response(&payload)
+            .unwrap()
+            .result
+    else {
+        panic!("current key unavailable");
+    };
+    assert_eq!(certificate, installed.certificate().direct_bytes());
 }
 
 #[test]

@@ -798,6 +798,18 @@ impl Emulator {
 }
 
 impl DeviceTransport for Emulator {
+    fn prepare_mutation(&mut self) -> Result<(), UsbError> {
+        if self.disconnected {
+            Err(UsbError::NotFound)
+        } else if self.wrong_identity {
+            Err(UsbError::IdentityMismatch)
+        } else if self.outstanding.is_some() {
+            Err(UsbError::Busy)
+        } else {
+            Ok(())
+        }
+    }
+
     fn request(&mut self, request: &Request) -> Result<Reply, UsbError> {
         if self.disconnected {
             return Err(UsbError::NotFound);
@@ -845,11 +857,10 @@ impl DeviceTransport for Emulator {
                 }))?;
                 if self.lose_next_ack_reply {
                     self.lose_next_ack_reply = false;
-                    let (_, digest) = self.outstanding.ok_or(UsbError::Protocol)?;
-                    return Err(UsbError::Uncertain {
-                        sequence: *sequence,
-                        digest,
-                    });
+                    return Err(UsbError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "acknowledgment reply lost",
+                    )));
                 }
                 Ok(response)
             }
@@ -994,11 +1005,13 @@ impl DeviceTransport for Emulator {
     }
 
     fn clear_outstanding(&mut self, sequence: u64, digest: Digest32) -> Result<(), UsbError> {
-        if self.outstanding == Some((sequence, digest)) {
-            self.outstanding = None;
-            Ok(())
-        } else {
-            Err(UsbError::Busy)
+        match self.outstanding {
+            None => Ok(()),
+            Some(current) if current == (sequence, digest) => {
+                self.outstanding = None;
+                Ok(())
+            }
+            Some(_) => Err(UsbError::Busy),
         }
     }
 }
@@ -1022,8 +1035,6 @@ pub struct TestRig {
     cold: SigningKey,
     target: Option<PoolTarget>,
     host_cut: Option<Cut>,
-    generation: Option<GenerationId>,
-    certificate: Option<Vec<u8>>,
     period: u64,
     timestamp: u64,
 }
@@ -1067,8 +1078,6 @@ impl TestRig {
         let network = network();
         let mut usb = Emulator::blank(SERIAL);
         let mut target = None;
-        let mut generation = None;
-        let mut certificate = None;
         let pin = if with_pool {
             let record = usb.device_mut().commission(&commission_request()).unwrap();
             usb.handoff = Handoff::commissioned(*record.public(), 1);
@@ -1104,8 +1113,6 @@ impl TestRig {
                 usb.device_mut()
                     .current(pool_target.pool, pool_target.incarnation, 100)
                     .unwrap();
-                generation = Some(generated);
-                certificate = Some(cert.encoded().to_vec());
             }
             let identity = usb.device().identity().unwrap().enrollment_record();
             Some(IdentityPin {
@@ -1160,8 +1167,6 @@ impl TestRig {
             cold,
             target,
             host_cut: None,
-            generation,
-            certificate,
             period: 0,
             timestamp: if timestamp == 0 { 1_000 } else { timestamp },
         };
@@ -1196,6 +1201,63 @@ impl TestRig {
         let mut state = self.state.lock().unwrap();
         state.config.pools = bindings;
         state.journal = Journal::open(&self.root.join("operations.journal")).unwrap();
+    }
+
+    pub fn reopen_journal(&self) {
+        self.state.lock().unwrap().journal =
+            Journal::open(&self.root.join("operations.journal")).unwrap();
+    }
+
+    pub fn stage_unsent_generation(&self, operation: &str, include_device_request: bool) {
+        let target = self.target.unwrap();
+        let operation_id = OperationId::parse_hex(operation).unwrap();
+        let mut state = self.state.lock().unwrap();
+        let revision = state
+            .usb
+            .device_mut()
+            .pool_status(target.pool)
+            .unwrap()
+            .revision;
+        let mutation = Mutation::managed(
+            state.config.pin.unwrap().device,
+            state.journal.next_sequence(),
+            operation_id,
+            revision,
+            Action::Generate { target },
+        )
+        .unwrap();
+        let request = json!({
+            "version": 1,
+            "request_id": "11111111111111111111111111111111",
+            "action": "generation.create",
+            "arguments": {
+                "pool_id": target.pool.to_string(),
+                "incarnation_id": target.incarnation.to_string(),
+            },
+            "operation_id": operation_id.to_string(),
+            "expected_revision": revision,
+        });
+        cli::receipt::create(&self.receipt, request.clone()).unwrap();
+        let key = MutationKey {
+            sequence: mutation.sequence(),
+            operation_id: *operation_id.as_bytes(),
+            request_digest: *mutation.usb_digest().as_bytes(),
+        };
+        state
+            .journal
+            .append_intent(key, &serde_json::to_vec(&request).unwrap())
+            .unwrap();
+        if include_device_request {
+            let mut payload = [0; wire::MAX_PAYLOAD];
+            let (kind, len) =
+                wire::encode_request(&Request::Mutate(mutation), &mut payload).unwrap();
+            let mut encoded = Vec::with_capacity(len + 2);
+            encoded.extend_from_slice(&(kind as u16).to_be_bytes());
+            encoded.extend_from_slice(&payload[..len]);
+            state.journal.append_device_request(key, &encoded).unwrap();
+        }
+        state.journal = Journal::open(&self.root.join("operations.journal")).unwrap();
+        state.usb.outstanding = Some((mutation.sequence(), mutation.usb_digest()));
     }
 
     pub fn journal_state(&self) -> (u64, bool) {
@@ -1430,7 +1492,6 @@ impl TestRig {
             .ok_or(RigError("generation_failed"))?
             .to_owned();
         let raw = GenerationId::parse_hex(&id).map_err(|_| RigError("generation_failed"))?;
-        self.generation = Some(raw);
         Ok(Generation { id, raw })
     }
     pub fn generation_from_id(&self, id: &str) -> Generation {
@@ -1440,11 +1501,17 @@ impl TestRig {
         }
     }
 
-    pub fn pool_status(&mut self) -> Value {
-        json!({ "generation_id": self.generation.map(|id| id.to_string()) })
-    }
-    pub fn staged_generation_count(&mut self) -> usize {
-        usize::from(self.state.lock().unwrap().usb.last_generation.is_some())
+    pub fn generation_count(&mut self) -> usize {
+        let target = self.target.unwrap();
+        let generations = self
+            .state
+            .lock()
+            .unwrap()
+            .usb
+            .device_mut()
+            .pool_generations(target.pool)
+            .unwrap();
+        usize::from(generations.active.is_some()) + usize::from(generations.staged.is_some())
     }
     pub fn read_file(&self, name: &str) -> Vec<u8> {
         fs::read(self.root.join(name)).unwrap()
@@ -1639,6 +1706,9 @@ impl TestRig {
     pub fn disconnect_device(&self) {
         self.state.lock().unwrap().usb.disconnected = true;
     }
+    pub fn reconnect_device(&self) {
+        self.state.lock().unwrap().usb.disconnected = false;
+    }
     pub fn stale_hello(&self) {
         self.state.lock().unwrap().usb.stale_hello = true;
     }
@@ -1665,7 +1735,6 @@ impl TestRig {
             .public_key(target.pool, generation.raw)
             .unwrap();
         let cert = signed_certificate(&self.cold, vkey, 1, 0);
-        self.certificate = Some(cert.encoded().to_vec());
         hex(cert.encoded())
     }
     pub fn install_certificate_cli(&self, generation: &str, certificate: &str) -> CliResult {
@@ -1715,6 +1784,9 @@ impl TestRig {
         let target = self.target.ok_or(RigError("pool_unknown"))?;
         self.timestamp = self.timestamp.saturating_add(1);
         let mut state = self.state.lock().unwrap();
+        if state.usb.disconnected {
+            return Err(RigError("usb_disconnected"));
+        }
         accept_context(
             state.usb.device_mut(),
             target,
@@ -1736,13 +1808,24 @@ impl TestRig {
     }
     pub fn current_usb_result(&mut self) -> &'static str {
         let target = self.target.unwrap();
-        match self.state.lock().unwrap().usb.device_mut().current(
-            target.pool,
-            target.incarnation,
-            100,
-        ) {
-            Ok(_) => "key",
-            Err(_) => "unavailable",
+        let reply = match self
+            .state
+            .lock()
+            .unwrap()
+            .usb
+            .request(&Request::Current { target })
+        {
+            Ok(reply) => reply,
+            Err(UsbError::NotFound) => return "disconnected",
+            Err(error) => panic!("current request failed: {error:?}"),
+        };
+        match wire::decode_current_response(reply.payload())
+            .unwrap()
+            .result
+        {
+            wire::CurrentResult::Key { .. } => "key",
+            wire::CurrentResult::Unavailable { .. } => "unavailable",
+            wire::CurrentResult::Drop => "drop",
         }
     }
     pub fn current_usb_generation(&mut self) -> String {
@@ -1753,13 +1836,15 @@ impl TestRig {
             _ => panic!("current key unavailable"),
         }
     }
-    pub fn current_usb_certificate(&mut self) -> String {
-        self.certificate.as_ref().map(|bytes| hex(bytes)).unwrap()
-    }
     pub fn current_usb_payload(&self) -> Vec<u8> {
         let target = self.target.unwrap();
         let mut state = self.state.lock().unwrap();
-        state.usb.current(target).unwrap().payload().to_vec()
+        state
+            .usb
+            .request(&Request::Current { target })
+            .unwrap()
+            .payload()
+            .to_vec()
     }
 
     pub fn advance_period(&mut self, amount: u64, timestamp: u64) -> Result<(), RigError> {
@@ -1833,7 +1918,13 @@ impl TestRig {
         self.publish_current()
     }
     pub fn commit_metadata_only(&mut self) -> Result<(), RigError> {
-        Ok(())
+        self.state
+            .lock()
+            .unwrap()
+            .usb
+            .device_mut()
+            .set_recipient([4; 32])
+            .map_err(|_| RigError("metadata_failed"))
     }
     pub fn poll_status(&mut self) -> Result<(), RigError> {
         let target = self.target.unwrap();
@@ -1847,10 +1938,14 @@ impl TestRig {
             .map_err(|_| RigError("status_failed"))
     }
     pub fn disconnect_usb(&mut self) {
-        self.state.lock().unwrap().usb.device_mut().reconnect();
+        let mut state = self.state.lock().unwrap();
+        state.usb.disconnected = true;
+        state.usb.device_mut().reconnect();
+        drop(state);
         self.subscription.as_ref().unwrap().suspend();
     }
     pub fn reconnect_usb_without_context(&mut self) -> Result<(), RigError> {
+        self.state.lock().unwrap().usb.disconnected = false;
         Ok(())
     }
     pub fn accept_regressive_context(&mut self) -> Result<(), LifecycleError> {
@@ -2026,6 +2121,9 @@ fn management_error(
     let (outcome, code, digest) = match error {
         pico2_kes_agent::daemon::management::Error::ModeDenied => {
             ("rejected", "permission_denied", None)
+        }
+        pico2_kes_agent::daemon::management::Error::OperationConflict => {
+            ("rejected", "operation_conflict", None)
         }
         pico2_kes_agent::daemon::management::Error::ArtifactRetired => {
             ("rejected", "artifact_retired", None)

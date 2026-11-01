@@ -188,6 +188,15 @@ impl RuntimeTransport {
 }
 
 impl DeviceTransport for RuntimeTransport {
+    fn prepare_mutation(&mut self) -> Result<(), usb::Error> {
+        self.ensure_connected()?;
+        if self.has_outstanding() {
+            Err(usb::Error::Busy)
+        } else {
+            Ok(())
+        }
+    }
+
     fn request(&mut self, request: &Request) -> Result<usb::Reply, usb::Error> {
         self.ensure_connected()?;
         let mutation = match request {
@@ -213,16 +222,17 @@ impl DeviceTransport for RuntimeTransport {
     }
 
     fn clear_outstanding(&mut self, sequence: u64, digest: Digest32) -> Result<(), usb::Error> {
-        self.inner
-            .as_mut()
-            .ok_or(usb::Error::NotFound)?
-            .clear_outstanding(sequence, digest)?;
-        if self.outstanding == Some((sequence, digest)) {
-            self.outstanding = None;
-            Ok(())
-        } else {
-            Err(usb::Error::Busy)
+        if self
+            .outstanding
+            .is_some_and(|pending| pending != (sequence, digest))
+        {
+            return Err(usb::Error::Busy);
         }
+        if let Some(inner) = &mut self.inner {
+            inner.clear_outstanding(sequence, digest)?;
+        }
+        self.outstanding = None;
+        Ok(())
     }
 }
 
@@ -765,6 +775,12 @@ fn error_response(request_id: Option<&str>, error: &management::Error) -> Vec<u8
         management::Error::Protocol | management::Error::InvalidInput => {
             ("rejected", "invalid_input", "request is invalid", None)
         }
+        management::Error::OperationConflict => (
+            "rejected",
+            "operation_conflict",
+            "operation ID was already used for a different request",
+            None,
+        ),
         management::Error::ModeDenied => (
             "rejected",
             "permission_denied",
@@ -890,6 +906,10 @@ mod tests {
     }
 
     impl DeviceTransport for FakeTransport {
+        fn prepare_mutation(&mut self) -> Result<(), usb::Error> {
+            panic!("publication polling must not prepare a management mutation");
+        }
+
         fn request(&mut self, request: &wire::Request) -> Result<Reply, usb::Error> {
             self.seen.push(match request {
                 wire::Request::Context {
