@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "purpose": "pico2-kes-firmware-release-v1",
+  "tag": "v0.1.0-rc.11",
+  "commit": "84df698978d37256de1bdf85cec940022d32ceaa",
+  "profile": "rp2350-signed-msd-v1",
+  "bootkey_sha256": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+  "firmware_region": {
+    "start": 268435456,
+    "end": 269484032
+  },
+  "state_region": {
+    "start": 269484032,
+    "end": 271613952
+  },
+  "storage_version": 2,
+  "usb_protocol_major": 1,
+  "artifacts": [
+    {
+      "name": "pico2-kes-firmware.signed.elf",
+      "size_bytes": 459901,
+      "sha256": "4a14e7c0e6b995bca7ff6baf64f76a4c33f7963d015b82180b54c0343ff69193"
+    },
+    {
+      "name": "pico2-kes-firmware.signed.uf2",
+      "size_bytes": 713216,
+      "sha256": "55fc5f7e461c0249a0360a3ea826f12477426ab7ef1b6d46d5e0a79b0f0cb2bb"
+    },
+    {
+      "name": "pico2-otp-permissions.elf",
+      "size_bytes": 316068,
+      "sha256": "79b2e3844431f33267ff0958e1066faca7014ea0fc3045b211cb3317b0c64f97"
+    },
+    {
+      "name": "firmware.py",
+      "size_bytes": 82725,
+      "sha256": "1bc710ebb6ae5770552e13476f887a0a2a3f117005793b7f2e0d8e94c1046d49"
+    },
+    {
+      "name": "otp-policy.json",
+      "size_bytes": 1411,
+      "sha256": "529c02f0867f84764ded185b7830ad85ca73653ba3dc1a6bd0aec75322be05c4"
+    },
+    {
+      "name": "firmware-signing-public.pem",
+      "size_bytes": 174,
+      "sha256": "fbc03de5d416dff67163791a5ded88ceb05a95a080d6b92de219511e745180c8"
+    },
+    {
+      "name": "firmware-key.json",
+      "size_bytes": 373,
+      "sha256": "223c0a0cbf97a8c19b1850333863da4f1cc8423f7e46d82531ae47fb565e8ced"
+    },
+    {
+      "name": "firmware-key.json.asc",
+      "size_bytes": 833,
+      "sha256": "89eb2e22ca4ec93cd3ff633615be69fd51e62b502f1c528e2455332fd2129e76"
+    },
+    {
+      "name": "release-authority.asc",
+      "size_bytes": 10020,
+      "sha256": "f41ed952f1ad4ba2b265c00dbe2df2b030b1b28fcef07c93eff81984074fcb68"
+    }
+  ]
+}

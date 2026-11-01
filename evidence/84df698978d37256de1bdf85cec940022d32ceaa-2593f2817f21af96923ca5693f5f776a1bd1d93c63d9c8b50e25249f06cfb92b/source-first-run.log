@@ -1,0 +1,193 @@
+   Compiling kes-core v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.48s
+     Running unittests src/lib.rs (target/debug/deps/kes_core-b90ebe34d505604b)
+
+running 42 tests
+test device::tests::commissioning_requires_verified_blank_and_sequence_zero ... ok
+test directory::tests::all_64_slots_progress_once_per_round_and_reenrollment_stays_bounded ... ok
+test identity::tests::bounds_and_network_binding ... ok
+test generation::tests::generation_requires_matching_committed_artifact ... ok
+test identity::tests::canonical_identifiers ... ok
+test kes::tests::failed_entropy_leaves_no_live_key ... ok
+test lifecycle::tests::configuration_v2_round_trips_without_a_deletion ... ok
+test generation::tests::auto_activates_only_when_active_slot_is_empty ... ok
+test generation::tests::never_overwrites_staged_implicitly ... ok
+test identity::tests::pool_blake2b_224_vector ... ok
+test lifecycle::tests::pool_v2_round_trips_discard_recovery_identity ... ok
+test operation::tests::commissioning_binds_serial_and_sequence ... ok
+test operation::tests::commissioning_record_reconstructs_the_lost_terminal_handoff ... ok
+test public_object::tests::rejects_invalid_artifact_lengths ... ok
+test operation::tests::receipt_handoff_blocks_managed_not_autonomous ... ok
+test recovery::tests::deletion_requires_tombstone_before_slot_finalization ... ok
+test operation::tests::retry_binds_exact_derived_arguments_and_live_target ... ok
+test recovery::tests::enrollment_intent_finishes_only_matching_pool_identity ... ok
+test storage::tests::diagnostic_codes_round_trip_and_reject_unknown_values ... ok
+test storage::tests::geometry_proves_maximum_payload_and_public_object_bounds ... ok
+test public_object::tests::object_fits_one_region_and_detects_corruption ... ok
+test recipient::tests::exact_replacement_is_idempotent_but_changed_revision_is_not ... ok
+test operation::tests::durable_handoff_round_trips_idle_pending_and_terminal_states ... ok
+test recipient::tests::rejects_low_order_keys_and_regressive_policy_changes ... ok
+test storage::tests::empty_enrolled_slot_fails_closed ... ok
+test device::tests::commissioned_record_is_bound_and_self_signed ... ok
+test certificate::tests::rejects_noncanonical_trailing_and_tampered_certificates ... ok
+test storage::tests::transaction_writes_object_body_commit_clean_and_recovers ... ok
+test backup::tests::artifact_has_exact_outer_contract_and_is_immutable ... ok
+test backup::tests::refuses_noninitial_or_mismatched_keys ... ok
+test kes::tests::generation_produces_canonical_state_and_one_validated_tree ... ok
+test lifecycle::tests::publication_uses_pool_revision_and_fails_at_timestamp_exhaustion ... ok
+test device::tests::initial_configuration_round_trips_and_rejects_tampering ... ok
+test certificate::tests::history_is_idempotent_monotonic_and_identity_bound ... ok
+test lifecycle::tests::configuration_revision_exhaustion_fails_closed_without_flash_write ... ok
+test lifecycle::tests::deletion_reaches_max_revision_and_timestamp_once ... ok
+test lifecycle::tests::recipient_revision_exhaustion_preserves_durable_state ... ok
+test lifecycle::tests::generation_exhaustion_precedes_entropy_and_flash_writes ... ok
+test lifecycle::tests::deletion_at_config_exhaustion_preserves_directory_and_receipt ... ok
+test lifecycle::tests::legacy_generation_revisions_remain_positive_and_monotonic ... ok
+test certificate::tests::canonical_roundtrip_and_signature_verification ... ok
+test lifecycle::tests::deletion_exhaustion_preserves_pool_directory_and_prior_receipt ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/crypto_compatibility.rs (target/debug/deps/crypto_compatibility-817828ea956c66d6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/explorer_support.rs (target/debug/deps/explorer_support-35b5c6f82b2fef7e)
+
+running 4 tests
+test deterministic_g3_sequences_respect_pool_length_retry_and_fault_bounds ... ok
+test explorer_exhausts_all_reachable_two_pool_three_period_states ... ok
+test explorer_reports_limits_as_inconclusive_not_complete ... ok
+test finite_alphabet_contains_two_pools_three_periods_retries_faults_and_both_races ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/platform.rs (target/debug/deps/platform-eadeff137da22ea5)
+
+running 6 tests
+test erase_faults_and_validation_read_faults_preserve_ordering ... ok
+test fault_ordering_and_marker_read_boundaries_are_distinct ... ok
+test freshness_uses_monotonic_elapsed_time_and_entropy_failure_wipes ... ok
+test geometry_and_nor_constraints_are_enforced_before_mutation ... ok
+test every_program_and_marker_torn_byte_boundary_is_reproducible ... ok
+test every_erase_torn_byte_boundary_has_the_expected_model_effect ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/recovery.rs (target/debug/deps/recovery-598556a6ad05518a)
+
+running 39 tests
+test unauthenticated_commit_marker_cannot_authorize_deletion ... ok
+test durable_handoff_sequence_and_receipt_state_survive_device_reboot ... ok
+test corrupt_pool_is_quarantined_but_corrupt_shared_configuration_stops_device ... ok
+test deletion_timestamp_can_reach_max_and_uses_pool_revision ... ok
+test deletion_terminal_publication_survives_reboot_for_receipt_recovery ... ok
+test duplicate_authenticated_pool_ids_are_not_deletion_targets ... ok
+test pool_floor_is_durable_incarnation_local_and_equal_refresh_does_not_write ... ok
+test future_certificate_installed_after_context_survives_reboot_and_releases_at_start ... ok
+test context_before_certificate_start_withholds_key_without_underflow ... ok
+test activation_wins_race_and_late_discard_is_target_not_staged ... ok
+test expired_outage_retires_instead_of_releasing_an_old_key ... ok
+test discard_operation_identity_survives_reboot_for_exact_receipt_recovery ... ok
+test metadata_revision_gap_and_equal_refresh_preserve_publication ... ok
+test certified_staged_generation_activates_at_start_and_survives_reboot ... ok
+test context_entropy_failures_retain_transaction_cause_and_reset_only_storage_diagnostic ... ok
+test discard_wins_race_and_stale_retry_preserves_later_staged_generation ... ok
+test context_read_and_transaction_cleanup_report_distinct_first_causes ... ok
+test exhausted_publication_timestamp_preserves_pool_and_other_pool_after_reboot ... ok
+test rotating_one_pool_leaves_unrelated_pool_publication_unchanged ... ok
+test artifact_numbers_increase_after_discard_and_expiry_reboot ... ok
+test artifact_survives_certification_evolution_and_reboot ... ok
+test independently_committed_equal_revisions_and_conflicting_parent_chains_quarantine_pool ... ok
+test committed_successor_with_corrupt_body_never_falls_back_to_predecessor ... ok
+test failed_cleanup_prevents_acknowledgment_and_key_release_until_verified ... ok
+test inventory_is_bounded_ordered_and_read_only ... ok
+test context_object_read_and_retired_erase_keep_their_underlying_flash_errors ... ok
+test deletion_of_damaged_active_or_staged_objects_preserves_other_pool ... ok
+test replenishment_preserves_active_across_region_reuse ... ok
+test full_directory_retains_64_active_and_64_staged_generations ... ok
+test full_capacity_keeps_pool_delivery_isolated_and_recovers_within_budget ... ok
+test raised_floor_never_acknowledges_before_clean_or_recovers_below_acknowledged_value ... ok
+test committed_publication_and_key_recover_atomically_and_retries_reuse_timestamp ... ok
+test every_prepare_commit_clean_boundary_recovers_without_rollback_or_unclean_delivery ... ok
+test discard_reboot_cuts_preserve_active_and_choose_exactly_old_or_discarded_staged ... ok
+test abandoned_candidate_and_orphan_public_objects_are_erased_before_old_key_delivery ... ok
+test commissioning_blank_partial_committed_and_retry_are_distinct ... ok
+test damaged_pool_deletion_faults_recover_before_slot_reuse ... ok
+test replenishment_faults_preserve_promoted_active ... ok
+test directory_intents_recover_before_slot_reuse_for_enroll_and_delete ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.44s
+
+   Doc-tests kes_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling kes-core v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-core)
+   Compiling kes-protocol v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-protocol)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.36s
+     Running unittests src/lib.rs (target/debug/deps/kes_protocol-2dddf733a1e57289)
+
+running 1 test
+test node_service::tests::exact_v2_offer_choice_and_publication_layout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/management.rs (target/debug/deps/management-dc5637c4087d1759)
+
+running 8 tests
+test ids_hex_and_integer_bounds ... ok
+test framing_fragmentation_limits_and_next_frame ... ok
+test outcomes_are_exclusive_and_secrets_not_fields ... ok
+test strict_json_duplicate_escaping_and_numbers ... ok
+test bounded_artifact_and_revision ... ok
+test every_action_and_exact_argument_schema ... ok
+test security_reply_requires_complete_consistent_schema ... ok
+test inventory_response_accepts_capacity_and_rejects_overflow ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/usb.rs (target/debug/deps/usb-1fb4a7607972bea4)
+
+running 21 tests
+test artifact_response_is_targeted_and_bounded ... ok
+test canonical_cbor_rejections ... ok
+test all_kinds_and_surplus_input ... ok
+test bad_crc_and_header_are_rejected_without_resynchronizing ... FAILED
+test commission_serial_and_sequence_bind_digest ... ok
+test crc32c_known_vector ... ok
+test context_exact_target_and_publication_sample_round_trip ... ok
+test context_diagnostics_roundtrip_and_schema ... ok
+test deletion_receipt_preserves_old_target_and_high_water ... ok
+test fragments_and_connection_reset ... ok
+test hello_signature_transcript_includes_nonce_not_signature ... ok
+test enrollment_floor_is_bound_into_usb_digest ... ok
+test every_request_kind_round_trips ... ok
+test rejects_declared_oversize_before_body ... ok
+test pool_inventory_rejects_malformed_responses ... ok
+test stored_publication_and_current_bundle_match ... ok
+test request_binding_and_digest_are_checked ... ok
+test security_status_roundtrip_and_schema_rejection ... ok
+test unknown_request_fields_are_rejected ... ok
+test every_response_kind_round_trips_and_rejects_unknown_fields ... ok
+test pool_inventory_roundtrip_and_boundaries ... ok
+
+failures:
+
+---- bad_crc_and_header_are_rejected_without_resynchronizing stdout ----
+
+thread 'bad_crc_and_header_are_rejected_without_resynchronizing' (4159404) panicked at crates/kes-protocol/tests/usb.rs:62:5:
+assertion failed: matches!(d.feed(&bytes), Err(Error::Kind))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    bad_crc_and_header_are_rejected_without_resynchronizing
+
+test result: FAILED. 20 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p kes-protocol --test usb`

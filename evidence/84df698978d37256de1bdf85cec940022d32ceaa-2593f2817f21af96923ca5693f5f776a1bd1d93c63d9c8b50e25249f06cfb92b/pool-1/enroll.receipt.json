@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "request": {
+    "action": "pool.enroll",
+    "arguments": {
+      "cold_verification_key": "9a14ab40bf0cf21b3996682c4a75f0d3d2fb81aff461e162abc7762d9bb3a4f2",
+      "network": "qualification-lab"
+    },
+    "expected_revision": 23,
+    "operation_id": "61b184ff1014299a228a9f4c020f0c8a",
+    "request_id": "61ed405249bb1815674048b4a50d14dc",
+    "version": 1
+  },
+  "response": {
+    "error": null,
+    "outcome": "success",
+    "request_id": "61ed405249bb1815674048b4a50d14dc",
+    "result": {
+      "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+      "kind": "enrolled",
+      "operation_id": "61b184ff1014299a228a9f4c020f0c8a",
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "request_digest": "5e841b6b93d0f023107e756ec67570d592fb27d8172856ec65f11cf0678f764f",
+      "result_digest": "f9914e7e604edbb342c5e297c53bff9e414564a8ee4ee6a9ddabc5fa24e53c70",
+      "revision": 1,
+      "sequence": 56,
+      "version": 1
+    },
+    "version": 1
+  }
+}

@@ -1,0 +1,10 @@
+--- /home/westbam/pico2-qualification-2p9qdufn/original-host/ordinary.service	2026-10-31 15:00:59.671166134 +0000
++++ /usr/lib/systemd/system/pico2-kes-agentd.service	2026-11-01 20:50:52.541096370 +0000
+@@ -30,7 +30,6 @@
+ ProtectHome=yes
+ ProtectHostname=yes
+ SystemCallFilter=~@clock
+-SystemCallFilter=adjtimex clock_adjtime clock_adjtime64
+ SystemCallErrorNumber=EPERM
+ ProtectKernelTunables=yes
+ ProtectKernelModules=yes

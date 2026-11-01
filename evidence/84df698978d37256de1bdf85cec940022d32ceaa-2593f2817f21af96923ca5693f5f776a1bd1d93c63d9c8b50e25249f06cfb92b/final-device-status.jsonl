@@ -1,0 +1,2 @@
+{"event": "pending", "argv": ["/usr/bin/pico2-kes-agent-cli", "--socket", "/run/kes-qualification-2p9qdufn/management.sock", "--json", "status"], "utc": "2026-11-01T21:17:17.902396+00:00"}
+{"event": "result", "exit_code": 0, "stdout": "{\"error\":null,\"outcome\":\"success\",\"request_id\":\"a3c8bc63e0e825f792515092790d28eb\",\"result\":{\"commissioning_state\":\"committed\",\"device_id\":\"f39127e9e0ab25f8341401048acf629d\",\"health\":\"ready\",\"receipt_pending\":false,\"revision\":26},\"version\":1}\n", "stderr": "", "utc": "2026-11-01T21:17:17.989996+00:00"}

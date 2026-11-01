@@ -1,0 +1,147 @@
+   Compiling kes-protocol v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-protocol)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running unittests src/lib.rs (target/debug/deps/kes_protocol-2dddf733a1e57289)
+
+running 1 test
+test node_service::tests::exact_v2_offer_choice_and_publication_layout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/management.rs (target/debug/deps/management-dc5637c4087d1759)
+
+running 8 tests
+test framing_fragmentation_limits_and_next_frame ... ok
+test ids_hex_and_integer_bounds ... ok
+test strict_json_duplicate_escaping_and_numbers ... ok
+test outcomes_are_exclusive_and_secrets_not_fields ... ok
+test every_action_and_exact_argument_schema ... ok
+test bounded_artifact_and_revision ... ok
+test security_reply_requires_complete_consistent_schema ... ok
+test inventory_response_accepts_capacity_and_rejects_overflow ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/usb.rs (target/debug/deps/usb-1fb4a7607972bea4)
+
+running 21 tests
+test all_kinds_and_surplus_input ... ok
+test canonical_cbor_rejections ... ok
+test artifact_response_is_targeted_and_bounded ... ok
+test bad_crc_and_header_are_rejected_without_resynchronizing ... ok
+test deletion_receipt_preserves_old_target_and_high_water ... ok
+test commission_serial_and_sequence_bind_digest ... ok
+test context_exact_target_and_publication_sample_round_trip ... ok
+test crc32c_known_vector ... ok
+test fragments_and_connection_reset ... ok
+test hello_signature_transcript_includes_nonce_not_signature ... ok
+test enrollment_floor_is_bound_into_usb_digest ... ok
+test context_diagnostics_roundtrip_and_schema ... ok
+test rejects_declared_oversize_before_body ... ok
+test every_request_kind_round_trips ... ok
+test pool_inventory_rejects_malformed_responses ... ok
+test stored_publication_and_current_bundle_match ... ok
+test unknown_request_fields_are_rejected ... ok
+test request_binding_and_digest_are_checked ... ok
+test pool_inventory_roundtrip_and_boundaries ... ok
+test security_status_roundtrip_and_schema_rejection ... ok
+test every_response_kind_round_trips_and_rejects_unknown_fields ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kes_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling kes-core v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-core)
+   Compiling kes-protocol v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-protocol)
+   Compiling pico2-kes-agent v0.1.0 (/home/westbam/Development/pico2-kes-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.02s
+     Running tests/management_recovery.rs (target/debug/deps/management_recovery-e6e8b81f801ad32c)
+
+running 7 tests
+test absent_device_does_not_admit_an_intent_and_same_receipt_can_be_retried ... ok
+test lost_completed_response_replays_original_result_after_restart_without_usb ... ok
+test lost_pending_response_reconciles_original_generation_instead_of_readmitting ... ok
+test failed_ack_persistence_cannot_be_mistaken_for_a_durable_ack ... ok
+test restart_before_usb_dispatch_recovers_both_durable_write_boundaries ... ok
+test operation_id_cannot_be_reused_with_changed_revision_action_or_target ... ok
+test admitted_generation_resumes_before_and_after_device_commit ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/node_service.rs (target/debug/deps/node_service-c28bdf607cef9323)
+
+running 13 tests
+test v2_confirmation_codec_uses_rawutil_u32_not_enum_ordinals ... ok
+test unsupported_version_choice_is_not_a_service_session ... ok
+test lost_confirmation_and_metadata_commits_do_not_republish ... ok
+test uncommitted_candidate_never_consumes_a_publication ... ok
+test committed_publication_reuses_timestamp_and_bundle_across_cuts ... ok
+test overflow_is_rejected_without_wrapping_or_drop ... ok
+test fragmented_handshake_and_exact_four_byte_confirmation_gate_updates ... ok
+test regressive_context_after_reconnect_withholds_publication ... ok
+test durable_expiry_sends_one_drop_with_device_timestamp ... ok
+test reconnect_requires_fresh_context_and_unavailability_never_sends_drop ... ok
+test idle_peer_confirmation_bytes_are_not_consumed ... ok
+test disconnected_idle_clients_release_slots_before_first_publication ... ok
+test disconnected_idle_clients_release_slots_after_confirmation ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.89s
+
+     Running tests/operator_cli.rs (target/debug/deps/operator_cli-a418c54ff532c687)
+
+running 9 tests
+test executable_reports_output_failure ... ok
+test destructive_commands_name_target_and_require_confirmation_before_contact ... ok
+test executable_rejects_direct_usb_without_contacting_a_device ... ok
+test executable_reports_permission_unavailable_and_local_failure_exit_classes ... ok
+test inventory_cli_accepts_full_response_and_rejects_overflow ... ok
+test executable_rejects_forged_or_malformed_security_replies ... ok
+test executable_json_paginates_rejects_and_preserves_uncertain_receipt ... ok
+test security_command_reports_observed_state_and_disallows_mutation_flags ... ok
+test stalled_and_malformed_clients_do_not_block_valid_requests ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/single_pool.rs (target/debug/deps/single_pool-03dc77b711d9779d)
+
+running 21 tests
+test commissioning_mode_rejects_pool_mutations ... ok
+test normal_mode_never_commissions_a_blank_device ... ok
+test commissioning_rejects_wrong_selection_and_nonblank_partial_state ... ok
+test commissioning_status_fails_closed_on_bad_hello_and_disconnect ... ok
+test commissioning_storage_error_after_commit_recovers_identity ... ok
+test pre_admission_rejection_does_not_require_device_acknowledgment ... ok
+test recipient_rotation_is_future_only_and_private_keys_stay_off_primary ... FAILED
+test lost_acknowledgment_reply_reconciles_completed_mutation ... ok
+test attended_commissioning_publishes_pin_and_normal_restart_authenticates_it ... ok
+test inventory_errors_never_report_empty_success ... ok
+test inventory_finds_unbound_pool_without_mutation_and_allows_deletion ... ok
+test unattended_recovery_reconciles_pending_result_before_resuming ... ok
+test status_distinguishes_disconnected_and_recovering_without_secret_fields ... ok
+test dispatched_timeout_is_uncertain_and_reconciles_same_generation ... ok
+test reenrolled_pool_reconstructs_before_applying_current_socket_configuration ... ok
+test retained_artifact_is_stable_and_retirement_is_distinct_from_unknown_generation ... ok
+test commissioning_lost_reply_reconciles_original_identity_and_no_clobber ... ok
+test lost_generation_and_activation_replies_reconcile_with_stable_export ... ok
+test generation_is_not_delivered_until_matching_certificate_and_fresh_context ... ok
+test damaged_public_object_can_be_deleted_through_normal_cli ... ok
+test generate_after_staged_activation_preserves_current_and_exports ... ok
+
+failures:
+
+---- recipient_rotation_is_future_only_and_private_keys_stay_off_primary stdout ----
+
+thread 'recipient_rotation_is_future_only_and_private_keys_stay_off_primary' (4160421) panicked at tests/single_pool.rs:638:89:
+called `Result::unwrap()` on an `Err` value: MemoryProtection
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    recipient_rotation_is_future_only_and_private_keys_stay_off_primary
+
+test result: FAILED. 20 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+error: test failed, to rerun pass `-p pico2-kes-agent --test single_pool`

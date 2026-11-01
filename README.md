@@ -4,6 +4,8 @@ Persistent Cardano KES state on a Raspberry Pi Pico 2, with a Linux daemon and o
 
 One USB-owning daemon supports up to **64 pools**, each with one active and one staged generation and its own KES Service V2 Unix socket. Nodes receive current key material and sign locally.
 
+**Recorded qualification:** [2026-11-01 rc9→rc11 three-pool campaign](evidence/84df698978d37256de1bdf85cec940022d32ceaa-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/qualification-report.md), with [public evidence and future-agent handoff](evidence/84df698978d37256de1bdf85cec940022d32ceaa-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/README.md). Observed inventory/deletion, three negative-boot cases with signed recoveries, device-derived signatures and state-preserving upgrade; **not full security qualification or live-forging proof**. Read the recorded final state and limitations before further device work.
+
 ## Contents
 
 - [Purpose and security boundary](#purpose-and-security-boundary)
