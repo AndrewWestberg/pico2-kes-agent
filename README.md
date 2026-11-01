@@ -641,7 +641,7 @@ RECIPIENT_PUBLIC="$BACKUP_OPS/recipient.public.json"
 pico2-kes-agent-cli recipient create --out "$RECIPIENT_KEY" --public-out "$RECIPIENT_PUBLIC"
 ```
 
-Terminal prompts handle passphrases. Both recipient creation and restoration disable process dumps before the first passphrase prompt; failure to establish protection stops the command. There is no argv/environment passphrase option. Transfer **only the public JSON** to the primary's `$OPS/recipient.public.json`.
+Terminal prompts handle passphrases. Recipient creation and restoration require swap disabled on the backup host and disable process dumps before the first prompt; unreadable swap status or failed memory protection stops the command. Keep swap disabled throughout secret processing. There is no argv/environment passphrase option. Transfer **only the public JSON** to the primary's `$OPS/recipient.public.json`.
 
 ### 2. Install the public recipient
 
@@ -746,7 +746,7 @@ printf '%s\n' "$CERTIFICATE_RESULT"
 pico2-kes-agent-cli --json pool status --pool "$POOL"
 ```
 
-A valid future-start certificate waits staged. A currently valid eligible generation activates automatically after valid context and required cleanup. There is no activation command or backup-approval command. Inspect pool status and actual node consumption rather than treating certificate-command success as proof of forging.
+A valid future-start certificate is retained without key delivery, including for the first generation when context has already arrived. A currently valid eligible generation activates automatically after valid context and required cleanup. There is no activation command or backup-approval command. Inspect pool status and actual node consumption rather than treating certificate-command success as proof of forging.
 
 ## Connect cardano-node
 
@@ -854,7 +854,9 @@ After timeout, uncertain/pending status, or a lost response, retain the original
 
 Reconciliation works even when the original CLI response was lost: the daemon matches the saved operation ID, action, arguments and expected revision against its journal. A completed exact retry returns the original durable result without another device mutation; a pending exact retry resumes reconciliation. Reusing the operation ID with changed inputs is rejected as `operation_conflict`.
 
-A device missing at the initial admission check is rejected without creating a pending journal entry. Once the request is journaled, a transport failure remains uncertain. After reconnect, if the device has no record of that request, recovery resubmits the saved request with its original sequence and digest; it does not create a replacement operation. Preserve the same receipt and configuration through recovery.
+A device missing at the initial admission check is rejected without creating a pending journal entry. Once the request is journaled, a transport failure remains uncertain. After reconnect, an unknown or Pending device receipt causes recovery to resume the saved request with its original sequence and digest; committed effects are recovered rather than repeated. New context updates wait while a mutation is Pending. Preserve the same receipt and configuration through recovery.
+
+After an uncertain device storage or receipt-persistence failure, firmware refuses further requests until a device power-cycle reloads durable state. Reconnecting USB without restarting firmware is insufficient. Preserve the original receipt and reconcile after restart; a storage error is not proof that the mutation was rejected.
 
 **Primary — same original receipt:**
 
@@ -870,7 +872,7 @@ RECEIPT="$OPS/commission.receipt.json"
 pico2-kes-agent-cli operation reconcile --receipt "$RECEIPT" --out "$OPS/device-recovered.json"
 ```
 
-A local output failure after device success still needs reconciliation, not another mutation. Read-only vkey/artifact exports can instead be repeated to fresh paths. Busy/recovering operations may require waiting for recovery before reconciling the same receipt.
+A local output failure after device success still needs reconciliation, not another mutation. Failed stdout writes or flushes return exit code `7` without undoing the operation or deleting its receipt. Read-only vkey/artifact exports can instead be repeated to fresh paths. Busy/recovering operations may require waiting for recovery before reconciling the same receipt.
 
 ### Host restart and device reconnect
 
@@ -946,6 +948,8 @@ Uninstall preserves configuration, state, service account/group, and device stor
 
 Preserve the public journal under `/var/lib/pico2-kes-agent`; it reconstructs management outcomes and pool bindings. The daemon syncs the journal's parent directory before admitting mutations and syncs each appended record before advancing the handoff. Admission has a **64-MiB bound**, with no documented compaction CLI. Do not delete/truncate it to clear an error. Stop mutations, preserve diagnostics and cleanly stopped copies, and obtain a reviewed recovery procedure.
 
+After a journal write or sync error, further appends are blocked until the daemon restarts and validates the journal. Correct the host I/O problem first; reopening repairs only an incomplete final record and fails closed on complete corruption.
+
 ## Offline restoration and failover
 
 Preserve a bundle containing:
@@ -955,7 +959,7 @@ Preserve a bundle containing:
 - Original exported KES verification-key envelope and matching OpCert.
 - Device, pool, incarnation, and generation IDs, plus useful public receipts and certificate validity information.
 
-**Backup-recipient host — local only:** set the IDs to the archived exact values before running. No daemon or connected device is needed.
+**Backup-recipient host — local only:** disable swap and keep it disabled for restoration; set the IDs to the archived exact values before running. No daemon or connected device is needed.
 
 ```bash
 set -euo pipefail

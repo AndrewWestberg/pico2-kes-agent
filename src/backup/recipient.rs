@@ -20,6 +20,28 @@ const ITERATIONS: u32 = 3;
 const PARALLELISM: u32 = 4;
 const ARGON_VERSION: u64 = 19;
 
+fn require_no_swap() -> Result<(), Error> {
+    check_swap_status(File::open("/proc/swaps").map_err(|_| Error::MemoryProtection)?)
+}
+
+fn check_swap_status(mut input: impl Read) -> Result<(), Error> {
+    let mut status = String::new();
+    input
+        .read_to_string(&mut status)
+        .map_err(|_| Error::MemoryProtection)?;
+    let mut lines = status.lines();
+    if !status.ends_with('\n')
+        || !lines.next().is_some_and(|line| {
+            line.split_whitespace()
+                .eq(["Filename", "Type", "Size", "Used", "Priority"])
+        })
+        || lines.any(|line| !line.trim().is_empty())
+    {
+        return Err(Error::MemoryProtection);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidPassphrase,
@@ -68,6 +90,7 @@ impl Drop for EchoGuard {
 }
 
 fn prompt(label: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
+    require_no_swap()?;
     crate::memory::protect_process().map_err(|_| Error::MemoryProtection)?;
     let mut terminal = OpenOptions::new()
         .read(true)
@@ -214,6 +237,7 @@ impl RecipientKeyFile {
     }
 
     pub fn unlock(&self, passphrase: &[u8]) -> Result<SecretBuffer, Error> {
+        require_no_swap()?;
         validate_passphrase(passphrase)?;
         let fields = parse_fields(&self.encoded)?;
         let aad = header(
@@ -256,6 +280,7 @@ pub fn create(
     passphrase: &[u8],
     entropy: &mut impl Entropy,
 ) -> Result<(RecipientPublic, RecipientKeyFile), Error> {
+    require_no_swap()?;
     validate_passphrase(passphrase)?;
     let mut private = SecretBuffer::new(32).map_err(|_| Error::MemoryProtection)?;
     entropy.fill(private.as_mut_slice())?;
@@ -557,4 +582,34 @@ fn hex(bytes: &[u8]) -> String {
         output.push(DIGITS[(byte & 15) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_policy_fails_closed() {
+        let header = b"Filename\tType\tSize\tUsed\tPriority\n";
+        assert_eq!(check_swap_status(&header[..]), Ok(()));
+        assert_eq!(
+            check_swap_status(
+                &b"Filename Type Size Used Priority\n/dev/zram0 partition 1 0 1\n"[..]
+            ),
+            Err(Error::MemoryProtection)
+        );
+        assert_eq!(check_swap_status(&b""[..]), Err(Error::MemoryProtection));
+        assert_eq!(
+            check_swap_status(&b"not a swap table\n"[..]),
+            Err(Error::MemoryProtection)
+        );
+        assert_eq!(
+            check_swap_status(&b"Filename Type Size Used Priority"[..]),
+            Err(Error::MemoryProtection)
+        );
+        assert_eq!(
+            check_swap_status(&b"\xff"[..]),
+            Err(Error::MemoryProtection)
+        );
+    }
 }

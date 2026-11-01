@@ -95,12 +95,16 @@ impl std::error::Error for RigError {}
 struct ModelFlash {
     geometry: Geometry,
     bytes: Vec<u8>,
+    fail_after_marker: bool,
+    fail_before_marker: bool,
 }
 impl ModelFlash {
     fn blank() -> Self {
         Self {
             geometry: Geometry::new(CAPACITY, 256, 4096).unwrap(),
             bytes: vec![0xff; CAPACITY as usize],
+            fail_after_marker: false,
+            fail_before_marker: false,
         }
     }
 }
@@ -128,7 +132,16 @@ impl Flash for ModelFlash {
         Ok(())
     }
     fn program_marker(&mut self, address: u32, data: &[u8]) -> Result<(), FlashError> {
-        self.program_page(address, data)
+        if self.fail_before_marker {
+            self.fail_before_marker = false;
+            return Err(FlashError::Interrupted);
+        }
+        self.program_page(address, data)?;
+        if self.fail_after_marker {
+            self.fail_after_marker = false;
+            return Err(FlashError::Interrupted);
+        }
+        Ok(())
     }
     fn erase_sector(&mut self, address: u32) -> Result<(), FlashError> {
         self.geometry.erase(address)?;
@@ -168,6 +181,8 @@ struct Emulator {
     outstanding: Option<(u64, Digest32)>,
     lose_next_reply: bool,
     cut_delete_after_commit: bool,
+    cut_mutation: Option<bool>,
+    fail_ack_persist: bool,
     lose_next_ack_reply: bool,
     commission_cut: Option<Cut>,
     unavailable: bool,
@@ -199,6 +214,8 @@ impl Emulator {
             outstanding: None,
             lose_next_reply: false,
             cut_delete_after_commit: false,
+            cut_mutation: None,
+            fail_ack_persist: false,
             lose_next_ack_reply: false,
             commission_cut: None,
             unavailable: false,
@@ -384,44 +401,6 @@ impl Emulator {
         }
     }
 
-    fn reject(
-        &mut self,
-        mutation: Mutation,
-        error: u16,
-        commission: bool,
-    ) -> Result<Reply, UsbError> {
-        let revision = self.actual_revision(&mutation);
-        let target = self.actual_target(&mutation);
-        let _ = self
-            .handoff
-            .admit(mutation, revision, target, Some(&self.serial));
-        if self.handoff.receipt().is_some() {
-            self.handoff
-                .finish(ReceiptOutcome::Rejected { code: error })
-                .map_err(|_| UsbError::Protocol)?;
-        }
-        let receipt =
-            self.handoff
-                .receipt()
-                .map(Self::public_receipt)
-                .unwrap_or(wire::PublicReceipt {
-                    sequence: mutation.sequence(),
-                    operation_id: mutation.operation_id(),
-                    request_digest: mutation.usb_digest(),
-                    binding: match mutation.binding() {
-                        Binding::Commission { serial } => wire::ReceiptBinding::Serial(*serial),
-                        Binding::Managed { device, .. } => wire::ReceiptBinding::Device(*device),
-                    },
-                    target: None,
-                    outcome: PublicOutcome::Unknown,
-                });
-        self.encode(&if commission {
-            Response::Commission(receipt)
-        } else {
-            Response::Mutate(receipt)
-        })
-    }
-
     fn actual_revision(&mut self, mutation: &Mutation) -> u64 {
         match mutation.binding() {
             Binding::Commission { .. } => 0,
@@ -457,39 +436,52 @@ impl Emulator {
                 .program_page(0x100000, &[0x00; 32])
                 .map_err(|_| UsbError::Protocol)?;
             self.unavailable = true;
-            return self.reject(
-                mutation,
-                lifecycle_code(LifecycleError::StorageFailure),
-                true,
-            );
+            return Err(UsbError::Uncertain {
+                sequence: mutation.sequence(),
+                digest: mutation.usb_digest(),
+            });
         }
-        let revision = self.actual_revision(&mutation);
-        let target = self.actual_target(&mutation);
-        if let Err(error) = self
-            .handoff
-            .admit(mutation, revision, target, Some(&self.serial))
-        {
-            return self.rejected_without_handoff(mutation, operation_code(error), commission);
-        }
-        if self.cut_delete_after_commit
-            && matches!(
-                mutation.binding(),
-                Binding::Managed {
-                    action: Action::Delete { .. },
-                    ..
-                }
-            )
-        {
-            let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
-            let len = self
+        let resuming = match self.handoff.reconcile(&mutation) {
+            Ok(receipt) if !matches!(receipt.outcome(), ReceiptOutcome::Pending) => {
+                let receipt = Self::public_receipt(receipt);
+                return self.encode(&if commission {
+                    Response::Commission(receipt)
+                } else {
+                    Response::Mutate(receipt)
+                });
+            }
+            Ok(_) => true,
+            Err(_) => false,
+        };
+        if !resuming {
+            let revision = self.actual_revision(&mutation);
+            let target = self.actual_target(&mutation);
+            if let Err(error) = self
                 .handoff
-                .encode(&mut bytes)
-                .map_err(|_| UsbError::Protocol)?;
-            self.device_mut()
-                .persist_handoff(&bytes[..len])
-                .map_err(|_| UsbError::Protocol)?;
+                .admit(mutation, revision, target, Some(&self.serial))
+            {
+                return self.rejected_without_handoff(mutation, operation_code(error), commission);
+            }
+            if !commission {
+                self.persist_handoff()?;
+            }
         }
-        let result = if commission {
+        if self.cut_mutation == Some(false) {
+            self.cut_mutation = None;
+            self.outstanding = Some((mutation.sequence(), mutation.usb_digest()));
+            return Err(UsbError::Uncertain {
+                sequence: mutation.sequence(),
+                digest: mutation.usb_digest(),
+            });
+        }
+        let recovered = if resuming {
+            self.recover_mutation(&mutation)
+        } else {
+            None
+        };
+        let result = if let Some(result) = recovered {
+            Ok(result)
+        } else if commission {
             let serial = self.serial;
             self.device_mut()
                 .commission_values(
@@ -509,8 +501,7 @@ impl Emulator {
                 mutation.operation_id(),
             )
         };
-        if self.cut_delete_after_commit
-            && result.is_ok()
+        if (self.cut_delete_after_commit
             && matches!(
                 mutation.binding(),
                 Binding::Managed {
@@ -518,8 +509,11 @@ impl Emulator {
                     ..
                 }
             )
+            || self.cut_mutation == Some(true))
+            && result.is_ok()
         {
             self.cut_delete_after_commit = false;
+            self.cut_mutation = None;
             self.outstanding = Some((mutation.sequence(), mutation.usb_digest()));
             return Err(UsbError::Uncertain {
                 sequence: mutation.sequence(),
@@ -528,6 +522,13 @@ impl Emulator {
         }
         let outcome = match result {
             Ok(result) => ReceiptOutcome::Committed(result),
+            Err(LifecycleError::StorageFailure) => {
+                self.unavailable = true;
+                return Err(UsbError::Uncertain {
+                    sequence: mutation.sequence(),
+                    digest: mutation.usb_digest(),
+                });
+            }
             Err(error) => ReceiptOutcome::Rejected {
                 code: lifecycle_code(error),
             },
@@ -535,6 +536,9 @@ impl Emulator {
         self.handoff
             .finish(outcome)
             .map_err(|_| UsbError::Protocol)?;
+        if self.device().identity().is_some() {
+            self.persist_handoff()?;
+        }
         let receipt = Self::public_receipt(self.handoff.receipt().unwrap());
         let response = self.encode(&if commission {
             Response::Commission(receipt)
@@ -592,6 +596,106 @@ impl Emulator {
         } else {
             Response::Mutate(receipt)
         })
+    }
+    fn persist_handoff(&mut self) -> Result<(), UsbError> {
+        let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
+        let len = self
+            .handoff
+            .encode(&mut bytes)
+            .map_err(|_| UsbError::Protocol)?;
+        self.device_mut()
+            .persist_handoff(&bytes[..len])
+            .map_err(|_| {
+                self.unavailable = true;
+                UsbError::Protocol
+            })
+    }
+
+    fn recover_mutation(&mut self, mutation: &Mutation) -> Option<CommittedResult> {
+        let Binding::Managed { action, .. } = *mutation.binding() else {
+            return None;
+        };
+        let expected = mutation.expected_revision().checked_add(1)?;
+        match action {
+            Action::Enroll {
+                cold_key,
+                network,
+                publication_floor_us,
+            } => {
+                let pool = PoolId::from_cold_verification_key(&cold_key);
+                let enrollment = self.device_mut().enrollment(pool).ok()?;
+                let revision = self.device().revision().ok()?;
+                (revision == expected
+                    && enrollment.cold_verification_key == cold_key
+                    && enrollment.network == network
+                    && enrollment.publication_floor_us == publication_floor_us)
+                    .then_some(CommittedResult::Enrolled {
+                        target: PoolTarget {
+                            pool,
+                            incarnation: enrollment.incarnation_id,
+                        },
+                        revision: self.device_mut().pool_status(pool).ok()?.revision,
+                    })
+            }
+            Action::Generate { target } => {
+                let (generation, info) = self
+                    .device_mut()
+                    .generation_by_operation(target.pool, mutation.operation_id())
+                    .ok()?;
+                Some(CommittedResult::Generated {
+                    generation,
+                    revision: info.revision,
+                    artifact_digest: info.artifact_digest,
+                })
+            }
+            Action::InstallCertificate {
+                target,
+                certificate,
+            } => {
+                let cert = OperationalCertificate::decode(certificate.as_slice()).ok()?;
+                let installed = self
+                    .device_mut()
+                    .installed_certificate(target.pool.pool, target.generation)
+                    .ok()?;
+                let revision = self
+                    .device_mut()
+                    .pool_status(target.pool.pool)
+                    .ok()?
+                    .revision;
+                (installed == Some(*cert.certificate()) && revision >= expected)
+                    .then_some(CommittedResult::Applied { revision })
+            }
+            Action::Discard { target } => {
+                let revision = self
+                    .device_mut()
+                    .discarded_by_operation(
+                        target.pool.pool,
+                        target.generation,
+                        mutation.operation_id(),
+                    )
+                    .ok()??;
+                (revision == expected).then_some(CommittedResult::Applied { revision })
+            }
+            Action::SetRecipient { public_key } => {
+                let revision = self.device().revision().ok()?;
+                let recipient = self.device().recipient().ok()?;
+                (revision == expected
+                    && recipient.is_some_and(|(current, _)| current == public_key))
+                .then_some(CommittedResult::Applied { revision })
+            }
+            Action::Delete { target, .. } => {
+                let publication = self.device().deletion(target).ok()??;
+                Some(CommittedResult::Deleted(
+                    DeletionPublication::new(
+                        target,
+                        publication.revision,
+                        Some(publication.timestamp_us),
+                        publication.high_water_us,
+                    )
+                    .ok()?,
+                ))
+            }
+        }
     }
 
     fn apply_action(
@@ -817,6 +921,9 @@ impl DeviceTransport for Emulator {
         if self.wrong_identity {
             return Err(UsbError::IdentityMismatch);
         }
+        if self.unavailable {
+            return Err(UsbError::NotFound);
+        }
         match request {
             Request::Hello { nonce } => self.hello(*nonce),
             Request::Status { pool } => self.status(*pool),
@@ -834,21 +941,12 @@ impl DeviceTransport for Emulator {
                     .handoff
                     .acknowledge(*sequence, *result_digest)
                     .map_err(operation_code);
-                if result.is_ok()
-                    && self
-                        .device()
-                        .persisted_handoff()
-                        .map_err(|_| UsbError::Protocol)?
-                        .is_some()
-                {
-                    let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
-                    let len = self
-                        .handoff
-                        .encode(&mut bytes)
-                        .map_err(|_| UsbError::Protocol)?;
-                    self.device_mut()
-                        .persist_handoff(&bytes[..len])
-                        .map_err(|_| UsbError::Protocol)?;
+                if result.is_ok() {
+                    if self.fail_ack_persist {
+                        self.fail_ack_persist = false;
+                        self.device_mut().flash_mut().fail_before_marker = true;
+                    }
+                    self.persist_handoff()?;
                 }
                 let response = self.encode(&Response::ReceiptAck(wire::ReceiptAckResponse {
                     sequence: *sequence,
@@ -870,51 +968,6 @@ impl DeviceTransport for Emulator {
                 digest,
                 binding,
             } => {
-                let target = self.handoff.receipt().and_then(|receipt| {
-                    let mutation = receipt.mutation();
-                    if receipt.outcome() != &ReceiptOutcome::Pending
-                        || mutation.sequence() != *sequence
-                        || mutation.operation_id() != *operation_id
-                        || mutation.usb_digest() != *digest
-                    {
-                        return None;
-                    }
-                    match (mutation.binding(), binding) {
-                        (
-                            Binding::Managed {
-                                device,
-                                action: Action::Delete { target, .. },
-                            },
-                            wire::ReconcileBinding::Device(expected),
-                        ) if device == expected => Some(*target),
-                        _ => None,
-                    }
-                });
-                if let Some(target) = target
-                    && let Some(publication) = self
-                        .device()
-                        .deletion(target)
-                        .map_err(|_| UsbError::Protocol)?
-                {
-                    let deleted = DeletionPublication::new(
-                        target,
-                        publication.revision,
-                        Some(publication.timestamp_us),
-                        publication.high_water_us,
-                    )
-                    .map_err(|_| UsbError::Protocol)?;
-                    self.handoff
-                        .finish(ReceiptOutcome::Committed(CommittedResult::Deleted(deleted)))
-                        .map_err(|_| UsbError::Protocol)?;
-                    let mut bytes = [0; kes_core::operation::MAX_HANDOFF_BYTES];
-                    let len = self
-                        .handoff
-                        .encode(&mut bytes)
-                        .map_err(|_| UsbError::Protocol)?;
-                    self.device_mut()
-                        .persist_handoff(&bytes[..len])
-                        .map_err(|_| UsbError::Protocol)?;
-                }
                 let receipt = self
                     .handoff
                     .receipt()
@@ -922,6 +975,17 @@ impl DeviceTransport for Emulator {
                         receipt.mutation().sequence() == *sequence
                             && receipt.mutation().operation_id() == *operation_id
                             && receipt.mutation().usb_digest() == *digest
+                            && match (receipt.mutation().binding(), binding) {
+                                (
+                                    Binding::Commission { serial },
+                                    wire::ReconcileBinding::Serial(expected),
+                                ) => serial == expected,
+                                (
+                                    Binding::Managed { device, .. },
+                                    wire::ReconcileBinding::Device(expected),
+                                ) => device == expected,
+                                _ => false,
+                            }
                     })
                     .map(Self::public_receipt)
                     .unwrap_or(wire::PublicReceipt {
@@ -1360,6 +1424,14 @@ impl TestRig {
         if let Some(bytes) = state.usb.device().persisted_handoff().unwrap() {
             state.usb.handoff = Handoff::decode(bytes).unwrap();
         }
+        if state.usb.device().persisted_handoff().unwrap().is_none()
+            && let Some(identity) = state.usb.device().identity()
+        {
+            state.usb.handoff =
+                Handoff::recover_commissioning(*identity.enrollment_record().public()).unwrap();
+            state.usb.persist_handoff().unwrap();
+        }
+        state.usb.unavailable = false;
         state.usb.device_mut().reconnect();
     }
 
@@ -1647,6 +1719,21 @@ impl TestRig {
     }
     pub fn cut_delete_after_commit(&mut self) {
         self.state.lock().unwrap().usb.cut_delete_after_commit = true;
+    }
+    pub fn cut_mutation(&mut self, after_commit: bool) {
+        self.state.lock().unwrap().usb.cut_mutation = Some(after_commit);
+    }
+    pub fn fail_next_ack_persistence(&mut self) {
+        self.state.lock().unwrap().usb.fail_ack_persist = true;
+    }
+    pub fn fail_commission_after_marker(&mut self) {
+        self.state
+            .lock()
+            .unwrap()
+            .usb
+            .device_mut()
+            .flash_mut()
+            .fail_after_marker = true;
     }
     pub fn timeout_next_ack_reply(&mut self) {
         self.state.lock().unwrap().usb.lose_next_ack_reply = true;

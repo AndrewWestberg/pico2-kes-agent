@@ -71,6 +71,11 @@ fn execute() -> Result<(PathBuf, bool), String> {
     let usb_path = evidence_directory.join("production-usb.json");
     let flash = read_json(&flash_path)?;
     let usb = read_json(&usb_path)?;
+    let hardware = read_json(&Path::new(ROOT).join("hardware.json"))?;
+    let production_serial = hardware
+        .pointer("/device/production_serial")
+        .and_then(Value::as_str)
+        .ok_or("configured production serial is missing")?;
     let bundle = usb
         .pointer("/firmware/bundle")
         .and_then(Value::as_str)
@@ -87,7 +92,13 @@ fn execute() -> Result<(PathBuf, bool), String> {
     let manifest: Value =
         serde_json::from_slice(&manifest).map_err(|_| "invalid verified release manifest")?;
     let flash_ok = flash_observation_passes(&flash);
-    let usb_ok = usb_observation_passes(&usb, &firmware_sha256, &revision, &manifest);
+    let usb_ok = usb_observation_passes(
+        &usb,
+        &firmware_sha256,
+        &revision,
+        &manifest,
+        production_serial,
+    );
     let definition_approved = evidence::approved_definition();
     let passed = definition_approved
         && image_bytes <= IMAGE_LIMIT
@@ -180,6 +191,7 @@ fn usb_observation_passes(
     firmware_sha256: &str,
     revision: &str,
     manifest: &Value,
+    production_serial: &str,
 ) -> bool {
     let Some(image) = manifest
         .get("artifacts")
@@ -214,10 +226,7 @@ fn usb_observation_passes(
             == Some(true)
         && value.pointer("/usb/vendor_id").and_then(Value::as_str) == Some(PRODUCTION_VID)
         && value.pointer("/usb/product_id").and_then(Value::as_str) == Some(PRODUCTION_PID)
-        && value
-            .pointer("/usb/serial")
-            .and_then(Value::as_str)
-            .is_some_and(|serial| serial.len() == 16)
+        && value.pointer("/usb/serial").and_then(Value::as_str) == Some(production_serial)
         && value.pointer("/startup/health").and_then(Value::as_str) == Some("ready")
         && value.pointer("/result").and_then(Value::as_str) == Some("pass")
 }
@@ -287,9 +296,15 @@ mod tests {
             "density_bytes": FLASH_BYTES,
             "matched_firmware_allowlist": true
         }});
+        let hardware = read_json(&Path::new(ROOT).join("hardware.json")).unwrap();
+        let production_serial = hardware
+            .pointer("/device/production_serial")
+            .unwrap()
+            .as_str()
+            .unwrap();
         let usb = json!({
             "firmware":{"sha256":"abc", "signed_uf2_sha256":"signed", "transfer_method":"signed-msd", "transfer_flushed":true},
-            "usb":{"vendor_id":PRODUCTION_VID,"product_id":PRODUCTION_PID,"serial":"0011223344556677"},
+            "usb":{"vendor_id":PRODUCTION_VID,"product_id":PRODUCTION_PID,"serial":production_serial},
             "startup":{"health":"ready", "identity_authenticated":true},
             "result":"pass"
         });
@@ -297,14 +312,35 @@ mod tests {
             {"name":"pico2-kes-firmware.signed.uf2","sha256":"signed"}
         ]});
         assert!(flash_observation_passes(&flash));
-        assert!(usb_observation_passes(&usb, "abc", "candidate", &manifest));
-        assert!(!usb_observation_passes(&usb, "def", "candidate", &manifest));
-        assert!(!usb_observation_passes(&usb, "abc", "another", &manifest));
+        assert!(usb_observation_passes(
+            &usb,
+            "abc",
+            "candidate",
+            &manifest,
+            production_serial
+        ));
+        assert!(!usb_observation_passes(
+            &usb,
+            "def",
+            "candidate",
+            &manifest,
+            production_serial
+        ));
+        assert!(!usb_observation_passes(
+            &usb,
+            "abc",
+            "another",
+            &manifest,
+            production_serial
+        ));
         for (pointer, wrong) in [
             ("/firmware/signed_uf2_sha256", json!("another")),
             ("/firmware/transfer_flushed", json!(false)),
             ("/startup/identity_authenticated", json!(false)),
             ("/startup/health", json!("unavailable")),
+            ("/usb/serial", json!("0011223344556677")),
+            ("/usb/serial", json!("not-a-hex-serial")),
+            ("/usb/serial", json!(null)),
         ] {
             let mut changed = usb.clone();
             *changed.pointer_mut(pointer).unwrap() = wrong;
@@ -312,7 +348,8 @@ mod tests {
                 &changed,
                 "abc",
                 "candidate",
-                &manifest
+                &manifest,
+                production_serial
             ));
         }
     }

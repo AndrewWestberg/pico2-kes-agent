@@ -43,6 +43,24 @@ fn executable_rejects_direct_usb_without_contacting_a_device() {
 }
 
 #[test]
+fn executable_reports_output_failure() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pico2-kes-agent-cli"))
+        .arg("--help")
+        .stdout(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(pico2_kes_agent::cli::EXIT_FAILURE)
+    );
+}
+
+#[test]
 fn stalled_and_malformed_clients_do_not_block_valid_requests() {
     let rig = TestRig::certified_pool();
     let mut stalled = UnixStream::connect(rig.management_socket()).unwrap();

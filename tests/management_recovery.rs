@@ -106,6 +106,38 @@ fn lost_pending_response_reconciles_original_generation_instead_of_readmitting()
 }
 
 #[test]
+fn admitted_generation_resumes_before_and_after_device_commit() {
+    for after_commit in [false, true] {
+        let mut rig = TestRig::commissioned_pool();
+        let before = rig.journal_state().0;
+        rig.cut_mutation(after_commit);
+        assert_eq!(rig.generate_cli(OPERATION).exit_code, 6);
+        assert_eq!(rig.generation_count(), usize::from(after_commit));
+        rig.reboot_device();
+        let result = success(rig.reconcile_cli());
+        assert_eq!(result["result"]["kind"], "generated");
+        assert_eq!(rig.generation_count(), 1);
+        assert_eq!(rig.journal_state(), (before + 1, false));
+    }
+}
+
+#[test]
+fn failed_ack_persistence_cannot_be_mistaken_for_a_durable_ack() {
+    let mut rig = TestRig::commissioned_pool();
+    let before = rig.journal_state().0;
+    rig.fail_next_ack_persistence();
+    assert_eq!(rig.generate_cli(OPERATION).exit_code, 6);
+    assert!(rig.journal_state().1);
+    assert_ne!(rig.reconcile_cli().exit_code, 0);
+    assert_eq!(rig.journal_state(), (before, true));
+    rig.reboot_device();
+    let result = success(rig.reconcile_cli());
+    assert_eq!(result["result"]["kind"], "generated");
+    assert_eq!(rig.generation_count(), 1);
+    assert_eq!(rig.journal_state(), (before + 1, false));
+}
+
+#[test]
 fn operation_id_cannot_be_reused_with_changed_revision_action_or_target() {
     for pending in [false, true] {
         let mut rig = TestRig::commissioned_pool();

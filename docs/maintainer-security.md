@@ -261,7 +261,9 @@ Publication does not overwrite history. Identical completed releases are a no-op
 
 Secure-boot evidence is separate from `qualification/hardware.json`. A2 storage/USB qualification does not prove ROM signature enforcement; A4 must not inherit an A2 result. Until the attended measurements exist, secure-boot, negative-boot and key-preserving-update checks are **not observed**, not passed. Observed debug fuses and volatile locks are not an external SWD-denial test.
 
-Software verification, without USB or production secrets:
+Hardware USB qualification requires the observed serial to match `device.production_serial` in `qualification/hardware.json`, not just its length. This remains operational evidence, not firmware attestation.
+
+Software verification, without USB or production secrets (backup success tests require a host with swap disabled):
 
 ```bash
 PICO2_PERMISSIONS_HELPER="$PWD/target/otp-permissions/pico2-otp-permissions.elf" \

@@ -76,6 +76,9 @@ impl Operations for Runtime<'_> {
         request: Request,
         output: &mut [u8],
     ) -> Result<(Kind, usize), DispatchError> {
+        if self.handoff_uncertain {
+            return Err(DispatchError::State);
+        }
         match request {
             Request::Hello { nonce } => self.hello(nonce, output),
             Request::Status { pool } => self.status(pool, output),
@@ -97,6 +100,12 @@ impl Operations for Runtime<'_> {
                 lease_seconds,
                 publication_time_us,
             } => {
+                if matches!(
+                    self.handoff().receipt().map(Receipt::outcome),
+                    Some(ReceiptOutcome::Pending)
+                ) {
+                    return Err(DispatchError::State);
+                }
                 let mut session_bytes = [0; 16];
                 session_bytes[8..].copy_from_slice(&session.to_be_bytes());
                 let now = now_us();
@@ -174,36 +183,6 @@ impl Operations for Runtime<'_> {
                 digest,
                 binding,
             } => {
-                let pending_delete = self.handoff().receipt().and_then(|receipt| {
-                    let mutation = receipt.mutation();
-                    (matches!(receipt.outcome(), ReceiptOutcome::Pending)
-                        && mutation.sequence() == sequence
-                        && mutation.operation_id() == operation_id
-                        && mutation.usb_digest() == digest
-                        && reconcile_binding(mutation.binding(), &binding)
-                        && matches!(
-                            mutation.binding(),
-                            Binding::Managed {
-                                action: Action::Delete { .. },
-                                ..
-                            }
-                        ))
-                    .then_some(*mutation)
-                });
-                if let Some(mutation) = pending_delete
-                    && let Some(result) = self.recover_committed(&mutation)
-                {
-                    let outcome = match result {
-                        Ok(result) => ReceiptOutcome::Committed(result),
-                        Err(error) => ReceiptOutcome::Rejected {
-                            code: lifecycle_error_code(error),
-                        },
-                    };
-                    self.handoff_mut()
-                        .finish(outcome)
-                        .map_err(|_| DispatchError::State)?;
-                    self.persist_handoff().map_err(|_| DispatchError::State)?;
-                }
                 let receipt = self.handoff().receipt().filter(|receipt| {
                     let mutation = receipt.mutation();
                     mutation.sequence() == sequence
@@ -512,25 +491,30 @@ impl Runtime<'_> {
                 self.persist_handoff().map_err(|_| DispatchError::State)?;
             }
         }
-        let outcome =
+        let outcome = (if resuming {
             self.recover_committed(&mutation)
-                .unwrap_or_else(|| match *mutation.binding() {
-                    Binding::Commission { serial } => self
-                        .device_mut()
-                        .commission_values(
-                            serial.as_slice(),
-                            mutation.operation_id(),
-                            mutation.usb_digest(),
-                            mutation.expected_revision(),
-                            mutation.sequence(),
-                        )
-                        .map(|record| CommittedResult::Commissioned(*record.public())),
-                    Binding::Managed { action, .. } => {
-                        self.apply_action(action, mutation.operation_id())
-                    }
-                });
+        } else {
+            None
+        })
+        .unwrap_or_else(|| match *mutation.binding() {
+            Binding::Commission { serial } => self
+                .device_mut()
+                .commission_values(
+                    serial.as_slice(),
+                    mutation.operation_id(),
+                    mutation.usb_digest(),
+                    mutation.expected_revision(),
+                    mutation.sequence(),
+                )
+                .map(|record| CommittedResult::Commissioned(*record.public())),
+            Binding::Managed { action, .. } => self.apply_action(action, mutation.operation_id()),
+        });
         let outcome = match outcome {
             Ok(result) => ReceiptOutcome::Committed(result),
+            Err(LifecycleError::StorageFailure) => {
+                self.handoff_uncertain = true;
+                return Err(DispatchError::State);
+            }
             Err(error) => ReceiptOutcome::Rejected {
                 code: lifecycle_error_code(error),
             },
@@ -624,7 +608,7 @@ impl Runtime<'_> {
                     .ok()?;
                 Some(Ok(CommittedResult::Generated {
                     generation,
-                    revision: expected,
+                    revision: info.revision,
                     artifact_digest: info.artifact_digest,
                 }))
             }
@@ -642,7 +626,7 @@ impl Runtime<'_> {
                     .pool_status(target.pool.pool)
                     .ok()?
                     .revision;
-                (installed == Some(*certificate.certificate()) && revision == expected)
+                (installed == Some(*certificate.certificate()) && revision >= expected)
                     .then_some(Ok(CommittedResult::Applied { revision }))
             }
             Action::Discard { target } => {
