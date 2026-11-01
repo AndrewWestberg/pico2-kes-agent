@@ -773,6 +773,20 @@ Ordinary evolution and generation rotation require neither node restart nor SIGH
 
 Each pool permits two node subscriptions. Idle connections are checked for peer disconnection every 100 ms, subject to host scheduling, so closed clients release their slots without waiting for a new key publication. Healthy idle connections remain open.
 
+### One daemon, multiple pools and node processes
+
+One `pico2-kes-agentd` process owns the USB device. Each configured pool has its own Service V2 Unix socket and listener thread inside that daemon, not another daemon process. Node-process count is independent: singleton producers can share the daemon, or one compatible node can consume several pool sockets.
+
+The local node checkout at `/home/westbam/haskell/cardano-node` supports version-1 bulk agent credentials. This is not a claim about an arbitrary released or PATH-installed node. Build and resolve its binary from that checkout with `cabal build exe:cardano-node` and `cabal list-bin exe:cardano-node`, preserving its configured dependency pins and local changes.
+
+A bulk file is a JSON array. Each agent entry contains `version: 1`, `operationalCertificate` and `vrfSigningKey` as **embedded text-envelope objects**, and `kesSource: {"type":"kes-agent","socketPath":"/absolute/path/to/pool.sock"}`. Optional `blsSigningKeys` defaults to `[]`. Use each pool's actual certificate, VRF key and distinct socket; the envelope fields are not filenames. Existing legacy/file-key entries remain supported. Relative sockets resolve against the bulk file's directory, but use absolute paths in deployments. Protect the bulk file as a secret because it contains VRF private keys; never copy it into public evidence.
+
+For bulk-only operation, retain normal config/topology/database/node-socket arguments, pass `--shelley-bulk-credentials /absolute/path/bulk.json`, and omit singleton credential arguments. The loader concatenates singleton and bulk credentials; supplying the same pool in both duplicates it. Never run both deployment configurations for the same pool during cutover.
+
+At scheduled generation cutover, update the relevant embedded `operationalCertificate` for future restarts, preserving other pools and VRF keys. Singleton deployments instead update their startup certificate file. Keep cold signing keys and the authoritative issuance counters external in either topology; device-local counters do not replace cold-host or ledger counter discipline.
+
+The local project's selected consensus pin is `a337d69f4946d5a1b20ecaaeae635dd47822e3d2`, not the sibling consensus checkout. It creates a separate agent client/hot key per credential, but does not include the sibling client's expected-cold-key/counter validation gate. Agent/device certificate validation and exact socket-to-pool mapping remain required. Loader tests and source support do not qualify live multi-pool forging; the three-pool device lab starts no producing nodes.
+
 ## Operations and maintenance
 
 ### Command reference
@@ -784,6 +798,7 @@ These are all implemented CLI commands; global options are `--socket PATH` and `
 | `status` | [Routine inspection](#routine-inspection) |
 | `device commission` | [Commissioning](#operator-workspace-and-commissioning-mode) |
 | `device security` | Read-only public OTP/flash/debug report, available in commissioning and normal modes; no command-specific flags |
+| `device inventory` | Complete read-only device pool membership in normal mode; no command-specific flags |
 | `pool list`, `pool status` | [Routine inspection](#routine-inspection) |
 | `pool enroll` | [Enrollment](#3-enroll-the-pool) |
 | `pool delete` | [Pool removal](#pool-removal-and-re-enrollment) |
@@ -801,6 +816,7 @@ These are all implemented CLI commands; global options are `--socket PATH` and `
 
 ```bash
 pico2-kes-agent-cli status
+pico2-kes-agent-cli --json device inventory
 pico2-kes-agent-cli --json pool status --pool "$POOL"
 CURSOR=
 while :; do
@@ -818,6 +834,10 @@ sudo journalctl -u pico2-kes-agentd --since '1 hour ago' --no-pager
 ```
 
 Follow the returned cursor until absent/null. Inspect device identity, pool incarnation, active/staged state, validity and context, then check node logs/operational metrics for actual consumption and forging. Do not dump secret USB/socket traffic into logs or support bundles.
+
+`device inventory` reads every occupied device slot's authenticated pool metadata in one bounded response (up to 64 pools), including pools absent from host config/journal. Its result contains `device_id`, device `revision`, and `pools` entries with `pool_id`, `incarnation_id` and pool `revision`, in storage-slot order. It does not create sockets, schedule context, change journal/flash, or require readable KES public objects. `pool list` remains the paginated host binding/socket view, not authoritative device membership.
+
+Unsupported older firmware, disconnection, pending mutation handoff or invalid occupied metadata is an error, never an empty inventory. To establish that all pools were removed, require a successful authenticated inventory with `pools: []`; a blank host list is insufficient. Use each exact target and fresh revision for deliberate normal pool deletion, preserving receipts and reconciling uncertainty. Do not substitute a state erase.
 
 ### Evolution, rotation, and expiry
 

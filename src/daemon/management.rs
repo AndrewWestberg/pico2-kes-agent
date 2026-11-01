@@ -96,6 +96,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         let result = match action {
             Action::DeviceStatus => self.status(None)?,
             Action::DeviceSecurity => self.query(Request::SecurityStatus)?,
+            Action::DeviceInventory => self.inventory()?,
             Action::PoolStatus => {
                 let pool =
                     parse_id::<28, PoolId>(&envelope.arguments, "pool_id", PoolId::from_bytes)?;
@@ -199,6 +200,48 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     fn query(&mut self, request: Request) -> Result<Value, Error> {
         let reply = self.usb.request(&request)?;
         response_value(reply.decode().map_err(|_| Error::Protocol)?)
+    }
+
+    fn inventory(&mut self) -> Result<Value, Error> {
+        let reply = self.usb.request(&Request::PoolInventory)?;
+        if reply.kind != wire::Kind::PoolInventory {
+            return Err(Error::Protocol);
+        }
+        let Response::PoolInventory(response) = reply.decode().map_err(|_| Error::Protocol)? else {
+            return Err(Error::Protocol);
+        };
+        if self.config.pin.map(|pin| pin.device) != Some(response.device) {
+            return Err(Error::Protocol);
+        }
+        let count = usize::from(response.inventory.count);
+        let entries = response
+            .inventory
+            .entries
+            .get(..count)
+            .ok_or(Error::Protocol)?;
+        for (index, entry) in entries.iter().enumerate() {
+            if entries[..index]
+                .iter()
+                .any(|previous| previous.target.pool == entry.target.pool)
+            {
+                return Err(Error::Protocol);
+            }
+        }
+        let pools: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "pool_id": entry.target.pool.to_string(),
+                    "incarnation_id": entry.target.incarnation.to_string(),
+                    "revision": entry.revision,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "device_id": response.device.to_string(),
+            "revision": response.inventory.revision,
+            "pools": pools,
+        }))
     }
 
     fn pool_list(&self, arguments: &Value) -> Result<Value, Error> {
@@ -842,7 +885,7 @@ fn security_value(report: kes_protocol::security::SecurityStatus) -> Result<Valu
 
 fn response_value(response: Response<'_>) -> Result<Value, Error> {
     Ok(match response {
-        Response::Hello(_) => return Err(Error::Protocol),
+        Response::Hello(_) | Response::PoolInventory(_) => return Err(Error::Protocol),
         Response::Status(response) => status::response(response, false),
         Response::SecurityStatus(response) => security_value(response)?,
         Response::Context(_) | Response::Current(_) => return Err(Error::Protocol),
@@ -1135,6 +1178,7 @@ fn action_name(action: Action) -> &'static str {
         Action::DeviceStatus => "device.status",
         Action::DeviceCommission => "device.commission",
         Action::DeviceSecurity => "device.security",
+        Action::DeviceInventory => "device.inventory",
         Action::PoolList => "pool.list",
         Action::PoolStatus => "pool.status",
         Action::PoolEnroll => "pool.enroll",

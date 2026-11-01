@@ -57,6 +57,54 @@ fn status(rig: &TestRig) -> Value {
 }
 
 #[test]
+fn inventory_finds_unbound_pool_without_mutation_and_allows_deletion() {
+    let rig = TestRig::commissioned_pool();
+    rig.reload_pool_bindings(vec![]);
+    let listed = management(
+        &rig,
+        json!({"version":1,"request_id":ID,"action":"pool.list","arguments":{}}),
+    );
+    assert_eq!(listed["result"]["pools"], json!([]));
+    let journal = rig.journal_state();
+    let slot = rig.pool_slot();
+    let flash = rig.pool_region_bytes(slot);
+    let full_state = rig.inventory_state();
+    let reply = rig.inventory_cli();
+    assert_eq!(reply.exit_code, 0);
+    let inventory: Value = serde_json::from_slice(&reply.stdout).unwrap();
+    let pools = inventory["result"]["pools"].as_array().unwrap();
+    assert_eq!(pools.len(), 1);
+    let incarnation = pools[0]["incarnation_id"].as_str().unwrap();
+    let revision = pools[0]["revision"].as_u64().unwrap();
+    assert_eq!(rig.journal_state(), journal);
+    assert_eq!(rig.pool_region_bytes(slot), flash);
+    assert_eq!(rig.inventory_state(), full_state);
+    assert_eq!(inventory["result"]["revision"], full_state.2);
+    assert_eq!(
+        rig.delete_cli(incarnation, revision, "dddddddddddddddddddddddddddddddd")
+            .exit_code,
+        0
+    );
+    let after: Value = serde_json::from_slice(&rig.inventory_cli().stdout).unwrap();
+    assert_eq!(after["result"]["pools"], json!([]));
+}
+
+#[test]
+fn inventory_errors_never_report_empty_success() {
+    let blank = TestRig::blank_commissioning("attended-board01");
+    assert_ne!(blank.inventory_cli().exit_code, 0);
+    let rig = TestRig::commissioned_pool();
+    for fault in 1..=3 {
+        rig.set_inventory_fault(fault);
+        let reply = rig.inventory_cli();
+        assert_ne!(reply.exit_code, 0, "fault {fault}");
+    }
+    rig.set_inventory_fault(0);
+    rig.disconnect_device();
+    assert_ne!(rig.inventory_cli().exit_code, 0);
+}
+
+#[test]
 fn attended_commissioning_publishes_pin_and_normal_restart_authenticates_it() {
     let mut rig = TestRig::blank_commissioning("attended-board01");
     let blank = status(&rig);
@@ -431,6 +479,13 @@ fn damaged_public_object_can_be_deleted_through_normal_cli() {
         assert_eq!(result["health"], "storage_failure");
         assert_eq!(result["pool_id"], pool_id);
         assert_eq!(result["incarnation_id"], incarnation);
+        let inventory: Value = serde_json::from_slice(&rig.inventory_cli().stdout).unwrap();
+        assert_eq!(inventory["result"]["pools"][0]["pool_id"], pool_id);
+        assert_eq!(
+            inventory["result"]["pools"][0]["incarnation_id"],
+            incarnation
+        );
+        assert_eq!(inventory["result"]["pools"][0]["revision"], revision);
         assert_eq!(result["revision"], revision);
         assert_eq!(
             result["publication_revision"],

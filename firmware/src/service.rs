@@ -82,6 +82,29 @@ impl Operations for Runtime<'_> {
         match request {
             Request::Hello { nonce } => self.hello(nonce, output),
             Request::Status { pool } => self.status(pool, output),
+            Request::PoolInventory => {
+                if matches!(
+                    self.handoff().receipt().map(Receipt::outcome),
+                    Some(ReceiptOutcome::Pending)
+                ) {
+                    return Err(DispatchError::State);
+                }
+                let device = self
+                    .device()
+                    .identity()
+                    .ok_or(DispatchError::State)?
+                    .enrollment_record()
+                    .public()
+                    .device();
+                let inventory = self
+                    .device_mut()
+                    .pool_inventory()
+                    .map_err(|_| DispatchError::State)?;
+                encode(
+                    &Response::PoolInventory(wire::PoolInventoryResponse { device, inventory }),
+                    output,
+                )
+            }
             Request::SecurityStatus => {
                 let status = crate::security::read(
                     self.flash_identity,

@@ -28,7 +28,7 @@ pico2-kes-agent-cli [--socket PATH] [--json] COMMAND
 
 Commands:
   status
-  device commission|security
+  device commission|security|inventory
   pool list|status|enroll|delete
   key generate|verification-key|export|discard
   certificate install
@@ -224,15 +224,15 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
             return Err(CliError::io(error.into_io()));
         }
     };
-    if specification.action == "device.security" {
+    if matches!(specification.action, "device.security" | "device.inventory") {
         let message = kes_protocol::management::Message::decode(&response_bytes)
-            .map_err(|_| CliError::failure("daemon returned an invalid security report"))?;
+            .map_err(|_| CliError::failure("daemon returned an invalid device response"))?;
         if !matches!(
             message.kind(),
             kes_protocol::management::Kind::Response { .. }
         ) {
             return Err(CliError::failure(
-                "daemon returned a non-response security message",
+                "daemon returned a non-response device message",
             ));
         }
     }
@@ -468,6 +468,12 @@ fn command_spec(
             mutation: false,
             output: Output::None,
         },
+        ("device", Some("inventory")) => CommandSpec {
+            action: "device.inventory",
+            arguments: json!({}),
+            mutation: false,
+            output: Output::None,
+        },
         ("device", Some("commission")) => CommandSpec {
             action: "device.commission",
             arguments: json!({ "usb_serial": required(options, "usb-serial")? }),
@@ -646,7 +652,7 @@ fn validate_options(
 ) -> Result<(), CliError> {
     let allowed: &[&str] = match (command, subcommand) {
         ("status", None) => &[],
-        ("device", Some("security")) => &[],
+        ("device", Some("security" | "inventory")) => &[],
         ("device", Some("commission")) => &[
             "usb-serial",
             "operation-id",

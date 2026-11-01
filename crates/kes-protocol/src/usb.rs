@@ -36,6 +36,7 @@ pub enum Kind {
     PublicKey,
     Commission,
     SecurityStatus,
+    PoolInventory,
 }
 impl TryFrom<u16> for Kind {
     type Error = Error;
@@ -52,6 +53,7 @@ impl TryFrom<u16> for Kind {
             9 => Self::PublicKey,
             10 => Self::Commission,
             11 => Self::SecurityStatus,
+            12 => Self::PoolInventory,
             _ => return Err(Error::Kind),
         })
     }
@@ -308,11 +310,13 @@ use kes_core::identity::{
     BoundedBytes, DeviceId, Digest32, GenerationId, IncarnationId, NetworkBinding, OperationId,
     PoolId,
 };
+use kes_core::lifecycle::{PoolInventory, PoolInventoryEntry};
 use kes_core::operation::{Action, GenerationTarget, Mutation, PoolTarget, UsbSerial};
 
 /// The typed host-to-device messages. Integer map keys are specified by the
 /// decoder below and are always emitted in increasing order on the wire.
 pub enum Request {
+    PoolInventory,
     SecurityStatus,
     Hello {
         nonce: [u8; 32],
@@ -506,6 +510,10 @@ pub fn decode_request(kind: Kind, bytes: &[u8]) -> Result<Request, Error> {
     validate_cbor(bytes)?;
     let mut c = Cursor { bytes, pos: 0 };
     let request = match kind {
+        Kind::PoolInventory => {
+            c.map(0)?;
+            Request::PoolInventory
+        }
         Kind::SecurityStatus => {
             c.map(0)?;
             Request::SecurityStatus
@@ -801,6 +809,10 @@ pub fn encode_request(request: &Request, out: &mut [u8]) -> Result<(Kind, usize)
     use kes_core::operation::Binding;
     let mut w = Writer { out, pos: 0 };
     let kind = match request {
+        Request::PoolInventory => {
+            w.map(0)?;
+            Kind::PoolInventory
+        }
         Request::SecurityStatus => {
             w.map(0)?;
             Kind::SecurityStatus
@@ -1494,6 +1506,12 @@ pub struct StatusResponse {
     pub pool: Option<PoolStatus>,
     pub next_pool: Option<PoolId>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolInventoryResponse {
+    pub device: DeviceId,
+    pub inventory: PoolInventory,
+}
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContextPhase {
@@ -1574,6 +1592,7 @@ pub struct ReceiptAckResponse {
 
 /// Secret-bearing variants do not expose diagnostic formatting.
 pub enum Response<'a> {
+    PoolInventory(PoolInventoryResponse),
     SecurityStatus(crate::security::SecurityStatus),
     Hello(HelloResponse),
     Status(StatusResponse),
@@ -2152,6 +2171,28 @@ pub fn encode_response(value: &Response<'_>, out: &mut [u8]) -> Result<(Kind, us
     }
     let mut w = Writer { out, pos: 0 };
     let kind = match value {
+        Response::PoolInventory(v) => {
+            let entries = v
+                .inventory
+                .entries
+                .get(..usize::from(v.inventory.count))
+                .ok_or(Error::Schema)?;
+            w.map(3)?;
+            w.uint(1)?;
+            w.bytes(v.device.as_bytes())?;
+            w.uint(2)?;
+            w.uint(v.inventory.revision)?;
+            w.uint(3)?;
+            w.head(4, entries.len() as u64)?;
+            for entry in entries {
+                w.map(2)?;
+                w.uint(1)?;
+                w.target(entry.target)?;
+                w.uint(2)?;
+                w.uint(entry.revision)?;
+            }
+            Kind::PoolInventory
+        }
         Response::SecurityStatus(v) => {
             w.map(18)?;
             w.uint(1)?;
@@ -2293,6 +2334,44 @@ pub fn decode_response(kind: Kind, bytes: &[u8]) -> Result<Response<'_>, Error> 
     validate_cbor(bytes)?;
     let mut c = Cursor { bytes, pos: 0 };
     let response = match kind {
+        Kind::PoolInventory => {
+            c.map(3)?;
+            c.key(1)?;
+            let device = DeviceId::from_bytes(c.fixed()?);
+            c.key(2)?;
+            let revision = c.uint()?;
+            c.key(3)?;
+            let (major, count) = c.head()?;
+            if major != 4 || count > u64::from(kes_core::identity::StorageSlot::CAPACITY) {
+                return Err(Error::Schema);
+            }
+            let mut entries =
+                [PoolInventoryEntry::ZERO; kes_core::identity::StorageSlot::CAPACITY as usize];
+            for index in 0..count as usize {
+                c.map(2)?;
+                c.key(1)?;
+                let target = c.target()?;
+                if entries[..index]
+                    .iter()
+                    .any(|entry| entry.target.pool == target.pool)
+                {
+                    return Err(Error::Schema);
+                }
+                c.key(2)?;
+                entries[index] = PoolInventoryEntry {
+                    target,
+                    revision: c.uint()?,
+                };
+            }
+            Response::PoolInventory(PoolInventoryResponse {
+                device,
+                inventory: PoolInventory {
+                    revision,
+                    count: count as u8,
+                    entries,
+                },
+            })
+        }
         Kind::SecurityStatus => {
             c.map(18)?;
             c.key(1)?;

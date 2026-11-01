@@ -20,6 +20,7 @@ fuzz_target!(|data: &[u8]| {
             Kind::Artifact,
             Kind::PublicKey,
             Kind::Commission,
+            Kind::PoolInventory,
         ] {
             let _ = usb::decode_request(kind, data);
             let _ = usb::decode_response(kind, data);

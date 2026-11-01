@@ -58,7 +58,7 @@ fn bad_crc_and_header_are_rejected_without_resynchronizing() {
     assert!(matches!(d.feed(&bytes), Err(Error::Major)));
     d.reconnect();
     bytes[4..6].copy_from_slice(&1u16.to_be_bytes());
-    bytes[6..8].copy_from_slice(&12u16.to_be_bytes());
+    bytes[6..8].copy_from_slice(&u16::MAX.to_be_bytes());
     assert!(matches!(d.feed(&bytes), Err(Error::Kind)));
 }
 
@@ -79,7 +79,7 @@ fn canonical_cbor_rejections() {
 
 #[test]
 fn all_kinds_and_surplus_input() {
-    for n in 1..=11 {
+    for n in 1..=12 {
         let kind = Kind::try_from(n).unwrap();
         let bytes = frame(kind, u64::from(n), &[0xa0]);
         let mut combined = bytes.clone();
@@ -860,6 +860,7 @@ fn every_request_kind_round_trips() {
     let commission = Mutation::commission(serial, op, 0).unwrap();
     let requests = [
         Request::Hello { nonce: [1; 32] },
+        Request::PoolInventory,
         Request::Status {
             pool: Some(target.pool),
         },
@@ -896,5 +897,148 @@ fn every_request_kind_round_trips() {
         let (other_kind, m) = encode_request(&decoded, &mut output).unwrap();
         assert_eq!(kind, other_kind);
         assert_eq!(&bytes[..n], &output[..m]);
+    }
+}
+
+#[test]
+fn pool_inventory_roundtrip_and_boundaries() {
+    use kes_core::identity::{DeviceId, IncarnationId, PoolId, StorageSlot};
+    use kes_core::lifecycle::{PoolInventory, PoolInventoryEntry};
+    use kes_core::operation::PoolTarget;
+    use kes_protocol::usb::{MAX_PAYLOAD, PoolInventoryResponse, Request, Response};
+
+    let mut bytes = [0; MAX_PAYLOAD];
+    let (kind, n) = usb::encode_request(&Request::PoolInventory, &mut bytes).unwrap();
+    assert_eq!(kind, Kind::PoolInventory);
+    assert_eq!(&bytes[..n], &[0xa0]);
+    assert!(matches!(
+        usb::decode_request(kind, &bytes[..n]),
+        Ok(Request::PoolInventory)
+    ));
+    assert!(usb::decode_request(kind, &[0xa1, 1, 0]).is_err());
+    assert!(usb::decode_request(kind, &[0xa0, 0]).is_err());
+
+    let mut inventory = PoolInventory {
+        revision: u64::MAX,
+        count: 0,
+        entries: [PoolInventoryEntry::ZERO; StorageSlot::CAPACITY as usize],
+    };
+    let device = DeviceId::from_bytes([9; 16]);
+    let encode = |inventory, bytes: &mut [u8]| {
+        usb::encode_response(
+            &Response::PoolInventory(PoolInventoryResponse { device, inventory }),
+            bytes,
+        )
+    };
+    let (_, empty_len) = encode(inventory, &mut bytes).unwrap();
+    match usb::decode_response(kind, &bytes[..empty_len]).unwrap() {
+        Response::PoolInventory(value) => assert_eq!(value.inventory, inventory),
+        _ => panic!("wrong response kind"),
+    }
+    for (i, entry) in inventory.entries.iter_mut().enumerate() {
+        *entry = PoolInventoryEntry {
+            target: PoolTarget {
+                pool: PoolId::from_bytes([i as u8; 28]),
+                incarnation: IncarnationId::from_bytes([i as u8; 16]),
+            },
+            revision: u64::MAX,
+        };
+    }
+    inventory.count = StorageSlot::CAPACITY;
+    let (response_kind, len) = encode(inventory, &mut bytes).unwrap();
+    assert_eq!(response_kind, kind);
+    assert_eq!(len, 4000);
+    match usb::decode_response(kind, &bytes[..len]).unwrap() {
+        Response::PoolInventory(value) => {
+            assert_eq!(value.device, device);
+            assert_eq!(value.inventory, inventory);
+        }
+        _ => panic!("wrong response kind"),
+    }
+    inventory.count = 1;
+    let (_, len) = encode(inventory, &mut bytes).unwrap();
+    match usb::decode_response(kind, &bytes[..len]).unwrap() {
+        Response::PoolInventory(value) => {
+            assert_eq!(value.inventory.count, 1);
+            assert_eq!(value.inventory.entries[0], inventory.entries[0]);
+            assert_eq!(value.inventory.entries[1], PoolInventoryEntry::ZERO);
+        }
+        _ => panic!("wrong response kind"),
+    }
+    inventory.count = StorageSlot::CAPACITY + 1;
+    assert!(encode(inventory, &mut bytes).is_err());
+}
+
+#[test]
+fn pool_inventory_rejects_malformed_responses() {
+    use kes_core::identity::{DeviceId, IncarnationId, PoolId, StorageSlot};
+    use kes_core::lifecycle::{PoolInventory, PoolInventoryEntry};
+    use kes_core::operation::PoolTarget;
+    use kes_protocol::usb::{MAX_PAYLOAD, PoolInventoryResponse, Response};
+
+    let entry = PoolInventoryEntry {
+        target: PoolTarget {
+            pool: PoolId::from_bytes([1; 28]),
+            incarnation: IncarnationId::from_bytes([2; 16]),
+        },
+        revision: 0,
+    };
+    let mut inventory = PoolInventory {
+        revision: 0,
+        count: 2,
+        entries: [PoolInventoryEntry::ZERO; StorageSlot::CAPACITY as usize],
+    };
+    inventory.entries[0] = entry;
+    inventory.entries[1] = entry;
+    let mut bytes = [0; MAX_PAYLOAD];
+    let (_, len) = usb::encode_response(
+        &Response::PoolInventory(PoolInventoryResponse {
+            device: DeviceId::from_bytes([3; 16]),
+            inventory,
+        }),
+        &mut bytes,
+    )
+    .unwrap();
+    assert!(usb::decode_response(Kind::PoolInventory, &bytes[..len]).is_err());
+
+    inventory.count = 1;
+    let (_, len) = usb::encode_response(
+        &Response::PoolInventory(PoolInventoryResponse {
+            device: DeviceId::from_bytes([3; 16]),
+            inventory,
+        }),
+        &mut bytes,
+    )
+    .unwrap();
+    let valid = bytes[..len].to_vec();
+    let mut cases = Vec::new();
+    let mut trailing = valid.clone();
+    trailing.push(0);
+    cases.push(trailing);
+    let mut unknown_field = valid.clone();
+    unknown_field[0] = 0xa4;
+    unknown_field.extend_from_slice(&[4, 0]);
+    cases.push(unknown_field);
+    let mut invalid_device_length = valid.clone();
+    invalid_device_length[2] = 0x4f;
+    cases.push(invalid_device_length);
+    let mut invalid_target_map = valid.clone();
+    invalid_target_map[25] = 0xa1;
+    cases.push(invalid_target_map);
+    let mut invalid_pool_length = valid.clone();
+    invalid_pool_length[28] = 27;
+    cases.push(invalid_pool_length);
+    let mut noncanonical_array_length = valid.clone();
+    noncanonical_array_length.splice(22..23, [0x98, 1]);
+    cases.push(noncanonical_array_length);
+    let mut noncanonical_revision = valid.clone();
+    noncanonical_revision.splice(20..21, [0x18, 0]);
+    cases.push(noncanonical_revision);
+    let mut too_many = valid[..22].to_vec();
+    too_many.extend_from_slice(&[0x98, 65]);
+    too_many.extend_from_slice(&[0xf6; 65]);
+    cases.push(too_many);
+    for malformed in cases {
+        assert!(usb::decode_response(Kind::PoolInventory, &malformed).is_err());
     }
 }
