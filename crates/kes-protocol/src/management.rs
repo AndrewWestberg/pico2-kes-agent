@@ -3,6 +3,7 @@
 //! The message retains the original JSON bytes; validation is performed before either
 //! decoding or encoding. File paths and operational signing-key material are not wire
 //! fields. Public binary fields are lower-case hex (encrypted artifacts are bounded).
+use kes_core::identity::StorageSlot;
 use kes_core::identity::{DeviceId, Digest32, GenerationId, IncarnationId, OperationId, PoolId};
 
 pub const MAX_FRAME: usize = 16_384;
@@ -85,6 +86,7 @@ impl FrameDecoder {
 pub enum Action {
     DeviceStatus,
     DeviceSecurity,
+    DeviceInventory,
     DeviceCommission,
     PoolList,
     PoolStatus,
@@ -103,6 +105,7 @@ impl Action {
         Ok(match s {
             "device.status" => Self::DeviceStatus,
             "device.security" => Self::DeviceSecurity,
+            "device.inventory" => Self::DeviceInventory,
             "device.commission" => Self::DeviceCommission,
             "pool.list" => Self::PoolList,
             "pool.status" => Self::PoolStatus,
@@ -714,7 +717,10 @@ impl<'a> Parser<'a> {
             }
         }
         let required = match action {
-            Action::DeviceStatus | Action::DeviceSecurity | Action::PoolList => 0,
+            Action::DeviceStatus
+            | Action::DeviceSecurity
+            | Action::DeviceInventory
+            | Action::PoolList => 0,
             Action::DeviceCommission => 1 << 0,
             Action::PoolStatus => 1 << 1,
             Action::PoolEnroll => (1 << 4) | (1 << 5),
@@ -1096,7 +1102,7 @@ impl<'a> Parser<'a> {
                         }
                         first = false;
                         count += 1;
-                        if count > 16 {
+                        if count > StorageSlot::CAPACITY as usize {
                             return Err(Error::InvalidField);
                         }
                         self.public_object(true)?;

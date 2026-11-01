@@ -127,6 +127,29 @@ pub struct PoolStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolInventoryEntry {
+    pub target: PoolTarget,
+    pub revision: u64,
+}
+
+impl PoolInventoryEntry {
+    pub const ZERO: Self = Self {
+        target: PoolTarget {
+            pool: PoolId::from_bytes([0; 28]),
+            incarnation: IncarnationId::from_bytes([0; 16]),
+        },
+        revision: 0,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolInventory {
+    pub revision: u64,
+    pub count: u8,
+    pub entries: [PoolInventoryEntry; StorageSlot::CAPACITY as usize],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Current {
     pub generation_id: GenerationId,
     pub verification_key: [u8; 32],
@@ -1152,6 +1175,44 @@ impl<F: Flash, E: Entropy> Device<F, E> {
         };
         self.put_pool(index, pool);
         Ok(result)
+    }
+
+    pub fn pool_inventory(&mut self) -> Result<PoolInventory, Error> {
+        self.require_ready()?;
+        let revision = self.revision()?;
+        let occupied = self.config.as_ref().ok_or(Error::Uncommissioned)?.occupied;
+        let mut inventory = PoolInventory {
+            revision,
+            count: 0,
+            entries: [PoolInventoryEntry::ZERO; SLOT_COUNT],
+        };
+        for index in 0..SLOT_COUNT {
+            if occupied & (1u64 << index) == 0 {
+                continue;
+            }
+            let slot = StorageSlot::new(index as u8).map_err(|_| Error::StorageFailure)?;
+            let snapshot = self
+                .storage
+                .pool_snapshot_for_deletion(slot)
+                .map_err(|_| Error::StorageFailure)?;
+            let decoded = decode_pool_header(snapshot.payload(), slot)?;
+            let count = usize::from(inventory.count);
+            if inventory.entries[..count]
+                .iter()
+                .any(|entry| entry.target.pool == decoded.enrollment.pool_id)
+            {
+                return Err(Error::StorageFailure);
+            }
+            inventory.entries[count] = PoolInventoryEntry {
+                target: PoolTarget {
+                    pool: decoded.enrollment.pool_id,
+                    incarnation: decoded.enrollment.incarnation_id,
+                },
+                revision: decoded.revision,
+            };
+            inventory.count += 1;
+        }
+        Ok(inventory)
     }
 
     /// Read authenticated pool metadata for deletion, without restoring public objects.

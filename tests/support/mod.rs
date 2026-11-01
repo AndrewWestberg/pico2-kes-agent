@@ -193,6 +193,7 @@ struct Emulator {
     hello_timeout: bool,
     last_generation: Option<GenerationId>,
     security: Option<kes_protocol::security::SecurityStatus>,
+    inventory_fault: u8,
 }
 
 struct ContextInput {
@@ -247,6 +248,7 @@ impl Emulator {
                 usb_serial: *b"00afd9003906a634",
                 storage_blank_at_boot: true,
             }),
+            inventory_fault: 0,
         }
     }
 
@@ -927,6 +929,38 @@ impl DeviceTransport for Emulator {
         match request {
             Request::Hello { nonce } => self.hello(*nonce),
             Request::Status { pool } => self.status(*pool),
+            Request::PoolInventory => {
+                if self.inventory_fault == 1 {
+                    return Err(UsbError::Protocol);
+                }
+                if self.inventory_fault == 2 {
+                    return self.status(None);
+                }
+                if matches!(
+                    self.handoff.receipt().map(|receipt| receipt.outcome()),
+                    Some(ReceiptOutcome::Pending)
+                ) {
+                    return Err(UsbError::Protocol);
+                }
+                let mut device = self
+                    .device()
+                    .identity()
+                    .ok_or(UsbError::Protocol)?
+                    .enrollment_record()
+                    .public()
+                    .device();
+                if self.inventory_fault == 3 {
+                    device = DeviceId::from_bytes([0; 16]);
+                }
+                let inventory = self
+                    .device_mut()
+                    .pool_inventory()
+                    .map_err(|_| UsbError::Protocol)?;
+                self.encode(&Response::PoolInventory(wire::PoolInventoryResponse {
+                    device,
+                    inventory,
+                }))
+            }
             Request::SecurityStatus => {
                 let report = self.security.ok_or(UsbError::Protocol)?;
                 self.encode(&Response::SecurityStatus(report))
@@ -1124,6 +1158,14 @@ impl TestRig {
 
     pub fn set_security_report(&mut self, report: Option<kes_protocol::security::SecurityStatus>) {
         self.state.lock().unwrap().usb.security = report;
+    }
+
+    pub fn set_inventory_fault(&self, fault: u8) {
+        self.state.lock().unwrap().usb.inventory_fault = fault;
+    }
+
+    pub fn inventory_cli(&self) -> CliResult {
+        self.run_cli(vec!["device".into(), "inventory".into()])
     }
 
     fn new(with_pool: bool, certified: bool, timestamp: u64) -> Self {
@@ -1330,6 +1372,15 @@ impl TestRig {
             state.journal.next_sequence(),
             state.journal.pending().is_some(),
         )
+    }
+
+    pub fn inventory_state(&self) -> (Vec<u8>, Vec<u8>, u64, bool) {
+        let mut state = self.state.lock().unwrap();
+        let revision = state.usb.device().revision().unwrap();
+        let pending = state.usb.handoff.receipt().is_some();
+        let flash = state.usb.device_mut().flash_mut().bytes.clone();
+        let journal = fs::read(self.root.join("operations.journal")).unwrap();
+        (flash, journal, revision, pending)
     }
 
     fn run_cli(&self, mut args: Vec<String>) -> CliResult {

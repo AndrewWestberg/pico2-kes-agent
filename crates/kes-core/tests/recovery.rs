@@ -822,9 +822,93 @@ fn deletion_terminal_publication_survives_reboot_for_receipt_recovery() {
     ));
 }
 
+#[test]
+fn inventory_is_bounded_ordered_and_read_only() {
+    let mut blank = boot(ModelFlash::new(CAPACITY));
+    assert_eq!(blank.pool_inventory(), Err(Error::Uncommissioned));
+
+    let mut device = commissioned();
+    let empty = device.pool_inventory().unwrap();
+    assert_eq!(empty.count, 0);
+    assert_eq!(empty.revision, device.revision().unwrap());
+    assert!(
+        empty
+            .entries
+            .iter()
+            .all(|entry| *entry == kes_core::lifecycle::PoolInventoryEntry::ZERO)
+    );
+
+    for n in 1..=64 {
+        device.enroll(&enrollment(n)).unwrap();
+    }
+    device
+        .accept_context(&context(1, 5, 1_000, 1), 100)
+        .unwrap();
+    let handoff = Handoff::commissioned(*device.hello().unwrap().public(), 17);
+    let mut encoded = [0; MAX_HANDOFF_BYTES];
+    let len = handoff.encode(&mut encoded).unwrap();
+    device.persist_handoff(&encoded[..len]).unwrap();
+    let statuses: Vec<_> = (1..=64)
+        .map(|n| device.pool_status(target(n).pool).unwrap())
+        .collect();
+    let revision = device.revision().unwrap();
+    let before = device.flash().bytes().to_vec();
+    let start = device.flash().trace.len();
+    let full = device.pool_inventory().unwrap();
+    assert_eq!(full.revision, revision);
+    assert_eq!(full.count, 64);
+    for (index, entry) in full.entries.iter().enumerate() {
+        assert_eq!(entry.target, target(index as u8 + 1));
+        assert_eq!(entry.revision, statuses[index].revision);
+    }
+    assert_eq!(device.flash().bytes(), before.as_slice());
+    assert!(device.flash().trace[start..].iter().all(|event| !matches!(
+        event.boundary,
+        Boundary::Program | Boundary::MarkerProgram | Boundary::Erase
+    )));
+    assert_eq!(device.revision().unwrap(), revision);
+    assert_eq!(
+        Handoff::decode(device.persisted_handoff().unwrap().unwrap()).unwrap(),
+        handoff
+    );
+    for n in 1..=64 {
+        assert_eq!(
+            device.pool_status(target(n).pool).unwrap(),
+            statuses[usize::from(n - 1)]
+        );
+    }
+    // The existing lease remains usable after the scan.
+    device
+        .accept_context(&context(1, 5, 1_001, 2), 100)
+        .unwrap();
+
+    for n in [1, 17, 64] {
+        device.delete_pool(target(n), None).unwrap();
+    }
+    let sparse = device.pool_inventory().unwrap();
+    let expected: Vec<_> = (1..=64)
+        .filter(|n| ![1, 17, 64].contains(n))
+        .map(target)
+        .collect();
+    assert_eq!(usize::from(sparse.count), expected.len());
+    assert_eq!(
+        sparse.entries[..expected.len()]
+            .iter()
+            .map(|entry| entry.target)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        sparse.entries[expected.len()..]
+            .iter()
+            .all(|entry| *entry == kes_core::lifecycle::PoolInventoryEntry::ZERO)
+    );
+}
+
 fn assert_deletion_refused_without_writes(device: &mut TestDevice) {
     let before = device.flash().bytes().to_vec();
     let start = device.flash().trace.len();
+    assert_eq!(device.pool_inventory(), Err(Error::StorageFailure));
     assert_eq!(
         device.pool_deletion_status(target(2).pool),
         Err(Error::StorageFailure)
@@ -867,6 +951,12 @@ fn deletion_of_damaged_active_or_staged_objects_preserves_other_pool() {
             );
             let before = device.flash().bytes().to_vec();
             let start = device.flash().trace.len();
+            let inventory = device.pool_inventory().unwrap();
+            assert_eq!(inventory.count, 2);
+            assert_eq!(inventory.entries[0].target, target(2));
+            assert_eq!(inventory.entries[0].revision, expected.revision);
+            assert_eq!(inventory.entries[1].target, target(3));
+            assert_eq!(inventory.entries[1].revision, other.revision);
             assert_eq!(device.pool_deletion_status(target(2).pool), Ok(expected));
             let wrong = PoolTarget {
                 pool: target(2).pool,

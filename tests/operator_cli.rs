@@ -28,6 +28,62 @@ fn temporary(name: &str) -> PathBuf {
 }
 
 #[test]
+fn inventory_cli_accepts_full_response_and_rejects_overflow() {
+    for count in [64, 65] {
+        let path = temporary(&format!("inventory-{count}.sock"));
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut length = [0; 4];
+            stream.read_exact(&mut length).unwrap();
+            let mut request = vec![0; u32::from_be_bytes(length) as usize];
+            stream.read_exact(&mut request).unwrap();
+            let request: Value = serde_json::from_slice(&request).unwrap();
+            assert_eq!(request["action"], "device.inventory");
+            assert_eq!(request["arguments"], serde_json::json!({}));
+            let pools: Vec<_> = (0..count)
+                .map(|index| {
+                    serde_json::json!({
+                        "pool_id": format!("{index:056x}"),
+                        "incarnation_id": format!("{index:032x}"),
+                        "revision": u64::MAX,
+                    })
+                })
+                .collect();
+            let reply = serde_json::json!({
+                "version": 1, "request_id": request["request_id"], "outcome": "success",
+                "result": {"device_id": "11".repeat(16), "revision": u64::MAX, "pools": pools},
+                "error": null
+            });
+            let bytes = serde_json::to_vec(&reply).unwrap();
+            stream
+                .write_all(&(bytes.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let result = cli(&[
+            "--socket".into(),
+            path.display().to_string(),
+            "--json".into(),
+            "device".into(),
+            "inventory".into(),
+        ]);
+        server.join().unwrap();
+        assert_eq!(result.status.success(), count == 64);
+        if count == 64 {
+            let response: Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(response["result"]["pools"].as_array().unwrap().len(), 64);
+        }
+        fs::remove_file(path).unwrap();
+    }
+    assert_eq!(
+        cli(&strings(&["device", "inventory", "--page-size", "1"]))
+            .status
+            .code(),
+        Some(2)
+    );
+}
+#[test]
 fn executable_rejects_direct_usb_without_contacting_a_device() {
     let output = cli(&strings(&["--help"]));
     assert_eq!(output.status.code(), Some(0));
