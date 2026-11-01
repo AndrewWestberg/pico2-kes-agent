@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "request": {
+    "action": "generation.create",
+    "arguments": {
+      "incarnation_id": "1315039c22a28244798990462ef02149",
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef"
+    },
+    "expected_revision": 5,
+    "operation_id": "b90694d0fe303f58ec347ef10e5f839b",
+    "request_id": "f4a4210981c6f7dbbfc9dedc6240febb",
+    "version": 1
+  },
+  "response": {
+    "error": null,
+    "outcome": "success",
+    "request_id": "f4a4210981c6f7dbbfc9dedc6240febb",
+    "result": {
+      "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+      "artifact_retention": "retrievable until replacement, expiry, explicit discard, or pool deletion; external copies are unaffected",
+      "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+      "kind": "generated",
+      "operation_id": "b90694d0fe303f58ec347ef10e5f839b",
+      "request_digest": "346d56081e11f001d33cc466e2fc49ec94ce543bf43800191654a7df452c57d2",
+      "result_digest": "8d90b9b1693a20fb87262fc7aed8e4d97c4b363b3cf5105a2f110480a862ae70",
+      "revision": 6,
+      "sequence": 69,
+      "version": 1
+    },
+    "version": 1
+  }
+}

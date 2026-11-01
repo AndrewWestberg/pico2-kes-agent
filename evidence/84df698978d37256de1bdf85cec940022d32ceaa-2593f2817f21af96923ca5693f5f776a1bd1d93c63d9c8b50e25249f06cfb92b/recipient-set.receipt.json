@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "request": {
+    "action": "recipient.set",
+    "arguments": {
+      "public_key": "ec4b9d20e8f14e1f3327c252febc8e70d150b82223076b3c65e939aff80af52f"
+    },
+    "expected_revision": 22,
+    "operation_id": "c42549c451221a35a5cd9e5b5714f5bc",
+    "request_id": "d1fc63464d95f821504c3c0d935480f2",
+    "version": 1
+  },
+  "response": {
+    "error": null,
+    "outcome": "success",
+    "request_id": "d1fc63464d95f821504c3c0d935480f2",
+    "result": {
+      "kind": "applied",
+      "operation_id": "c42549c451221a35a5cd9e5b5714f5bc",
+      "request_digest": "575565fa1995867b622c0912f42cd33e897b0ffbc90d3fb6d9046e631b0c7cd0",
+      "result_digest": "98340bfaf38d67783a925caaccc6090142d7e54b630b22a6fe2d225203e37e4f",
+      "revision": 23,
+      "sequence": 55,
+      "version": 1
+    },
+    "version": 1
+  }
+}

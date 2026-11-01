@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "request": {
+    "action": "generation.certificate",
+    "arguments": {
+      "certificate": "82845820bd75f0592c6cf0d2ffba2538dd9257ff782499343d88dcf1cde8da5c74817e2a0218405840a666f4f7105a3b125e1defa97e3f3210c5a8c1cb26eb6c55a1952e01e3e7e8a997501ade620d2e918af376726b617bf8148b2149b55566d6be8c40c1f4943d0a58208f5eb1e1bd7ceb61ab118ff858a4fea97115f7af222ac823b6c4ae2666f35c4a",
+      "generation_id": "a6ee4799535ea8a6bb3a9c4df378ab4e",
+      "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02"
+    },
+    "expected_revision": 14,
+    "operation_id": "0daeb5c7ca5470cc7d42c6f44e7b1589",
+    "request_id": "2dd12b2a8dfade49729f92d82632152a",
+    "version": 1
+  },
+  "response": {
+    "error": null,
+    "outcome": "success",
+    "request_id": "2dd12b2a8dfade49729f92d82632152a",
+    "result": {
+      "kind": "applied",
+      "operation_id": "0daeb5c7ca5470cc7d42c6f44e7b1589",
+      "request_digest": "a99a4f78f6bcbf06cff4629a1d4cf1f2b3e53d7a5023344633f41312f1de7c12",
+      "result_digest": "a28b921eb4a4fc0b4910208410f58ba04b3e684e8d468c214ec3525dc89d0ac9",
+      "revision": 15,
+      "sequence": 74,
+      "version": 1
+    },
+    "version": 1
+  }
+}

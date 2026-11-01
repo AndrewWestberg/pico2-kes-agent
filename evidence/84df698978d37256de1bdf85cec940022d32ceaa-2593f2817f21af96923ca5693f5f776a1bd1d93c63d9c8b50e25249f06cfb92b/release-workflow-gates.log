@@ -1,0 +1,128 @@
+   Compiling pico2-kes-agent v0.1.0 (/home/westbam/Development/pico2-kes-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.85s
+     Running tests/backup_restore.rs (target/debug/deps/backup_restore-9ba697baf55f2f61)
+
+running 4 tests
+test generated_recipient_public_file_round_trips_and_authenticates_its_identifier ... ok
+test public_recipient_inspection_authenticates_origin_and_bindings_without_decryption ... ok
+test restores_exact_period_zero_state_to_owner_only_no_clobber_file ... ok
+test wrong_binding_recipient_password_and_tampering_publish_nothing ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.42s
+
+     Running tests/service_lifecycle.rs (target/debug/deps/service_lifecycle-a9f6d8541f9b36dd)
+
+running 3 tests
+test configured_custom_pool_socket_serves_service_v2_without_default_socket ... ok
+test seventeenth_idle_management_connection_is_rejected_busy_before_admission ... ok
+test absent_device_mutation_does_not_leave_recovery_pending_across_restart ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+............................................record already exists
+repair attempt already claimed
+......{
+  "admission": {
+    "controller": {
+      "dbg": 0,
+      "debugen": 0,
+      "debugen_lock": 271,
+      "rma": 0,
+      "status": 8392705,
+      "usr": 1
+    },
+    "identity": {
+      "chip": "00afd9003906a634",
+      "critical": 5,
+      "flags": 1,
+      "key": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+      "key_match": 1,
+      "package": 0,
+      "result": 1,
+      "rom": 2,
+      "words": 4
+    },
+    "pages": {
+      "1": [
+        0,
+        0,
+        0
+      ],
+      "2": [
+        0,
+        1381653,
+        0
+      ],
+      "3": [
+        0,
+        0,
+        0
+      ],
+      "63": [
+        0,
+        1381653,
+        0
+      ]
+    },
+    "rows": {
+      "0040": 7,
+      "0041": 5,
+      "0042": 5,
+      "0043": 5,
+      "0044": 5,
+      "0045": 5,
+      "0046": 5,
+      "0047": 5,
+      "0048": 2990464,
+      "0049": 2990464,
+      "004a": 2990464,
+      "004b": 3585,
+      "004c": 3585,
+      "004d": 3585,
+      "00c4": 0,
+      "00c5": 0,
+      "00c6": 0,
+      "00c7": 0,
+      "00c8": 0,
+      "00c9": 0,
+      "00ca": 0,
+      "00cb": 0,
+      "00d0": 0,
+      "00d1": 0,
+      "00d2": 0,
+      "00d3": 0,
+      "00d4": 0,
+      "00d5": 0,
+      "00d6": 0,
+      "00d7": 0,
+      "00e0": 0,
+      "00e1": 0,
+      "00e2": 0,
+      "00e3": 0,
+      "00e4": 0,
+      "00e5": 0,
+      "00e6": 0,
+      "00e7": 0,
+      "00e8": 0,
+      "00e9": 0,
+      "00ea": 0,
+      "00eb": 0,
+      "00ec": 0,
+      "00ed": 0,
+      "00ee": 0,
+      "00ef": 0
+    },
+    "time": "2026-11-01T15:47:14.152935+00:00"
+  },
+  "status": "admitted"
+}
+serial response timeout
+....Verified complete release published.
+Verified complete release published.
+Verified complete release published.
+....Identical completed release already exists; no changes.
+...
+----------------------------------------------------------------------
+Ran 61 tests in 1.821s
+
+OK

@@ -1,0 +1,29 @@
+2026-11-01T21:22:09+00:00
+Removed '/run/systemd/system/sleep.target'.
+Removed '/run/systemd/system/suspend.target'.
+Removed '/run/systemd/system/hibernate.target'.
+Removed '/run/systemd/system/hybrid-sleep.target'.
+NAME      TYPE       SIZE USED PRIO
+/swap.img file 8589930496    0   -1
+Id=sleep.target
+ActiveState=inactive
+UnitFileState=static
+
+Id=suspend.target
+ActiveState=inactive
+UnitFileState=static
+
+Id=hibernate.target
+ActiveState=inactive
+UnitFileState=static
+
+Id=hybrid-sleep.target
+ActiveState=inactive
+UnitFileState=static
+ActiveState=inactive
+UnitFileState=enabled
+59d9ee06fc89c7c9c263e982c289b58a673ceaf6be11b0992e9c820e105e2cbb  /usr/bin/pico2-kes-agentd
+cd30d0e7424e721d77b38605da410dfd8aeba5482021a04647b0594a24574dd4  /usr/bin/pico2-kes-agent-cli
+f2c7414359935932a19334cd1a00120a9a01e259ce033e8aaa9b01c29b91d4ba  /etc/pico2-kes-agent/config.json
+44cf213eb896d04a66e48d2b0230a330a0bb9db251c68f37220ef3fc6a2a4ea2  /usr/lib/systemd/system/pico2-kes-agentd.service
+Restored original swap and sleep policy; ordinary daemon remains inactive. Installed binaries, updated service unit, device pools and journal retained.

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "device": {
+    "usb_serial": "00afd9003906a634",
+    "id": "f39127e9e0ab25f8341401048acf629d",
+    "identity_public_key": "a3cd5edfccee6bef4b640a591e80afd47a69ef1970b9abe0de63514df56b6e7f"
+  },
+  "socket_directory": "/run/kes-qualification-2p9qdufn",
+  "socket_group": "westbam",
+  "socket_mode": "0660",
+  "management_socket": "/run/kes-qualification-2p9qdufn/management.sock",
+  "state_directory": "/var/lib/kes-lab-dafa3a76",
+  "networks": {
+    "lab": {
+      "byron_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/byron-genesis.json",
+      "shelley_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/shelley-genesis.json",
+      "byron_to_shelley_epochs": 0,
+      "genesis_digest": "51b36bacad45890d20ff9e5df4544837505f8594a71cd0877b1966adc3bfbf5a",
+      "max_context_age_ms": 30000
+    },
+    "legacy-lab": {
+      "byron_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/byron-genesis.json",
+      "shelley_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/shelley-genesis.json",
+      "byron_to_shelley_epochs": 0,
+      "genesis_digest": "51b36bacad45890d20ff9e5df4544837505f8594a71cd0877b1966adc3bfbf5a",
+      "max_context_age_ms": 30000
+    },
+    "preview": {
+      "byron_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/byron-genesis.json",
+      "shelley_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/shelley-genesis.json",
+      "byron_to_shelley_epochs": 0,
+      "genesis_digest": "51b36bacad45890d20ff9e5df4544837505f8594a71cd0877b1966adc3bfbf5a",
+      "max_context_age_ms": 30000
+    },
+    "qualification-lab": {
+      "byron_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/byron-genesis.json",
+      "shelley_genesis_file": "/run/kes-qualification-2p9qdufn/inputs/shelley-genesis.json",
+      "byron_to_shelley_epochs": 0,
+      "genesis_digest": "51b36bacad45890d20ff9e5df4544837505f8594a71cd0877b1966adc3bfbf5a",
+      "max_context_age_ms": 30000
+    }
+  },
+  "pools": [
+    {
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+      "socket_path": "/run/kes-qualification-2p9qdufn/pool-1.sock",
+      "network": "qualification-lab"
+    },
+    {
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+      "socket_path": "/run/kes-qualification-2p9qdufn/pool-2.sock",
+      "network": "qualification-lab"
+    },
+    {
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "incarnation_id": "1315039c22a28244798990462ef02149",
+      "socket_path": "/run/kes-qualification-2p9qdufn/pool-3.sock",
+      "network": "qualification-lab"
+    }
+  ]
+}

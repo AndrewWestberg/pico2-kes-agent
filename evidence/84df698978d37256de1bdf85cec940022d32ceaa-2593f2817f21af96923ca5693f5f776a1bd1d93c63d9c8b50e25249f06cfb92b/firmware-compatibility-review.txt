@@ -1,0 +1,52 @@
+## Changed-source inventory
+
+For **`2e22f818e15d1824f88c9eed365aaffc29dff803` → `c7db438674f2341884b46c0198319d29900d4855`**, excluding documentation and evidence blobs:
+
+- **Core:** `crates/kes-core/src/lifecycle.rs`
+- **Firmware:** `firmware/src/main.rs`, `firmware/src/service.rs`
+- **Protocol:** **no committed changes**
+- **Qualification:** `qualification/src/hardware.rs`
+- **Host:** `src/backup/recipient.rs`, `src/cli/mod.rs`, `src/config.rs`, and `src/daemon/{context,journal,management,node_service,registry,runtime,usb}.rs`
+- **Tests:** `crates/kes-core/tests/recovery.rs`, `tests/{host_security,management_recovery,node_service,operator_cli,service_lifecycle,single_pool}.rs`, `tests/support/mod.rs`
+- **Build/deployment configuration:** `Cargo.toml`, `deploy/pico2-kes-agentd.service`
+
+The substantive review covered the core/firmware changes and their storage, protocol, host-reconciliation, and release compatibility boundaries—not an independent review of every host change.
+
+## What this change does
+
+The core change allows the first certificate for an active generation to be installed before its start period, even when a context already exists. Firmware changes preserve uncertainty after failed durable writes and resume pending mutations from their original identity rather than treating uncertain commits as definite rejections.
+
+## Findings
+
+**No concrete, patch-introduced blockers found in the assigned scope.**
+
+### Storage interpretation is preserved
+
+The baseline and committed candidate retain the same storage interpretation:
+
+- `STORAGE_VERSION` remains **2**. Configuration and pool codecs remain version 2; generation-state, certificate, publication, recipient, and deletion encodings are unchanged.
+- `crates/kes-core/src/storage.rs` is unchanged: partition offsets, record-domain identifiers, encryption/key derivation, authenticated markers, bank selection, and transaction cleanup remain identical.
+- `firmware/memory.x` is unchanged: firmware occupies `[0x10000000, 0x10100000)` and reserved state occupies `[0x10100000, 0x10308000)`.
+- `firmware/src/main.rs::configuration_root` and `hardware_identity` are unchanged. Both revisions derive the wrapping root using the same OTP private value, chip ID, fitted-flash identity, HKDF salt `pico2-kes-config-wrap-v1`, and `root-key` information suffix.
+- Handoff serialization in `crates/kes-core/src/operation.rs` is unchanged, including its version-1 encoding.
+
+**Conclusion:** the reviewed committed interval introduces no storage-format migration, wrapping-root reinterpretation, or partition-layout incompatibility.
+
+### Restoration and durable recovery remain connected end to end
+
+- The future-certificate change still commits through the existing pool transaction path. `current` continues to reject delivery before the certificate’s start; `catch_up` retains normal period validation. The added recovery test explicitly covers installation after context, reboot restoration, and release at the start period.
+- `handoff_uncertain` is volatile and starts clear only after startup recovery. Failed persistence or a mutation’s `StorageFailure` prevents subsequent dispatch rather than publishing an unreliable terminal receipt.
+- I traced firmware’s now-read-only `Reconcile` response to the host consumer. `management::reconcile_operation` explicitly handles `Pending`/`Unknown` by decoding and resubmitting the original durable request. Firmware then resumes the matching pending mutation.
+- Generated-result recovery uses the actual restored revision; certificate recovery permits revisions beyond the initial increment, accommodating installation-time evolution.
+- Runtime reconciliation occurs before context publication. The firmware pending-context guard therefore has a matching host recovery path.
+
+Operationally, **a latched `handoff_uncertain` requires firmware restart/power-cycle; USB reconnect alone does not clear it**. That is intentional fail-closed behavior, not a storage incompatibility.
+
+### Release authority and tooling
+
+No files under `security/`, `tools/`, or `.github/workflows/` changed in this interval. Firmware linker/build configuration and `Cargo.lock` are also unchanged. The boot authority, signing/verifier implementation, patched-picotool workflow, and firmware-only image bounds therefore have no patch-introduced compatibility change. The qualification change tightens USB evidence matching to the configured production serial; it does not alter firmware or storage.
+
+**Overall correctness:** correct within the assigned review scope.  
+**Confidence:** 0.93.
+
+Not checked: tests, builds, signed release bundles, or hardware behavior; no hardware qualification is claimed. Uncommitted inventory work was excluded, and no files were changed.

@@ -1,0 +1,15 @@
+What this change does: The committed changes harden management-operation replay and journal durability, derive KES context from genesis timing and host UTC, strengthen recipient-secret protection, and preserve configured per-pool service socket paths.
+
+**Findings: none.** I found no concrete patch-introduced blocker to the approved disposable three-pool procedure in the reviewed `2e22f818..c7db438` scope.
+
+Reviewed paths and evidence:
+- **Management recovery:** admission checks precede journal intent creation; recovery reconstructs an unsent request, reuses the original operation identity and digest, and resubmits through firmware’s existing mutation handler. Terminal results precede acknowledgment, declined operations retain their sequence, and completed operations replay without USB access.
+- **Clock/config:** the planned zero-Byron-epoch laboratory configuration derives absolute periods from the specified start time and one-second slots. Context production, USB consumption, lease rounding, boundary scheduling and reconnect-session handling are connected. Obsolete network fields are rejected deliberately.
+- **Secret protection:** interactive recipient input checks swap and disables dumps before accepting the passphrase; creation/unlocking also enforce the no-swap policy. Removing the clock-query syscall exceptions is consistent with removing those queries.
+- **Deletion/service integration:** traced deletion requests, terminal receipts, registry removal and socket reconciliation. Configured socket paths reach the listener registry. With `pools: []`, the runtime does not start a context poller for historical journal bindings.
+- Read the relevant recovery, timing, host-security, CLI and service tests as supporting source evidence—not executed results.
+
+**Overall correctness:** correct within this bounded review.  
+**Confidence:** 0.87.
+
+Not checked: tests, builds, installation, hardware behavior or qualification; the uncommitted inventory implementation was excluded. No files were changed. Safe execution still requires the plan’s verified journal continuity, host protections and authenticated firmware prerequisites.

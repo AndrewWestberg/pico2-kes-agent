@@ -1,0 +1,97 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/single_pool.rs (target/debug/deps/single_pool-03dc77b711d9779d)
+
+running 1 test
+test recipient_rotation_is_future_only_and_private_keys_stay_off_primary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 16.83s
+
+   Compiling pico2-kes-agent v0.1.0 (/home/westbam/Development/pico2-kes-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running unittests src/lib.rs (target/debug/deps/pico2_kes_agent-3d18b0fb67d3ce7f)
+
+running 41 tests
+test backup::recipient::tests::swap_policy_fails_closed ... ok
+test cli::tests::standard_verification_key_envelope_yields_raw_key_bytes ... ok
+test daemon::context::tests::context_age_rejects_unencodable_lease_boundaries ... ok
+test config::tests::network_schema_requires_transition_and_rejects_obsolete_fields ... ok
+test daemon::context::tests::transition_and_failed_clock_schedule_bounded_retries ... ok
+test config::tests::shelley_decimal_microseconds_are_exact ... ok
+test daemon::context::tests::fresh_sample_crosses_boundary_without_cached_period_or_timestamp ... ok
+test daemon::context::tests::wake_uses_earliest_network_boundary_and_encoded_lease ... ok
+test daemon::context::tests::reconnect_changes_session_and_resets_target_sequences ... ok
+test daemon::journal::tests::conflicts_and_ordering_cannot_advance_state ... ok
+test daemon::context::tests::mainnet_absolute_slot_and_upstream_regression_vector ... ok
+test daemon::journal::tests::directory_sync_failure_prevents_admission_and_retry_reads_journal ... ok
+test daemon::context::tests::invalid_clock_pre_shelley_and_overflow_withhold_context ... ok
+test cli::tests::status_runs_through_the_real_framed_unix_client ... ok
+test cli::tests::reconciliation_resends_saved_mutation_when_no_device_digest_was_received ... ok
+test config::tests::genesis_anchor_mainnet_and_transition_variants ... ok
+test daemon::journal::tests::declined_pre_admission_result_is_reconcilable_without_consuming_sequence ... ok
+test daemon::journal::tests::torn_tail_is_removed_but_complete_corruption_fails_closed ... ok
+test daemon::node_service::tests::subscriber_admission_is_bounded_before_worker_creation ... ok
+test daemon::runtime::tests::pool_sweep_consumes_the_precomputed_wake_deadline ... ok
+test daemon::journal::tests::restart_preserves_outstanding_and_completed_results ... ok
+test daemon::journal::tests::write_or_sync_failure_blocks_appends_until_reopen ... ok
+test daemon::node_service::tests::coalesces_latest_and_rejects_conflicting_descriptors ... ok
+test daemon::runtime::tests::rejected_runtime_errors_are_valid_management_responses ... ok
+test daemon::registry::tests::enrollment_replacement_and_deletion_reconcile_exact_bound_endpoints ... ok
+test daemon::runtime::tests::rejected_context_withholds_current_polling ... ok
+test daemon::node_service::tests::serves_exact_latest_bundle_and_waits_for_four_byte_confirmation ... ok
+test daemon::runtime::tests::uncertain_runtime_errors_put_digest_in_the_error_object ... ok
+test daemon::runtime::tests::temporary_device_unavailability_never_becomes_a_drop_publication ... ok
+test daemon::runtime::tests::polling_commits_context_before_forwarding_exact_device_publication ... ok
+test daemon::scheduler::tests::full_capacity_is_fair_and_a_65th_target_is_rejected ... ok
+test daemon::status::tests::every_public_health_state_has_a_stable_name ... ok
+test daemon::scheduler::tests::interrupted_round_resumes_with_the_next_pool_instead_of_starving_it ... ok
+test files::tests::rejects_non_owner_controlled_paths ... ok
+test daemon::sockets::tests::lock_excludes_second_owner_and_drop_removes_only_owned_socket ... ok
+test memory::tests::wipe_is_observable_before_unmapping ... ok
+test files::tests::refuses_existing_and_symlink_and_validates_regular_files ... ok
+test files::tests::sync_failures_propagate_and_only_unpublished_temps_are_removed ... ok
+test files::tests::concurrent_publication_has_exactly_one_winner ... ok
+
+running 1 test
+test memory::tests::lock_denial_in_isolated_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 0.00s
+
+test memory::tests::lock_denial_in_isolated_child ... ok
+test config::tests::genesis_trust_boundaries_fail_closed ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+   Compiling kes-core v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-core)
+   Compiling kes-protocol v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-protocol)
+   Compiling pico2-kes-agent v0.1.0 (/home/westbam/Development/pico2-kes-agent)
+   Compiling qualification v0.1.0 (/home/westbam/Development/pico2-kes-agent/qualification)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.91s
+     Running unittests src/main.rs (target/debug/deps/qualification-41e846ecd2ae601e)
+
+running 23 tests
+test evidence::tests::json_escapes_controls_and_quotes ... ok
+test evidence::tests::atomic_replace_preserves_complete_contents ... ok
+test evidence::tests::public_labels_reject_unbounded_or_control_data ... ok
+test evidence::tests::verdict_rejects_missing_execution_metadata_and_unavailable ... ok
+test load::tests::selected_test_requires_exact_success_record ... ok
+test physical::physical_security::tests::existing_scenarios_require_every_field_distinct ... ok
+test hardware::tests::observations_require_exact_supported_identity_and_ready_production_firmware ... ok
+test physical::physical_security::tests::security_policy_ignores_only_boot_diagnostic ... ok
+test physical::physical_security::tests::reinstall_requires_all_bundle_fields_equal ... ok
+test physical::physical_security::tests::snapshot_requires_matching_publication_revision_timestamp_and_period ... ok
+test physical::tests::context_response_requires_floor_and_full_binding ... ok
+test security::tests::a2_results_never_imply_a4_observation ... ok
+test physical::context_evidence::tests::retains_context_and_errors_without_clobbering_or_leaking_current ... ok
+test security::tests::duplicate_and_unknown_fields_are_rejected ... ok
+test security::tests::failed_observations_still_require_public_field_shapes ... ok
+test security::tests::pass_needs_observations ... ok
+test security::tests::preservation_rejects_mismatch_and_unequal_key_bytes ... ok
+test security::tests::pool_observation_requires_complete_publication ... ok
+test fixture::tests::rejects_syntax_unknown_duplicate_and_oversized_input ... ok
+test evidence::tests::leader_exit_closes_descendant_stdout ... ok
+test fixture::tests::rejects_semantic_errors_before_campaign_callback ... ok
+test physical::physical_security::tests::failure_is_durable_and_attempt_and_output_cannot_be_reused ... ok
+test evidence::tests::timeout_terminates_descendant ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+

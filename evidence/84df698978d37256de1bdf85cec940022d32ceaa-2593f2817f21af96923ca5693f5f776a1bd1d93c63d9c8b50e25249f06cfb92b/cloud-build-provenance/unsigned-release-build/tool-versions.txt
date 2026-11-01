@@ -1,0 +1,14 @@
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+picotool v2.3.1 (Linux, GNU-13.3.0, Release)
+cmake version 3.31.6
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+2041936441b48a3cc53ae3da9e805229fe8f4e18
+840c0a4e8fb67185b6cdab8959bc70a1d83698a8cc9b6947f94fb73d38deac9c  tools/patches/picotool-signature-conversion.patch
+079c6f39023649b154152db30f1d781e884879bc
+ 0bebf8b8c7f07abe3571ded48a11aa907a1ffb20 lib/mbedtls (v3.6.6)

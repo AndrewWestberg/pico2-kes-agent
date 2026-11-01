@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "request": {
+    "action": "pool.delete",
+    "arguments": {
+      "incarnation_id": "08b2f0036c366d958e494a91b16fb8c5",
+      "pool_id": "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a"
+    },
+    "expected_revision": 18,
+    "operation_id": "ed0bb39a579df5c3d04032244f128c9f",
+    "request_id": "cb7c453b81f6aabf629ad47c0a97001a",
+    "version": 1
+  },
+  "response": {
+    "error": null,
+    "outcome": "success",
+    "request_id": "cb7c453b81f6aabf629ad47c0a97001a",
+    "result": {
+      "drop_timestamp_us": 1793453414429430,
+      "high_water_us": 1793453414429430,
+      "incarnation_id": "08b2f0036c366d958e494a91b16fb8c5",
+      "kind": "deleted",
+      "operation_id": "ed0bb39a579df5c3d04032244f128c9f",
+      "pool_id": "65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a",
+      "request_digest": "020fc93ec82e7896cf85351e8e0330a717d8c7950fbbd76d11682b2f8de216dd",
+      "result_digest": "776d5f1eb67790579e0bcb046f7a47a5c078d49fc3526eae00369ba6fc8e56bc",
+      "revision": 19,
+      "sequence": 49,
+      "version": 1
+    },
+    "version": 1
+  }
+}

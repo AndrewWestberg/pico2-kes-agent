@@ -1,0 +1,5 @@
+{
+  "cborHex": "5820e525f4954542860aa42423eb4314a6800f151af99cfb9811d66cd2aa3e14eda3",
+  "description": "Pico2 KES agent verification key",
+  "type": "KesVerificationKey_ed25519_kes_2^6"
+}

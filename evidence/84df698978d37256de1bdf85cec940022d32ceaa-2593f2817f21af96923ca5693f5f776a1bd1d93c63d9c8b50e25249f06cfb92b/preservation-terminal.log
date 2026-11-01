@@ -1,0 +1,17 @@
+kes-preservation [service] — exited — up 2m33s
+ready=true persist=false detached=false exit=0
+   Compiling kes-core v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-core)
+   Compiling kes-protocol v0.1.0 (/home/westbam/Development/pico2-kes-agent/crates/kes-protocol)
+   Compiling pico2-kes-agent v0.1.0 (/home/westbam/Development/pico2-kes-agent)
+   Compiling qualification v0.1.0 (/home/westbam/Development/pico2-kes-agent/qualification)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.05s
+     Running `target/debug/qualification physical-context --preserve-update --input /home/westbam/pico2-qualification-2p
+9qdufn/preservation-input.json`
+USB released. Perform upgrade using the verified bundle at /home/westbam/pico2-qualification-2p9qdufn/candidate-v0.1.0-r
+c.11. For interruption scenarios, interrupt the indicated portion and then copy the complete verified bundle. Reboot int
+o the application, then type the exact serial 00afd9003906a634:
+00afd9003906a634
+USB released. Replenish a disposable staged generation for each pool using the existing attended workflow, without chang
+ing the recipient. Stop the daemon, then type the exact serial 00afd9003906a634:
+00afd9003906a634
+Public preservation observation written; full security qualification requires the other independent checks.

@@ -1,0 +1,39 @@
+{
+  "device_id": "f39127e9e0ab25f8341401048acf629d",
+  "identity_public_key": "a3cd5edfccee6bef4b640a591e80afd47a69ef1970b9abe0de63514df56b6e7f",
+  "usb_serial": "00afd9003906a634",
+  "recipient_public_key": "ec4b9d20e8f14e1f3327c252febc8e70d150b82223076b3c65e939aff80af52f",
+  "genesis_digest": "51b36bacad45890d20ff9e5df4544837505f8594a71cd0877b1966adc3bfbf5a",
+  "network_magic": 42,
+  "slots_per_period": 86400,
+  "lifetime": 64,
+  "period": 2,
+  "session": 3693819878566669304,
+  "sequence": 3398176372227768560,
+  "lease_seconds": 30,
+  "publication_time_us": 1793567608966161,
+  "scenario": "upgrade",
+  "before_bundle": "/home/westbam/pico2-qualification-2p9qdufn/base-v0.1.0-rc.9",
+  "after_bundle": "/home/westbam/pico2-qualification-2p9qdufn/candidate-v0.1.0-rc.11",
+  "output": "/home/westbam/pico2-qualification-2p9qdufn/preservation-result.json",
+  "pools": [
+    {
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+      "active_certificate": "/home/westbam/pico2-qualification-2p9qdufn/pool-1/active.opcert.cbor",
+      "staged_certificate": "/home/westbam/pico2-qualification-2p9qdufn/pool-1/staged.opcert.cbor"
+    },
+    {
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+      "active_certificate": "/home/westbam/pico2-qualification-2p9qdufn/pool-2/active.opcert.cbor",
+      "staged_certificate": "/home/westbam/pico2-qualification-2p9qdufn/pool-2/staged.opcert.cbor"
+    },
+    {
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "incarnation_id": "1315039c22a28244798990462ef02149",
+      "active_certificate": "/home/westbam/pico2-qualification-2p9qdufn/pool-3/active.opcert.cbor",
+      "staged_certificate": "/home/westbam/pico2-qualification-2p9qdufn/pool-3/staged.opcert.cbor"
+    }
+  ]
+}

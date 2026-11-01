@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/usr/bin/pico2-kes-agent-cli",
+    "--socket",
+    "/run/kes-qualification-2p9qdufn/management.sock",
+    "--json",
+    "pool",
+    "list"
+  ],
+  "utc": "2026-11-01T20:55:09.189243+00:00",
+  "exit_code": 0,
+  "stdout": "{\"error\":null,\"outcome\":\"success\",\"request_id\":\"3aea0e5d75e1e35011dff18310f5e75d\",\"result\":{\"cursor\":null,\"pools\":[{\"incarnation_id\":\"2e1833bc66a5c98a35ecd4a7820d22c2\",\"network\":\"preview\",\"pool_id\":\"0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1\",\"socket_path\":\"/run/kes-qualification-2p9qdufn/0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1.sock\"},{\"incarnation_id\":\"e3dc5eac1a449c149ebc799bf69dc08c\",\"network\":\"legacy-lab\",\"pool_id\":\"432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94\",\"socket_path\":\"/run/kes-qualification-2p9qdufn/432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94.sock\"},{\"incarnation_id\":\"08b2f0036c366d958e494a91b16fb8c5\",\"network\":\"legacy-lab\",\"pool_id\":\"65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a\",\"socket_path\":\"/run/kes-qualification-2p9qdufn/65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a.sock\"},{\"incarnation_id\":\"a395f5542d4eb1a5942c87aa5642d70d\",\"network\":\"lab\",\"pool_id\":\"65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6\",\"socket_path\":\"/run/kes-qualification-2p9qdufn/65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6.sock\"},{\"incarnation_id\":\"524de1127093660165a4da60efd8c27f\",\"network\":\"legacy-lab\",\"pool_id\":\"82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896\",\"socket_path\":\"/run/kes-qualification-2p9qdufn/82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896.sock\"},{\"incarnation_id\":\"8faaecfd9a64f5c1f58df056088db239\",\"network\":\"lab\",\"pool_id\":\"edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71\",\"socket_path\":\"/run/kes-qualification-2p9qdufn/edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71.sock\"}]},\"version\":1}\n",
+  "stderr": ""
+}

@@ -1,0 +1,2089 @@
+{
+  "source_before": "c7db438674f2341884b46c0198319d29900d4855",
+  "source_before_dirty": false,
+  "candidate_source_commit": "84df698978d37256de1bdf85cec940022d32ceaa",
+  "candidate_tag": "v0.1.0-rc.11",
+  "candidate_publication": "published and independently verified rc11; rc10 preserved failed",
+  "boot_authority_sha256": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+  "patched_picotool": {
+    "source": "2041936441b48a3cc53ae3da9e805229fe8f4e18",
+    "sdk": "079c6f39023649b154152db30f1d781e884879bc",
+    "patch_sha256": "840c0a4e8fb67185b6cdab8959bc70a1d83698a8cc9b6947f94fb73d38deac9c",
+    "executable_sha256": "bda5eef60ec0a7b2bec2bdaede88bd0022fce6bee28c167a1fc5a9faab4a3e4a"
+  },
+  "bundle_transition": {
+    "base_commit": "2e22f818e15d1824f88c9eed365aaffc29dff803",
+    "candidate_commit": "84df698978d37256de1bdf85cec940022d32ceaa",
+    "base_manifest_sha256": "d025e97236fbe449352b501e67dec994ac771ec68b6f3effe3edac61a633a0b5",
+    "candidate_manifest_sha256": "3be123b16e36e6fcd8fd7992b4a40372ae284935b9e97b2831d079a98a9d96c8",
+    "base_uf2_sha256": "eaf511c1e5e3ab5fba1f7f37c21e46ba5839c4fb0ae9e387ea0c88a812f40b77",
+    "candidate_uf2_sha256": "55fc5f7e461c0249a0360a3ea826f12477426ab7ef1b6d46d5e0a79b0f0cb2bb",
+    "same_authority": true,
+    "storage_version": 2,
+    "firmware_only": true,
+    "asset_count_each": 11
+  },
+  "release_attempts": [
+    {
+      "tag": "v0.1.0-rc.10",
+      "commit": "d442b636043162e185d2ba4e9a4ee80fb7ed41da",
+      "run_id": 41323068497,
+      "result": "failed before signing",
+      "cause": "backup_restore tests MemoryProtection; runner memory prerequisites missing",
+      "preserved": true
+    },
+    {
+      "tag": "v0.1.0-rc.11",
+      "commit": "84df698978d37256de1bdf85cec940022d32ceaa",
+      "run_id": 41348318775,
+      "result": "published and verified"
+    }
+  ],
+  "native_oracle": {
+    "path": "/home/westbam/Development/pico2-kes-agent/qualification/native/dist-newstyle/build/x86_64-linux/ghc-9.12.4/native-oracle-0.1.0.0/x/native-oracle/build/native-oracle/native-oracle",
+    "sha256": "7d2852cc096fc0161a140635d3257701bdde63f494d7863ca707670958f22019",
+    "plan_sha256": "9b0e7010c048e3674286f9a5089fa3b3fd9b546a5204b9651c63328609f712c4",
+    "selected": {
+      "kes-agent": "1.3.0.0",
+      "kes-agent-crypto": "1.1.0.0",
+      "native-oracle": "0.1.0.0"
+    },
+    "archives": {
+      "kes-agent": {
+        "version": "1.3.0.0",
+        "path": "/home/westbam/.cabal/packages/cardano-haskell-packages/kes-agent/1.3.0.0/kes-agent-1.3.0.0.tar.gz",
+        "sha256": "37b9729cb30590a0a520058b1d33f4ee1853b7503bbb46d3513be57d88369797"
+      },
+      "kes-agent-crypto": {
+        "version": "1.1.0.0",
+        "path": "/home/westbam/.cabal/packages/cardano-haskell-packages/kes-agent-crypto/1.1.0.0/kes-agent-crypto-1.1.0.0.tar.gz",
+        "sha256": "43afbdfbb6ee992d34adb1d1b3ac1070da5395ffa2ddd8411c2cc4ad1818cc36"
+      }
+    }
+  },
+  "probe_provenance": {
+    "binary_sha256": "0263ecabc1f3a39486c672a1f1a88f2f70d24eb94ed41d92f5fb79bc1c9ec002",
+    "source_sha256": "e81e735676e3f99f70b6d508a7bb3a1577b7b09478d79118431c3518d0cebf03",
+    "scaffolding_to_be_removed": true
+  },
+  "host_installation": {
+    "daemon_sha256": "59d9ee06fc89c7c9c263e982c289b58a673ceaf6be11b0992e9c820e105e2cbb",
+    "cli_sha256": "cd30d0e7424e721d77b38605da410dfd8aeba5482021a04647b0594a24574dd4",
+    "ordinary_config_sha256": "f2c7414359935932a19334cd1a00120a9a01e259ce033e8aaa9b01c29b91d4ba",
+    "ordinary_service": "inactive/enabled",
+    "lab_unit": "kes-qualification-2p9qdufn.service",
+    "lab_uid_gid": "1000:1000",
+    "LimitCORE": 0,
+    "LimitMEMLOCK": 268435456,
+    "MemorySwapMax": 0,
+    "DevicePolicy": "closed",
+    "DeviceAllow": "char-usb_device rw",
+    "ProtectHome": true,
+    "ProtectSystem": "strict",
+    "clock_mutation_syscalls": "denied",
+    "swap": "none"
+  },
+  "ordinary_service_unit": {
+    "original_sha256": "2d36cb1620071c56d0e2fe037e3af7f24d76937ca7f7169eb7bd6e3c6096f1f9",
+    "installed_sha256": "44cf213eb896d04a66e48d2b0230a330a0bb9db251c68f37220ef3fc6a2a4ea2",
+    "installed_by": "deploy/install.sh",
+    "state": "inactive/enabled; original config retained"
+  },
+  "host_restored": {
+    "swap": {
+      "name": "/swap.img",
+      "size_bytes": 8589930496,
+      "priority": -1,
+      "active": true
+    },
+    "sleep_targets": "all original static/inactive states restored",
+    "ordinary_service": "inactive/enabled",
+    "ordinary_config_unchanged": true,
+    "runtime_directory_removed": true,
+    "secret_bearing_lab_processes_stopped": true,
+    "log": "restore-host.log"
+  },
+  "negative_input_checks": {
+    "manifest_sha256": "bde0d66a6a800f052f6becf70a131af308e4d986e1fe01044a0c4b0dde42e3b7",
+    "images": {
+      "unsigned.uf2": {
+        "sha256": "d0fc5fe14f597a6fd1246935025315641eb1cd8258d75afcde0c4c6275d754a4",
+        "blocks": 125,
+        "address_start": "0x10000000",
+        "address_end": "0x10007d00",
+        "firmware_only": true
+      },
+      "wrong-key.uf2": {
+        "sha256": "a50b35b8e70124d20e6c925587495692e7dcf9797e4f679d25d8c35ac761ef2d",
+        "blocks": 126,
+        "address_start": "0x10000000",
+        "address_end": "0x10007e00",
+        "firmware_only": true
+      },
+      "tampered.uf2": {
+        "sha256": "574643211f42df13909be320bfd6f202f13260e2e51900f25a9d88b5c7afe4c2",
+        "blocks": 126,
+        "address_start": "0x10000000",
+        "address_end": "0x10007e00",
+        "firmware_only": true
+      }
+    },
+    "boot_observations": "not yet performed"
+  },
+  "negative_boot_observations": {
+    "unsigned": {
+      "seconds": 30.06755449800403,
+      "samples": 121,
+      "all_samples_expected_rom_only": true,
+      "usb_addresses": [
+        [
+          "1",
+          "75"
+        ]
+      ],
+      "observation_file": "unsigned-cold-boot-observation.jsonl",
+      "cold_reconnect_attested": true,
+      "otp_writes": 0,
+      "event_trace_rom_only": true
+    },
+    "wrong-key": {
+      "seconds": 30.06106405099854,
+      "samples": 121,
+      "all_samples_expected_rom_only": true,
+      "usb_addresses": [
+        [
+          "1",
+          "80"
+        ]
+      ],
+      "observation_file": "wrong-key-cold-boot-observation.jsonl",
+      "cold_reconnect_attested": true,
+      "otp_writes": 0,
+      "event_trace_rom_only": true
+    },
+    "tampered": {
+      "seconds": 30.06857242199476,
+      "samples": 121,
+      "all_samples_expected_rom_only": true,
+      "usb_addresses": [
+        [
+          "1",
+          "85"
+        ]
+      ],
+      "observation_file": "tampered-cold-boot-observation.jsonl",
+      "cold_reconnect_attested": true,
+      "otp_writes": 0,
+      "event_trace_rom_only": true
+    }
+  },
+  "signed_recoveries": {
+    "unsigned-recovery": {
+      "status": {
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "receipt_pending": false,
+        "revision": 22
+      },
+      "security": {
+        "boot_flags0": 2990464,
+        "boot_flags1": 3585,
+        "bootkey0": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+        "chip_revision": 2,
+        "critical": 7,
+        "debugen": 0,
+        "debugen_lock": 271,
+        "density_bits_minus_one": 33554431,
+        "jedec_id": "ef4016",
+        "page2_lock0": 0,
+        "page2_lock1": 21,
+        "page63_lock0": 0,
+        "page63_lock1": 21,
+        "profile": "rp2350-signed-msd-v1",
+        "redundancy_ok": true,
+        "rom_version": 2,
+        "sfdp_header": "534644500a0100ff00080117800000ff",
+        "stepping": "A2",
+        "storage_blank_at_boot": false,
+        "usb_serial": "00afd9003906a634"
+      },
+      "inventory": {
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "pools": [],
+        "revision": 22
+      },
+      "cold_reconnect_attested": true
+    },
+    "wrong-key-recovery": {
+      "status": {
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "receipt_pending": false,
+        "revision": 22
+      },
+      "security": {
+        "boot_flags0": 2990464,
+        "boot_flags1": 3585,
+        "bootkey0": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+        "chip_revision": 2,
+        "critical": 7,
+        "debugen": 0,
+        "debugen_lock": 271,
+        "density_bits_minus_one": 33554431,
+        "jedec_id": "ef4016",
+        "page2_lock0": 0,
+        "page2_lock1": 21,
+        "page63_lock0": 0,
+        "page63_lock1": 21,
+        "profile": "rp2350-signed-msd-v1",
+        "redundancy_ok": true,
+        "rom_version": 2,
+        "sfdp_header": "534644500a0100ff00080117800000ff",
+        "stepping": "A2",
+        "storage_blank_at_boot": false,
+        "usb_serial": "00afd9003906a634"
+      },
+      "inventory": {
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "pools": [],
+        "revision": 22
+      },
+      "cold_reconnect_attested": true
+    },
+    "tampered-recovery": {
+      "status": {
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "receipt_pending": false,
+        "revision": 22
+      },
+      "security": {
+        "boot_flags0": 2990464,
+        "boot_flags1": 3585,
+        "bootkey0": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+        "chip_revision": 2,
+        "critical": 7,
+        "debugen": 0,
+        "debugen_lock": 271,
+        "density_bits_minus_one": 33554431,
+        "jedec_id": "ef4016",
+        "page2_lock0": 0,
+        "page2_lock1": 21,
+        "page63_lock0": 0,
+        "page63_lock1": 21,
+        "profile": "rp2350-signed-msd-v1",
+        "redundancy_ok": true,
+        "rom_version": 2,
+        "sfdp_header": "534644500a0100ff00080117800000ff",
+        "stepping": "A2",
+        "storage_blank_at_boot": false,
+        "usb_serial": "00afd9003906a634"
+      },
+      "inventory": {
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "pools": [],
+        "revision": 22
+      },
+      "cold_reconnect_attested": true
+    }
+  },
+  "accepted_evidence_limit": {
+    "physical_unbound_pool": "No pre-existing orphan: six of six original pools had journal bindings. Real-core host smoke covered unbound discovery and deletion. User explicitly accepted documenting this physical limitation.",
+    "accepted": true
+  },
+  "final_journal": {
+    "path": "/var/lib/kes-lab-dafa3a76/operations.journal",
+    "bytes": 99088,
+    "sha256": "0ab93c69110682dfe5c76ff5f08c42478c13f6d433face9b341c3b59c17ccdec",
+    "original_prefix_preserved": true,
+    "last_successful_sequence": 76,
+    "receipt_pending": false
+  },
+  "final_device": {
+    "inventory": {
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "pools": [
+        {
+          "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+          "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+          "revision": 17
+        },
+        {
+          "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+          "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+          "revision": 17
+        },
+        {
+          "incarnation_id": "1315039c22a28244798990462ef02149",
+          "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+          "revision": 17
+        }
+      ],
+      "revision": 26
+    },
+    "security": {
+      "boot_flags0": 2990464,
+      "boot_flags1": 3585,
+      "bootkey0": "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+      "chip_revision": 2,
+      "critical": 7,
+      "debugen": 0,
+      "debugen_lock": 271,
+      "density_bits_minus_one": 33554431,
+      "jedec_id": "ef4016",
+      "page2_lock0": 0,
+      "page2_lock1": 21,
+      "page63_lock0": 0,
+      "page63_lock1": 21,
+      "profile": "rp2350-signed-msd-v1",
+      "redundancy_ok": true,
+      "rom_version": 2,
+      "sfdp_header": "534644500a0100ff00080117800000ff",
+      "stepping": "A2",
+      "storage_blank_at_boot": false,
+      "usb_serial": "00afd9003906a634"
+    },
+    "status": {
+      "commissioning_state": "committed",
+      "device_id": "f39127e9e0ab25f8341401048acf629d",
+      "health": "ready",
+      "receipt_pending": false,
+      "revision": 26
+    },
+    "absolute_period": 33,
+    "relative_period": 1,
+    "staged_start_period": 64
+  },
+  "checks": [
+    {
+      "check": "kes-core",
+      "result": "passed",
+      "output": "source-first-run.log"
+    },
+    {
+      "check": "kes-protocol first run",
+      "result": "failed",
+      "cause": "old unknown-kind fixture used newly assigned 12; fixed to u16::MAX",
+      "output": "source-first-run.log"
+    },
+    {
+      "check": "kes-protocol after fixture fix",
+      "result": "passed",
+      "tests": 30,
+      "output": "source-second-run.log"
+    },
+    {
+      "check": "selected host integration suites",
+      "result": "failed",
+      "passed": 49,
+      "failed": 1,
+      "cause": "recipient_rotation_is_future_only_and_private_keys_stay_off_primary: MemoryProtection with active swap",
+      "output": "source-second-run.log"
+    },
+    {
+      "check": "release host and ARM firmware builds",
+      "result": "passed"
+    },
+    {
+      "check": "release CLI through daemon Management and real core model inventory/delete smoke",
+      "result": "passed",
+      "hardware": false
+    },
+    {
+      "check": "BASE rc9 trusted verifier",
+      "result": "passed",
+      "output": "baseline-verification.log"
+    },
+    {
+      "check": "patched picotool native signature boundary regression",
+      "result": "passed",
+      "cases": 4096,
+      "output": "baseline-verification.log"
+    },
+    {
+      "check": "previously failing recipient rotation after operator swapoff",
+      "result": "passed",
+      "output": "protected-source-checks.log"
+    },
+    {
+      "check": "host library tests",
+      "result": "passed",
+      "tests": 42,
+      "output": "protected-source-checks.log"
+    },
+    {
+      "check": "qualification software tests",
+      "result": "passed",
+      "tests": 23,
+      "output": "protected-source-checks.log"
+    },
+    {
+      "check": "local cardano-node-test with configured GHC 9.12.4 dependencies",
+      "result": "passed",
+      "scope": "credential loaders and node unit tests; not live agent clients or forging"
+    },
+    {
+      "check": "remaining release Rust integration gates",
+      "result": "passed",
+      "tests": 7,
+      "output": "release-workflow-gates.log"
+    },
+    {
+      "check": "isolated firmware/release Python tests",
+      "result": "passed",
+      "tests": 61,
+      "output": "release-workflow-gates.log",
+      "hardware": false
+    },
+    {
+      "check": "freshly downloaded BASE rc9 complete bundle authentication",
+      "result": "passed",
+      "output": "downloaded-base-verification.log"
+    },
+    {
+      "check": "committed BASE-to-initial-HEAD firmware/storage compatibility review",
+      "result": "no concrete blockers",
+      "storage_version": 2,
+      "wrapping_root_interpretation": "unchanged",
+      "hardware": false
+    },
+    {
+      "check": "committed BASE-to-initial-HEAD host recovery/context/security review",
+      "result": "no concrete blockers",
+      "hardware": false
+    },
+    {
+      "check": "disposable protected Service V2 signature probe self-check",
+      "result": "passed",
+      "hardware": false
+    }
+  ],
+  "candidate_dirty_fingerprint": "2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b",
+  "physical_signature_proofs": [
+    {
+      "absolute_period": 0,
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+      "proof": "public-proofs/base-period-0-pool-1.json",
+      "status": {
+        "active": {
+          "artifact_digest": "195cf296a1d7e693cd9478a92d8e1ba503c8ae82af29313eb19bb5e362cd8f88",
+          "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+          "health": "ready",
+          "period": 0,
+          "revision": 7,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567455616284,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 5,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567455616284,
+        "receipt_pending": false,
+        "revision": 7,
+        "staged": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 7,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 0,
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+      "proof": "public-proofs/base-period-0-pool-2.json",
+      "status": {
+        "active": {
+          "artifact_digest": "bbff9b06589f1b70b6f596015317737486eb42d4997c49b6f811872032e99ccc",
+          "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+          "health": "ready",
+          "period": 0,
+          "revision": 7,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567466117858,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 5,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567466117858,
+        "receipt_pending": false,
+        "revision": 7,
+        "staged": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 7,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 0,
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "generation_id": "280018c5ab9e61d270c94a27c8861310",
+      "proof": "public-proofs/base-period-0-pool-3.json",
+      "status": {
+        "active": {
+          "artifact_digest": "27d21ac8959733021a5361ba9f06076f77b46848c0246d5f39f1cb55dfba30b3",
+          "generation_id": "280018c5ab9e61d270c94a27c8861310",
+          "health": "ready",
+          "period": 0,
+          "revision": 7,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567471592222,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 5,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567471592222,
+        "receipt_pending": false,
+        "revision": 7,
+        "staged": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 7,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 1,
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+      "proof": "public-proofs/base-period-1-pool-1.json",
+      "status": {
+        "active": {
+          "artifact_digest": "195cf296a1d7e693cd9478a92d8e1ba503c8ae82af29313eb19bb5e362cd8f88",
+          "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+          "health": "ready",
+          "period": 1,
+          "revision": 9,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567535145883,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 9,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567535145883,
+        "receipt_pending": false,
+        "revision": 9,
+        "staged": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 9,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 1,
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+      "proof": "public-proofs/base-period-1-pool-2.json",
+      "status": {
+        "active": {
+          "artifact_digest": "bbff9b06589f1b70b6f596015317737486eb42d4997c49b6f811872032e99ccc",
+          "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+          "health": "ready",
+          "period": 1,
+          "revision": 9,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567535570741,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 9,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567535570741,
+        "receipt_pending": false,
+        "revision": 9,
+        "staged": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 9,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 1,
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "generation_id": "280018c5ab9e61d270c94a27c8861310",
+      "proof": "public-proofs/base-period-1-pool-3.json",
+      "status": {
+        "active": {
+          "artifact_digest": "27d21ac8959733021a5361ba9f06076f77b46848c0246d5f39f1cb55dfba30b3",
+          "generation_id": "280018c5ab9e61d270c94a27c8861310",
+          "health": "ready",
+          "period": 1,
+          "revision": 9,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567535991583,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 9,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567535991583,
+        "receipt_pending": false,
+        "revision": 9,
+        "staged": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 9,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 2,
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+      "proof": "public-proofs/base-period-2-pool-1.json",
+      "status": {
+        "active": {
+          "artifact_digest": "195cf296a1d7e693cd9478a92d8e1ba503c8ae82af29313eb19bb5e362cd8f88",
+          "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+          "health": "ready",
+          "period": 2,
+          "revision": 11,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567569706597,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 11,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567569706597,
+        "receipt_pending": false,
+        "revision": 11,
+        "staged": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 11,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 2,
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+      "proof": "public-proofs/base-period-2-pool-2.json",
+      "status": {
+        "active": {
+          "artifact_digest": "bbff9b06589f1b70b6f596015317737486eb42d4997c49b6f811872032e99ccc",
+          "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+          "health": "ready",
+          "period": 2,
+          "revision": 11,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567570131014,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 11,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567570131014,
+        "receipt_pending": false,
+        "revision": 11,
+        "staged": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 11,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 2,
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "generation_id": "280018c5ab9e61d270c94a27c8861310",
+      "proof": "public-proofs/base-period-2-pool-3.json",
+      "status": {
+        "active": {
+          "artifact_digest": "27d21ac8959733021a5361ba9f06076f77b46848c0246d5f39f1cb55dfba30b3",
+          "generation_id": "280018c5ab9e61d270c94a27c8861310",
+          "health": "ready",
+          "period": 2,
+          "revision": 11,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567570552982,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 11,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567570552982,
+        "receipt_pending": false,
+        "revision": 11,
+        "staged": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 11,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 2,
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+      "proof": "public-proofs/base-period-2-repeat-pool-1.json",
+      "status": {
+        "active": {
+          "artifact_digest": "195cf296a1d7e693cd9478a92d8e1ba503c8ae82af29313eb19bb5e362cd8f88",
+          "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+          "health": "ready",
+          "period": 2,
+          "revision": 11,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567569706597,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 11,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567569706597,
+        "receipt_pending": false,
+        "revision": 11,
+        "staged": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 11,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 2,
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+      "proof": "public-proofs/base-period-2-repeat-pool-2.json",
+      "status": {
+        "active": {
+          "artifact_digest": "bbff9b06589f1b70b6f596015317737486eb42d4997c49b6f811872032e99ccc",
+          "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+          "health": "ready",
+          "period": 2,
+          "revision": 11,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567570131014,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 11,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567570131014,
+        "receipt_pending": false,
+        "revision": 11,
+        "staged": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 11,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 2,
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "generation_id": "280018c5ab9e61d270c94a27c8861310",
+      "proof": "public-proofs/base-period-2-repeat-pool-3.json",
+      "status": {
+        "active": {
+          "artifact_digest": "27d21ac8959733021a5361ba9f06076f77b46848c0246d5f39f1cb55dfba30b3",
+          "generation_id": "280018c5ab9e61d270c94a27c8861310",
+          "health": "ready",
+          "period": 2,
+          "revision": 11,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567570552982,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 11,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567570552982,
+        "receipt_pending": false,
+        "revision": 11,
+        "staged": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 11,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 32,
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+      "proof": "public-proofs/candidate-period-32-pool-1.json",
+      "status": {
+        "active": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "ready",
+          "period": 0,
+          "revision": 15,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567608966167,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 13,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567608966167,
+        "receipt_pending": false,
+        "revision": 15,
+        "staged": {
+          "artifact_digest": "d83029605134f72b3b6908ab1e82a1f727402babc4c3d411a5ccf7d8983840e2",
+          "generation_id": "4a756cc13caee5dd8373f039ce7c4f4e",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 15,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 32,
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "generation_id": "7112e43bd26f82790b49a57eab236546",
+      "proof": "public-proofs/candidate-period-32-pool-2.json",
+      "status": {
+        "active": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "ready",
+          "period": 0,
+          "revision": 15,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567608966168,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 13,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567608966168,
+        "receipt_pending": false,
+        "revision": 15,
+        "staged": {
+          "artifact_digest": "3b809ceca15e7ba5710dea7d0cf2fca75452c109521b57b0d6560427a37d9626",
+          "generation_id": "a6ee4799535ea8a6bb3a9c4df378ab4e",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 15,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 32,
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+      "proof": "public-proofs/candidate-period-32-pool-3.json",
+      "status": {
+        "active": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "ready",
+          "period": 0,
+          "revision": 15,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567608966169,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 13,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567608966169,
+        "receipt_pending": false,
+        "revision": 15,
+        "staged": {
+          "artifact_digest": "abc45e8c44cf219cbf43583c5f2ace9a7e0bd017a5f5dabef4718680dfc6fb27",
+          "generation_id": "ebb417cc8af2f7a76dddb900b5d1adcb",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 15,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 33,
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+      "proof": "public-proofs/candidate-period-33-pool-1.json",
+      "status": {
+        "active": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "ready",
+          "period": 1,
+          "revision": 17,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567829572312,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 17,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567829572312,
+        "receipt_pending": false,
+        "revision": 17,
+        "staged": {
+          "artifact_digest": "d83029605134f72b3b6908ab1e82a1f727402babc4c3d411a5ccf7d8983840e2",
+          "generation_id": "4a756cc13caee5dd8373f039ce7c4f4e",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 17,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 33,
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "generation_id": "7112e43bd26f82790b49a57eab236546",
+      "proof": "public-proofs/candidate-period-33-pool-2.json",
+      "status": {
+        "active": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "ready",
+          "period": 1,
+          "revision": 17,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567829996176,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 17,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567829996176,
+        "receipt_pending": false,
+        "revision": 17,
+        "staged": {
+          "artifact_digest": "3b809ceca15e7ba5710dea7d0cf2fca75452c109521b57b0d6560427a37d9626",
+          "generation_id": "a6ee4799535ea8a6bb3a9c4df378ab4e",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 17,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "absolute_period": 33,
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+      "proof": "public-proofs/candidate-period-33-pool-3.json",
+      "status": {
+        "active": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "ready",
+          "period": 1,
+          "revision": 17,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567830416841,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 17,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567830416841,
+        "receipt_pending": false,
+        "revision": 17,
+        "staged": {
+          "artifact_digest": "abc45e8c44cf219cbf43583c5f2ace9a7e0bd017a5f5dabef4718680dfc6fb27",
+          "generation_id": "ebb417cc8af2f7a76dddb900b5d1adcb",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 17,
+          "role": "staged"
+        }
+      }
+    }
+  ],
+  "dummy_pools": [
+    {
+      "number": 1,
+      "directory": "pool-1",
+      "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+      "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+      "enrollment": {
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "kind": "enrolled",
+        "operation_id": "61b184ff1014299a228a9f4c020f0c8a",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "request_digest": "5e841b6b93d0f023107e756ec67570d592fb27d8172856ec65f11cf0678f764f",
+        "result_digest": "f9914e7e604edbb342c5e297c53bff9e414564a8ee4ee6a9ddabc5fa24e53c70",
+        "revision": 1,
+        "sequence": 56,
+        "version": 1
+      },
+      "active": {
+        "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+        "verification_key": "pool-1/active.vkey",
+        "verification_key_sha256": "e73de40e9c885741d00aaf3eec13025ce44155264cc86e1ecea9e790e2a393a2",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-1/active.backup",
+        "backup_sha256": "195cf296a1d7e693cd9478a92d8e1ba503c8ae82af29313eb19bb5e362cd8f88",
+        "certificate": "pool-1/active.opcert",
+        "start_period": 0,
+        "certificate_sha256": "9ec274468d951650ccf2c7559beb0ea7071b786f8a112e687eb955f9eccb19fe",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "58979a86bddc9b5cad274fdc80a78a00",
+          "request_digest": "590872333ee86e0a133984918accad27bc584efb2864a87d0b53e7407bf61467",
+          "result_digest": "50152dc918d11a36c12fc6349d287306ce7ffaabc8e4b63c3929ad8404b6909a",
+          "revision": 5,
+          "sequence": 60,
+          "version": 1
+        }
+      },
+      "staged": {
+        "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+        "verification_key": "pool-1/staged.vkey",
+        "verification_key_sha256": "8bf29b968c2e700eaa266480c6f88a1109744ee008672c1e398dc7787750b8de",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-1/staged.backup",
+        "backup_sha256": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+        "certificate": "pool-1/staged.opcert",
+        "start_period": 32,
+        "certificate_sha256": "33d6e1a331c64dba9b94340134421c11565371af5ee59023a674b8a06356dafd",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "86b9020677ddc8049af7026c64353269",
+          "request_digest": "212b5197e4ac7fbecf42c3b2008bca4c50d6fa78f6526e2bf83a94a0c92ee44d",
+          "result_digest": "8ff4f269169e1cec411ae24c8ec02d3eb99978ea755ce83c962b519bef9b52b3",
+          "revision": 7,
+          "sequence": 62,
+          "version": 1
+        }
+      },
+      "period_zero_status": {
+        "active": {
+          "artifact_digest": "195cf296a1d7e693cd9478a92d8e1ba503c8ae82af29313eb19bb5e362cd8f88",
+          "generation_id": "5f21aca8d063f2e35adcdf710af02a0b",
+          "health": "ready",
+          "period": 0,
+          "revision": 7,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567455616284,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 5,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567455616284,
+        "receipt_pending": false,
+        "revision": 7,
+        "staged": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 7,
+          "role": "staged"
+        }
+      },
+      "replenished": {
+        "generation_id": "4a756cc13caee5dd8373f039ce7c4f4e",
+        "verification_key": "pool-1/replenished.vkey",
+        "verification_key_sha256": "1481c0a35e14f08bdbcca18f5257a039a0f17e117bcd0c40b2e56c9c9eb53624",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-1/replenished.backup",
+        "backup_sha256": "d83029605134f72b3b6908ab1e82a1f727402babc4c3d411a5ccf7d8983840e2",
+        "certificate": "pool-1/replenished.opcert",
+        "start_period": 64,
+        "certificate_sha256": "2087f332eb05238e040d02926814aefe9da8969500a07dc7dd8822c771bde760",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "d87f337538bb379770b71be0c94cef1c",
+          "request_digest": "98955b159ca051bf438af2acdd12777f65af07df3ee812f2f34684ce20bcd063",
+          "result_digest": "ffeb80b116ebdddc14324d567aa670b1a47636d084d61a94648f2b2f4727b90f",
+          "revision": 15,
+          "sequence": 72,
+          "version": 1
+        }
+      },
+      "post_replenishment_status": {
+        "active": {
+          "artifact_digest": "be149a572869c76a523b8c754c7c60d3d1a6dcfb6d1a585984632cfcb9e3a289",
+          "generation_id": "b22117c899b6630350dc59dc4ba0f47c",
+          "health": "ready",
+          "period": 0,
+          "revision": 15,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567608966167,
+        "incarnation_id": "e1c8210aa315731f54fa01d75c7ed9a5",
+        "pool_id": "c37eb09e357b71199c408949c8a033b161948cbeb08be2516e6c6a49",
+        "publication_revision": 13,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567608966167,
+        "receipt_pending": false,
+        "revision": 15,
+        "staged": {
+          "artifact_digest": "d83029605134f72b3b6908ab1e82a1f727402babc4c3d411a5ccf7d8983840e2",
+          "generation_id": "4a756cc13caee5dd8373f039ce7c4f4e",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 15,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "number": 2,
+      "directory": "pool-2",
+      "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+      "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+      "enrollment": {
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "kind": "enrolled",
+        "operation_id": "f9dd0cbfb0c11cdd6f5263cd22bee49c",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "request_digest": "817e91585569cc902b49a3dfec7d9f52a1da23c5ca5fc0b05ec7693515fefb58",
+        "result_digest": "d0bb383f89a5afbd1ec740a3f92ca4410413c363d26949869b5f0a5d19e0756e",
+        "revision": 1,
+        "sequence": 57,
+        "version": 1
+      },
+      "active": {
+        "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+        "verification_key": "pool-2/active.vkey",
+        "verification_key_sha256": "362eb8157a00d48c8ea0043c2230103002203e87793d39e288ab1d11bd682971",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-2/active.backup",
+        "backup_sha256": "bbff9b06589f1b70b6f596015317737486eb42d4997c49b6f811872032e99ccc",
+        "certificate": "pool-2/active.opcert",
+        "start_period": 0,
+        "certificate_sha256": "cdd978887170f1e3f327d86cfd9aa106c7850312a02db4120d16c2b913c75b66",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "fd7549d6b8784ab07c1509fe38147273",
+          "request_digest": "314171520abf4807df73d0ca0e8d9de7afc6884248b21c5f5714b97ea900bd40",
+          "result_digest": "8b3fdc4b3b49b43eadb85a2bf4b7a09b7ae04b3a06b79bdba606346f51189d4e",
+          "revision": 5,
+          "sequence": 64,
+          "version": 1
+        }
+      },
+      "staged": {
+        "generation_id": "7112e43bd26f82790b49a57eab236546",
+        "verification_key": "pool-2/staged.vkey",
+        "verification_key_sha256": "17bc8480e35e9f2e085e96b8f2bd7e89ce1dcefb9b4efc394b0359d4be8feb32",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-2/staged.backup",
+        "backup_sha256": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+        "certificate": "pool-2/staged.opcert",
+        "start_period": 32,
+        "certificate_sha256": "14e0926e12664a8106a1bdcbc0c1c41e1a0f742ad6b9938c3df68204a30d973e",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "050c8f47bfc71e8730788a6fbc07e972",
+          "request_digest": "22f10477f85171ba0df0aceeba124c3e10995615dc3bce467bfafc770a14437f",
+          "result_digest": "831e8d7ac4a30c0643cb82ad23f567cbd46723b2d6ad3a4337adb40dcf343366",
+          "revision": 7,
+          "sequence": 66,
+          "version": 1
+        }
+      },
+      "period_zero_status": {
+        "active": {
+          "artifact_digest": "bbff9b06589f1b70b6f596015317737486eb42d4997c49b6f811872032e99ccc",
+          "generation_id": "d9757bfc56434ca522ef1d3799ab2577",
+          "health": "ready",
+          "period": 0,
+          "revision": 7,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567466117858,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 5,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567466117858,
+        "receipt_pending": false,
+        "revision": 7,
+        "staged": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 7,
+          "role": "staged"
+        }
+      },
+      "replenished": {
+        "generation_id": "a6ee4799535ea8a6bb3a9c4df378ab4e",
+        "verification_key": "pool-2/replenished.vkey",
+        "verification_key_sha256": "f954f1ab781114b82eeae5abea6fa8a18efde10d8f4dfe477b9595a386bfcdcd",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-2/replenished.backup",
+        "backup_sha256": "3b809ceca15e7ba5710dea7d0cf2fca75452c109521b57b0d6560427a37d9626",
+        "certificate": "pool-2/replenished.opcert",
+        "start_period": 64,
+        "certificate_sha256": "1932ddb8491d339c4c77deddc58c5028dcbe8c7fc2fb312644182b85838ed588",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "0daeb5c7ca5470cc7d42c6f44e7b1589",
+          "request_digest": "a99a4f78f6bcbf06cff4629a1d4cf1f2b3e53d7a5023344633f41312f1de7c12",
+          "result_digest": "a28b921eb4a4fc0b4910208410f58ba04b3e684e8d468c214ec3525dc89d0ac9",
+          "revision": 15,
+          "sequence": 74,
+          "version": 1
+        }
+      },
+      "post_replenishment_status": {
+        "active": {
+          "artifact_digest": "554e4c46674afa9d8867e5add75048e12768c80c5ce0295626353436cd3e73bf",
+          "generation_id": "7112e43bd26f82790b49a57eab236546",
+          "health": "ready",
+          "period": 0,
+          "revision": 15,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567608966168,
+        "incarnation_id": "2d29c36ccac9f2ae65e19bd2f1a1aa3f",
+        "pool_id": "2471a0c222d6125d54bc49b5ee491821a4508a9dae0116516d43fc02",
+        "publication_revision": 13,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567608966168,
+        "receipt_pending": false,
+        "revision": 15,
+        "staged": {
+          "artifact_digest": "3b809ceca15e7ba5710dea7d0cf2fca75452c109521b57b0d6560427a37d9626",
+          "generation_id": "a6ee4799535ea8a6bb3a9c4df378ab4e",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 15,
+          "role": "staged"
+        }
+      }
+    },
+    {
+      "number": 3,
+      "directory": "pool-3",
+      "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+      "incarnation_id": "1315039c22a28244798990462ef02149",
+      "enrollment": {
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "kind": "enrolled",
+        "operation_id": "80835d243cc485b2effc6bd42199a95d",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "request_digest": "b6f475ec3d15e37ad422501cbded219fde5d54a3ef40239aec60987b87a09733",
+        "result_digest": "32c1f02193be32a5e56b0e7591b150977761cc85b3e6194eea22fbeb71744b52",
+        "revision": 1,
+        "sequence": 58,
+        "version": 1
+      },
+      "active": {
+        "generation_id": "280018c5ab9e61d270c94a27c8861310",
+        "verification_key": "pool-3/active.vkey",
+        "verification_key_sha256": "0a7b25f99ec095a7e87927d9f050cb81e1ba0604483e097d666c2ff983ceff3d",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-3/active.backup",
+        "backup_sha256": "27d21ac8959733021a5361ba9f06076f77b46848c0246d5f39f1cb55dfba30b3",
+        "certificate": "pool-3/active.opcert",
+        "start_period": 0,
+        "certificate_sha256": "aad94e1cdcb99a6da4ca6cd4042624b58d210e6e316f728876a5b201076c0a7e",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "03e4923ab25a31bb2395f26896632c08",
+          "request_digest": "ba605c3725731dea9cfe206c5f916bfea8e1e905034ee37b08e3fbe1045e693d",
+          "result_digest": "2d528bc65a2a5423f9b0e2a9f0ad4ba2ed449f30770280eda5b4e3e98192aa2b",
+          "revision": 5,
+          "sequence": 68,
+          "version": 1
+        }
+      },
+      "staged": {
+        "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+        "verification_key": "pool-3/staged.vkey",
+        "verification_key_sha256": "2a84dcaea981c361ece1778f9cf361920b89bbad8ca0f7771a98390d4cf87686",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-3/staged.backup",
+        "backup_sha256": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+        "certificate": "pool-3/staged.opcert",
+        "start_period": 32,
+        "certificate_sha256": "a8a06e5a4bd1ece4d9c205fc380ba5b50ded118b5a22544a5488da19590d5747",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "90950aaa462c103ae6bc7c3c232e1df0",
+          "request_digest": "7860a505b688ca429ab00acb407852e52b1f9792597a6b9cc49564a1310cde35",
+          "result_digest": "75c380e5d11e20c13f88c71e6898c1217173cec3044629f44f380439ab8b7774",
+          "revision": 7,
+          "sequence": 70,
+          "version": 1
+        }
+      },
+      "period_zero_status": {
+        "active": {
+          "artifact_digest": "27d21ac8959733021a5361ba9f06076f77b46848c0246d5f39f1cb55dfba30b3",
+          "generation_id": "280018c5ab9e61d270c94a27c8861310",
+          "health": "ready",
+          "period": 0,
+          "revision": 7,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567471592222,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 5,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567471592222,
+        "receipt_pending": false,
+        "revision": 7,
+        "staged": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 7,
+          "role": "staged"
+        }
+      },
+      "replenished": {
+        "generation_id": "ebb417cc8af2f7a76dddb900b5d1adcb",
+        "verification_key": "pool-3/replenished.vkey",
+        "verification_key_sha256": "710b59b0d24c7479cafef8b4f00901d8d171ae5f654f21b1b88146a38ea26cf6",
+        "backup": "/home/westbam/pico2-qualification-2p9qdufn/pool-3/replenished.backup",
+        "backup_sha256": "abc45e8c44cf219cbf43583c5f2ace9a7e0bd017a5f5dabef4718680dfc6fb27",
+        "certificate": "pool-3/replenished.opcert",
+        "start_period": 64,
+        "certificate_sha256": "fd8e9a3f59528ee01151f27c331495c16af96216db6a39347559164b8b164f9c",
+        "installation": {
+          "kind": "applied",
+          "operation_id": "d9781c4ee7ceed2f56ae7cd93babffb5",
+          "request_digest": "d3373290ed9668fa005a7421de443c033b1eaf2e73b95a86cb837910cc68765f",
+          "result_digest": "85b750d8e3a29613ae97e101cf13cf8945db68c6aa3848fb247d06cc7ae745fa",
+          "revision": 15,
+          "sequence": 76,
+          "version": 1
+        }
+      },
+      "post_replenishment_status": {
+        "active": {
+          "artifact_digest": "b8c2a60f341d2e3223c2193d0b6025a74b960277cf125b0e84b2fcb4bb94e998",
+          "generation_id": "2215a95df2c63b4974c968dc940b4bc8",
+          "health": "ready",
+          "period": 0,
+          "revision": 15,
+          "role": "active"
+        },
+        "commissioning_state": "committed",
+        "device_id": "f39127e9e0ab25f8341401048acf629d",
+        "health": "ready",
+        "high_water_us": 1793567608966169,
+        "incarnation_id": "1315039c22a28244798990462ef02149",
+        "pool_id": "85615310f7776e13045f5b61d626adc85b7f911540ccd758278472ef",
+        "publication_revision": 13,
+        "publication_state": "key",
+        "publication_timestamp_us": 1793567608966169,
+        "receipt_pending": false,
+        "revision": 15,
+        "staged": {
+          "artifact_digest": "abc45e8c44cf219cbf43583c5f2ace9a7e0bd017a5f5dabef4718680dfc6fb27",
+          "generation_id": "ebb417cc8af2f7a76dddb900b5d1adcb",
+          "health": "not_yet_valid",
+          "period": 0,
+          "revision": 15,
+          "role": "staged"
+        }
+      }
+    }
+  ],
+  "result": "bounded qualification completed; physical orphan scenario accepted as unexercised; not full security qualification",
+  "files": {
+    "preservation-result.json": {
+      "bytes": 12229,
+      "sha256": "2b53aab2f1e32e9cfcc6958432666244acde78292efefbe678fb217057480e5b"
+    },
+    "preservation-input.json": {
+      "bytes": 1925,
+      "sha256": "862632db4385fb3a705f19a83e95aa1ec478573218a6e79452415b74025fccdb"
+    },
+    "preservation-result.json.attempt.jsonl": {
+      "bytes": 60,
+      "sha256": "5a01927b18bf5ace6aff9fdce1a0396f3faea313f229937f907430a7c5ad9530"
+    },
+    "preservation-terminal.log": {
+      "bytes": 1330,
+      "sha256": "5f995c7b3f7c5ce79f1e7329d522d244e5e28b9bce6e7773670d72a69ee54701"
+    },
+    "pre-deletion-inventory.json": {
+      "bytes": 1343,
+      "sha256": "8fdffa49d12f07f75f6b439eff9e6d4a867115b70ca3ed3115a98cffdb7e7965"
+    },
+    "pre-deletion-bindings.json": {
+      "bytes": 2022,
+      "sha256": "0d36925cd1f4961695aac07f8b8bc4e7cbc4ca3b33f6510c4f407b699b406b44"
+    },
+    "post-deletion-empty-inventory.jsonl": {
+      "bytes": 510,
+      "sha256": "88f3687f22841abc6f4d371a36fc31d52c14557bc46d3a964ab7322fa2d09dce"
+    },
+    "final-device-inventory.jsonl": {
+      "bytes": 950,
+      "sha256": "205404f662ff4484443785860c9d634ca4fc78880cb35b17b552b7ad97602d5d"
+    },
+    "final-device-security.jsonl": {
+      "bytes": 981,
+      "sha256": "96db40fce61c18c3dd82592ee49efcb51aae4e728e7bb4e15434fd0a44cf6f59"
+    },
+    "final-device-status.jsonl": {
+      "bytes": 569,
+      "sha256": "1b339aaf3d11e817839dedda9d403ca5ade883e7dff4efdc290ceec99d844573"
+    },
+    "journal-admission.json": {
+      "bytes": 250,
+      "sha256": "286f32541dd2e3b69b130a3dd55856bd7bf77d532521e4e4c5ac718eb82a50e4"
+    },
+    "restore-host.log": {
+      "bytes": 1131,
+      "sha256": "b7466003c851a7e2b0082da0d9ad04d844a5d83f5ce77c80a5fb872c757ecca8"
+    },
+    "installed-unit.diff": {
+      "bytes": 424,
+      "sha256": "964dc3b198b0393f953964399cb3f68ec24fb95d0c707fed7c069f7f1b633ef2"
+    },
+    "final-runtime-config.json": {
+      "bytes": 2734,
+      "sha256": "047a165c9180681a6ba0287a732e083ee6c537167af271544408e0af6066be72"
+    },
+    "final-byron-genesis.json": {
+      "bytes": 112,
+      "sha256": "1eb2f6475b1e4eb58ce83465a65c29ade2019a452c48e450a10bf5657caf8ceb"
+    },
+    "final-shelley-genesis.json": {
+      "bytes": 83,
+      "sha256": "51b36bacad45890d20ff9e5df4544837505f8594a71cd0877b1966adc3bfbf5a"
+    },
+    "recipient.public.json": {
+      "bytes": 211,
+      "sha256": "b2a202602ff7b52da7fb004776f9485646b113f7fc383db6f008066d8e99119a"
+    },
+    "preliminary-rc11-transfer.jsonl": {
+      "bytes": 1142,
+      "sha256": "43230234bc005f6211bc205d0e433aac6ba2231a756d0196b430eec81f707a17"
+    },
+    "negative-unsigned-transfer.jsonl": {
+      "bytes": 1202,
+      "sha256": "c514861fc3b372ec6f8a005c67ec628077bc0dd0d24a7df1768a3c560dbc2d97"
+    },
+    "unsigned-signed-recovery-transfer.jsonl": {
+      "bytes": 1142,
+      "sha256": "55b6422cd61f8e2406181eca561da548c50b215bd0dd12db5837964c1caf4141"
+    },
+    "negative-wrong-key-transfer.jsonl": {
+      "bytes": 1204,
+      "sha256": "10d70e64069b3898b18ce385a371973faaa49d6e02adeff76a313c191851d6c9"
+    },
+    "wrong-key-signed-recovery-transfer.jsonl": {
+      "bytes": 1142,
+      "sha256": "e0c1ffd76f985323c96bb7f0b783f88859a28124ae569de5c628ec2e97de4d7f"
+    },
+    "negative-tampered-transfer.jsonl": {
+      "bytes": 1202,
+      "sha256": "1645d74c8fc46fb5124b6bc148e37ff9a89b00e58ee7fbfa056fda0d85c7f038"
+    },
+    "tampered-signed-recovery-transfer.jsonl": {
+      "bytes": 1142,
+      "sha256": "17700b1ce4376f150f808bddefce6d1d8d5e4bc5d01bebbeed371d8b2c008c1c"
+    },
+    "empty-base-rc9-transfer.jsonl": {
+      "bytes": 1130,
+      "sha256": "1216be02ae2fd1a95f2b502f2b3d7eef35760b345a48c9d280dd67704a089425"
+    },
+    "measured-rc9-to-rc11-transfer.jsonl": {
+      "bytes": 1142,
+      "sha256": "7da9abbd234d3f33b9cc1de13a82bc3c758c7addb02095b00e5055c0c74aa446"
+    },
+    "unsigned-cold-boot-observation.jsonl": {
+      "bytes": 43628,
+      "sha256": "51d6f1dfb11529c219f1d01467da9b700f7a3a6db467caec82a903149ebe78e2"
+    },
+    "unsigned-cold-boot-usb-events.log": {
+      "bytes": 6163,
+      "sha256": "d1d5984bd2c5e18a154a5f5eaaa7f25855dcbb624e00a2bf0fd7d710b2301bbc"
+    },
+    "unsigned-recovery-status.jsonl": {
+      "bytes": 569,
+      "sha256": "60787def4318947d065cc77c829a8f45ee67738ceceeb165a4b9901cbd399ff8"
+    },
+    "unsigned-recovery-security.jsonl": {
+      "bytes": 981,
+      "sha256": "35d70ca0a2e3d118e185ebfc0b0d2779d61a1ab2be4d0f2507ebcf4ebe277d43"
+    },
+    "unsigned-recovery-inventory.jsonl": {
+      "bytes": 510,
+      "sha256": "5308d774743cbbe73804d301314bee56a9222d1bee6661559affef32b9d275ce"
+    },
+    "wrong-key-cold-boot-observation.jsonl": {
+      "bytes": 43624,
+      "sha256": "4ee908f71b55831b4b2672186ba0bdaaa346dd592363037f333ecaf4c9fc0c9d"
+    },
+    "wrong-key-cold-boot-usb-events.log": {
+      "bytes": 6164,
+      "sha256": "155cfd4846c4d0881ccecd93449b23f8853d8c1a4bb6f9b1c5d558a5bd474ba1"
+    },
+    "wrong-key-recovery-status.jsonl": {
+      "bytes": 569,
+      "sha256": "dde21de21d01284a17851d47662aa102db24bcd66e25a9320032b0daaf311d87"
+    },
+    "wrong-key-recovery-security.jsonl": {
+      "bytes": 981,
+      "sha256": "39b7f517dc7eaf57b4ef14a929606926322f5fe5e00a8da6684a2160dd823eb2"
+    },
+    "wrong-key-recovery-inventory.jsonl": {
+      "bytes": 510,
+      "sha256": "8974c25fb432a818cfc65c0204fb537c0fe54152531e36766ce97d3f1dab0412"
+    },
+    "tampered-cold-boot-observation.jsonl": {
+      "bytes": 43624,
+      "sha256": "311eb02c41ac451f8b9128a6f6c48c9ac494e38c3aff7b1ce88d69ce7a28b884"
+    },
+    "tampered-cold-boot-usb-events.log": {
+      "bytes": 6163,
+      "sha256": "3083fc984b2bbaa5171847c024be034758559ec1a21cdda8da7214e0a6a0000f"
+    },
+    "tampered-recovery-status.jsonl": {
+      "bytes": 569,
+      "sha256": "2da8f273a7619f75e89bf7e1fde6876c74ef3b5d50f171d714341348399e0292"
+    },
+    "tampered-recovery-security.jsonl": {
+      "bytes": 981,
+      "sha256": "fbc99f5e37d2b5b72edf0e2beaa311b88c682f334e2b153d9037dc851e5fbd87"
+    },
+    "tampered-recovery-inventory.jsonl": {
+      "bytes": 510,
+      "sha256": "18a36c82e9f6b6cac68825454b1f33736797e47238fe06dec7497c8aec71d66d"
+    },
+    "delete-65415d1c274932df1ab7aba61147af71434f850836d870d7e27fa88a.receipt.json": {
+      "bytes": 1097,
+      "sha256": "054dfb73cecb26fefa0f4e21ca4b60cac0e824005a535a458da8d97397036a86"
+    },
+    "delete-82e5ae8a4dd5ef465635141b946f8e068de9ab303745d6c166a99896.receipt.json": {
+      "bytes": 1095,
+      "sha256": "71f54d63fd8a07fe8373dee28d9ee59228c768f169593deed69516976b1ad0fc"
+    },
+    "delete-432041f53241a2780706fa7a6e11a69650296468aaf805f5ebcacd94.receipt.json": {
+      "bytes": 1095,
+      "sha256": "99d52aa8879f1eb136c54a07fdc1378a6018a486ed7cd4204d9dcbbeaf131b79"
+    },
+    "delete-0509bd39349d19d94adf964cdd72037111620bf586b032e35b0d0bd1.receipt.json": {
+      "bytes": 1095,
+      "sha256": "e6357845656613d8ea5ebd502b45e40a2c226a6a3edec1388186c2b164075e2c"
+    },
+    "delete-edc458c79d7c5c875febb77fccd796838c0de968bfcbe182f094bb71.receipt.json": {
+      "bytes": 1095,
+      "sha256": "b11e4f449810d8a96be35c385a16df43f90496c7847f2546c947384200d151b8"
+    },
+    "delete-65a4e3b3ab2ccc5c72fd021248a93c35575bd6bcec8e7a779484d5c6.receipt.json": {
+      "bytes": 1097,
+      "sha256": "ef3aba6c42b19e7315b10127e3002d4f40aa39ad5ff6c20a67a0f336f81ca5be"
+    },
+    "recipient-set.receipt.json": {
+      "bytes": 827,
+      "sha256": "fce45585c26a8a996056f010a71ebf278753d91a42137ada2bbf865cf1cc2069"
+    },
+    "public-proofs/base-period-0-pool-1.json": {
+      "bytes": 1308,
+      "sha256": "0480f039cfc2baef82866895b0f3526e17071e3e1fdccd0c782add5a438405cb"
+    },
+    "public-proofs/base-period-0-pool-2.json": {
+      "bytes": 1308,
+      "sha256": "52c418c5fc631b90fb0799d53215014d1d1470e3306a76d2bcca9f331a36b0e3"
+    },
+    "public-proofs/base-period-0-pool-3.json": {
+      "bytes": 1308,
+      "sha256": "0d4f6a2aee8f3d68d82a15d10b3a82c59d2069451288607f76cce8eb2bf1f38d"
+    },
+    "public-proofs/base-period-1-pool-1.json": {
+      "bytes": 1308,
+      "sha256": "0c1acb3305526f10037dfcaef4d42ac338584556db9eefd2c011f1679f3fc177"
+    },
+    "public-proofs/base-period-1-pool-2.json": {
+      "bytes": 1308,
+      "sha256": "dc85f77c5eb56d77f24f53161c0ca74c2da8edfdeb3568ea3cd596ca443ea513"
+    },
+    "public-proofs/base-period-1-pool-3.json": {
+      "bytes": 1308,
+      "sha256": "82f928f10b9a53566d1c9b5b7fc5022c0622a53622d6d7b007fcd9f461ff0913"
+    },
+    "public-proofs/base-period-2-pool-1.json": {
+      "bytes": 1308,
+      "sha256": "7bc245e826b135206729afb2fed3f5fb716264baeb1d3f6ea978f7264daac7aa"
+    },
+    "public-proofs/base-period-2-pool-2.json": {
+      "bytes": 1308,
+      "sha256": "c82b8e0fb0ebf2efe6f773d660f276ae6a8a7be4d55183b92ec9a0b4010ce41e"
+    },
+    "public-proofs/base-period-2-pool-3.json": {
+      "bytes": 1308,
+      "sha256": "fde52f7a8cf7cdae6460f6f6c8f9cff693c2b53864bf00b2ab44e778e307f022"
+    },
+    "public-proofs/base-period-2-repeat-pool-1.json": {
+      "bytes": 1308,
+      "sha256": "7bc245e826b135206729afb2fed3f5fb716264baeb1d3f6ea978f7264daac7aa"
+    },
+    "public-proofs/base-period-2-repeat-pool-2.json": {
+      "bytes": 1308,
+      "sha256": "c82b8e0fb0ebf2efe6f773d660f276ae6a8a7be4d55183b92ec9a0b4010ce41e"
+    },
+    "public-proofs/base-period-2-repeat-pool-3.json": {
+      "bytes": 1308,
+      "sha256": "fde52f7a8cf7cdae6460f6f6c8f9cff693c2b53864bf00b2ab44e778e307f022"
+    },
+    "public-proofs/candidate-period-32-pool-1.json": {
+      "bytes": 1308,
+      "sha256": "874093b10974786a294cf7a93ba8b858d1698f9d0556c1f54393bd2b1637daed"
+    },
+    "public-proofs/candidate-period-32-pool-2.json": {
+      "bytes": 1308,
+      "sha256": "035a5eb6f037db0710f98c24b059d5c961f8128c9f129453fca72b6ba6a269a2"
+    },
+    "public-proofs/candidate-period-32-pool-3.json": {
+      "bytes": 1308,
+      "sha256": "660f34c8d54090eead881b1192e712625f3d75f1ab73ce5bc567d71efd03b40d"
+    },
+    "public-proofs/candidate-period-33-pool-1.json": {
+      "bytes": 1308,
+      "sha256": "c0d9a8a409899bf70b6a2c9bb45f4b314b0a595eb097afb1f9bc8030aef21f06"
+    },
+    "public-proofs/candidate-period-33-pool-2.json": {
+      "bytes": 1308,
+      "sha256": "dbbc569c43e352e2e42a148ee9a66d0debebfe4ff920f169971c1c42d38b7944"
+    },
+    "public-proofs/candidate-period-33-pool-3.json": {
+      "bytes": 1308,
+      "sha256": "294206fc4d4705fc7b3615800f03579e7c9115d533d2977e3224143f1250e9f6"
+    },
+    "pool-1/cold.vkey": {
+      "bytes": 197,
+      "sha256": "e3dc44039728d9347720b2b1b19a3d56bbcf3b24173a5044a381cac918d6532f"
+    },
+    "pool-1/enroll.receipt.json": {
+      "bytes": 1011,
+      "sha256": "5ebdeaa991942238a8b013fdfaf87fcdc4313bc3970a7b7a8939b286f64b139d"
+    },
+    "pool-1/active.vkey": {
+      "bytes": 188,
+      "sha256": "e73de40e9c885741d00aaf3eec13025ce44155264cc86e1ecea9e790e2a393a2"
+    },
+    "pool-1/active.opcert": {
+      "bytes": 363,
+      "sha256": "9ec274468d951650ccf2c7559beb0ea7071b786f8a112e687eb955f9eccb19fe"
+    },
+    "pool-1/active-generate.receipt.json": {
+      "bytes": 1169,
+      "sha256": "241528262d1e418b7dfa0ced7e67cfc1b902ed65a3fe3ef4cea0d93a5d4ec880"
+    },
+    "pool-1/active-install.receipt.json": {
+      "bytes": 1243,
+      "sha256": "472bf00a51af5ee673b3a2f20e26e6bf688cbb4c3fd937bf87746ec828beb6ba"
+    },
+    "pool-1/staged.vkey": {
+      "bytes": 188,
+      "sha256": "8bf29b968c2e700eaa266480c6f88a1109744ee008672c1e398dc7787750b8de"
+    },
+    "pool-1/staged.opcert": {
+      "bytes": 365,
+      "sha256": "33d6e1a331c64dba9b94340134421c11565371af5ee59023a674b8a06356dafd"
+    },
+    "pool-1/staged-generate.receipt.json": {
+      "bytes": 1169,
+      "sha256": "d87cb1adcd02a1cf71487306ae8b8e82aadd35943da822897f91ce6762c7e9b3"
+    },
+    "pool-1/staged-install.receipt.json": {
+      "bytes": 1245,
+      "sha256": "af5a3a5eca07138b49e046b4d5e6d2988da32acabf7f99f180f0d86fc675fbf5"
+    },
+    "pool-1/replenished.vkey": {
+      "bytes": 188,
+      "sha256": "1481c0a35e14f08bdbcca18f5257a039a0f17e117bcd0c40b2e56c9c9eb53624"
+    },
+    "pool-1/replenished.opcert": {
+      "bytes": 365,
+      "sha256": "2087f332eb05238e040d02926814aefe9da8969500a07dc7dd8822c771bde760"
+    },
+    "pool-1/replenished-generate.receipt.json": {
+      "bytes": 1171,
+      "sha256": "0dc8164bd63d19c4397c851c928771de3d06f9789f84b58b9c66944d9316a386"
+    },
+    "pool-1/replenished-install.receipt.json": {
+      "bytes": 1247,
+      "sha256": "574d725bc55b67f6beb72c8f5c878d1cd3412271feaf0e272a1baee77272fce2"
+    },
+    "pool-2/cold.vkey": {
+      "bytes": 197,
+      "sha256": "632ce80542303b0b487a92bc6ecb0cefe52b7b708ff1f2e1d083a1a0aa389319"
+    },
+    "pool-2/enroll.receipt.json": {
+      "bytes": 1011,
+      "sha256": "4a43fd35ee72effd6c828339e005c8aec9590f7d9ec252a8a3707b51dc165734"
+    },
+    "pool-2/active.vkey": {
+      "bytes": 188,
+      "sha256": "362eb8157a00d48c8ea0043c2230103002203e87793d39e288ab1d11bd682971"
+    },
+    "pool-2/active.opcert": {
+      "bytes": 363,
+      "sha256": "cdd978887170f1e3f327d86cfd9aa106c7850312a02db4120d16c2b913c75b66"
+    },
+    "pool-2/active-generate.receipt.json": {
+      "bytes": 1169,
+      "sha256": "e8a30f7327becdf20a4e8d525db60e2505250805e908045cd18f834707c5103d"
+    },
+    "pool-2/active-install.receipt.json": {
+      "bytes": 1243,
+      "sha256": "d863f0e4f320cf7411d6f001934be099f6d739448079b3728a18920c50eb45fb"
+    },
+    "pool-2/staged.vkey": {
+      "bytes": 188,
+      "sha256": "17bc8480e35e9f2e085e96b8f2bd7e89ce1dcefb9b4efc394b0359d4be8feb32"
+    },
+    "pool-2/staged.opcert": {
+      "bytes": 365,
+      "sha256": "14e0926e12664a8106a1bdcbc0c1c41e1a0f742ad6b9938c3df68204a30d973e"
+    },
+    "pool-2/staged-generate.receipt.json": {
+      "bytes": 1169,
+      "sha256": "c783668dc6bb643c5d8b66300611c44214ac102ccef8ab03f1e07813fdbc41d6"
+    },
+    "pool-2/staged-install.receipt.json": {
+      "bytes": 1245,
+      "sha256": "decf01a4bc92a6e2a4b47f0287200687d1c4ef7b3e0052fbf6984297baa7f45c"
+    },
+    "pool-2/replenished.vkey": {
+      "bytes": 188,
+      "sha256": "f954f1ab781114b82eeae5abea6fa8a18efde10d8f4dfe477b9595a386bfcdcd"
+    },
+    "pool-2/replenished.opcert": {
+      "bytes": 365,
+      "sha256": "1932ddb8491d339c4c77deddc58c5028dcbe8c7fc2fb312644182b85838ed588"
+    },
+    "pool-2/replenished-generate.receipt.json": {
+      "bytes": 1171,
+      "sha256": "85e261b25550b545d58ca3b3e6c1970c9ae5e2cccb73023299eab30d1578b047"
+    },
+    "pool-2/replenished-install.receipt.json": {
+      "bytes": 1247,
+      "sha256": "9730a261929b75f1b3e37ec6604d86539fed314ace6e54a62c3f14b00e0d27b9"
+    },
+    "pool-3/cold.vkey": {
+      "bytes": 197,
+      "sha256": "3deb3465044c38128d90d4322212710df90e0cd984b45f752882bc7213d34aba"
+    },
+    "pool-3/enroll.receipt.json": {
+      "bytes": 1011,
+      "sha256": "c462ab446022f252c9325b3b6ee7fde13ac1271b0e802c5da79f71ae86b4357f"
+    },
+    "pool-3/active.vkey": {
+      "bytes": 188,
+      "sha256": "0a7b25f99ec095a7e87927d9f050cb81e1ba0604483e097d666c2ff983ceff3d"
+    },
+    "pool-3/active.opcert": {
+      "bytes": 363,
+      "sha256": "aad94e1cdcb99a6da4ca6cd4042624b58d210e6e316f728876a5b201076c0a7e"
+    },
+    "pool-3/active-generate.receipt.json": {
+      "bytes": 1169,
+      "sha256": "019a41a22ac08ff67e5e83ce58095549c75780c30eb3e1e62428375bfe58ae9c"
+    },
+    "pool-3/active-install.receipt.json": {
+      "bytes": 1243,
+      "sha256": "0df7c05db01e88e5bb1ef9d15af17fdffeea2326c58b75d30f9caf3a55296f27"
+    },
+    "pool-3/staged.vkey": {
+      "bytes": 188,
+      "sha256": "2a84dcaea981c361ece1778f9cf361920b89bbad8ca0f7771a98390d4cf87686"
+    },
+    "pool-3/staged.opcert": {
+      "bytes": 365,
+      "sha256": "a8a06e5a4bd1ece4d9c205fc380ba5b50ded118b5a22544a5488da19590d5747"
+    },
+    "pool-3/staged-generate.receipt.json": {
+      "bytes": 1169,
+      "sha256": "8d7451dcd338105b254126f40f9597ec1fcb3e098fb21d0092bfb5246d82576e"
+    },
+    "pool-3/staged-install.receipt.json": {
+      "bytes": 1245,
+      "sha256": "1bc70f0d4252bb6519c038e0bd4e758e4a3d9602799ee86837951019d2196af2"
+    },
+    "pool-3/replenished.vkey": {
+      "bytes": 188,
+      "sha256": "710b59b0d24c7479cafef8b4f00901d8d171ae5f654f21b1b88146a38ea26cf6"
+    },
+    "pool-3/replenished.opcert": {
+      "bytes": 365,
+      "sha256": "fd8e9a3f59528ee01151f27c331495c16af96216db6a39347559164b8b164f9c"
+    },
+    "pool-3/replenished-generate.receipt.json": {
+      "bytes": 1171,
+      "sha256": "47aeaca54c7cb22cf399a7460f683445fb02e02deb1aaf0e8c75847f59e28109"
+    },
+    "pool-3/replenished-install.receipt.json": {
+      "bytes": 1247,
+      "sha256": "1a64972903a136d618d3ca9007de7492416948a2b0d760b9f4f4b7c280de6698"
+    },
+    "base-v0.1.0-rc.9/release.json": {
+      "bytes": 1952,
+      "sha256": "d025e97236fbe449352b501e67dec994ac771ec68b6f3effe3edac61a633a0b5"
+    },
+    "candidate-v0.1.0-rc.11/release.json": {
+      "bytes": 1953,
+      "sha256": "3be123b16e36e6fcd8fd7992b4a40372ae284935b9e97b2831d079a98a9d96c8"
+    },
+    "candidate-verification.log": {
+      "bytes": 1649,
+      "sha256": "478a0eef1340a92d3c7fd38334e54c6a4b289571737b652457e553fea620d6d3"
+    },
+    "downloaded-base-verification.log": {
+      "bytes": 1648,
+      "sha256": "3d86dc371eec35e22a1d7ac38ed78ffcf15526102a39f5c7f6d89832b8c93e0b"
+    },
+    "cloud-build-provenance/unsigned-release-build/tool-versions.txt": {
+      "bytes": 686,
+      "sha256": "e05680c17e75b14389b4ed43e99e792177fe9ea8114691a96e952f05c0f0f229"
+    },
+    "qualification-report.md": {
+      "bytes": 13043,
+      "sha256": "eccf7b45c58de82c4208e3993bf1bea37ab9dee14e3e7da99ff2bd0c217a223e"
+    },
+    "source-first-run.log": {
+      "bytes": 11378,
+      "sha256": "a55c5361f963bf11eb33bf0e0fc246d2ac9411b3360c6eeef29e0d2d81e1ec10"
+    },
+    "source-second-run.log": {
+      "bytes": 7873,
+      "sha256": "26d7d0dd3670eaf0c95026fb7fed9d89ae954cabee1cb540c7b9964520d00227"
+    },
+    "protected-source-checks.log": {
+      "bytes": 6938,
+      "sha256": "defeb6742cc239d35b1b8773fc28359983eb9031afadaf6c66a793e13522841c"
+    },
+    "release-workflow-gates.log": {
+      "bytes": 3144,
+      "sha256": "57647887ea55580a027243c0fc4d6e69ad9f66e279c8e55544ee8ea1ac3b9d85"
+    },
+    "baseline-verification.log": {
+      "bytes": 1685,
+      "sha256": "b85160073070c04ef32f49e5942a976a92fef07adf7c527c062391092aae2566"
+    },
+    "node-loader-tests.log": {
+      "bytes": 272,
+      "sha256": "3933e8eccdb7b1e644f854a1c8e969859a50f6082b799222658a8a3c1ea85682"
+    },
+    "host-safety-review.txt": {
+      "bytes": 2158,
+      "sha256": "45589722d8091059071c827ce312ce0b84400284b94a2b9475a955ba29e22625"
+    },
+    "firmware-compatibility-review.txt": {
+      "bytes": 4776,
+      "sha256": "24739e8cc769637523c5d87f44ced048b8f693ce21e1c758c00b5e52bebbefee"
+    },
+    "preservation-result.json.context-0-3693819878566669304-3398176372227768560.jsonl": {
+      "bytes": 1062,
+      "sha256": "82cf2678c2ea7f10709efb3214e6ea351fb507cc7299026b9a79ee7b982cfa40"
+    },
+    "preservation-result.json.context-1-3693819878566669305-3398176372227768561.jsonl": {
+      "bytes": 1058,
+      "sha256": "616fbe2b982345b7c3c2310def553dea135f3563024eec3ed2949cae843a38e4"
+    },
+    "preservation-result.json.context-2-3693819878566669306-3398176372227768562.jsonl": {
+      "bytes": 1053,
+      "sha256": "34fed1e76bf64bc117b57e5f129ec047e94fdaf4e7afb1b2bd5d6202bf3bc863"
+    },
+    "preservation-result.json.context-3-3693819878566669307-3398176372227768563.jsonl": {
+      "bytes": 1062,
+      "sha256": "ced898abc07d25b61dba0b7acd6ec2954b7652f378cc3011c3115da03f236d25"
+    },
+    "preservation-result.json.context-4-3693819878566669308-3398176372227768564.jsonl": {
+      "bytes": 1058,
+      "sha256": "8bd0bc6aa9045b380a5ce23cd58c4579e82731a599d568fdc8c8d8ccb80fee47"
+    },
+    "preservation-result.json.context-5-3693819878566669309-3398176372227768565.jsonl": {
+      "bytes": 1053,
+      "sha256": "8ee255462ed8501b2aca31c57f6b0d4ac11b6bdef1825a205c04aac9599517cc"
+    },
+    "preservation-result.json.context-6-3693819878566669310-3398176372227768566.jsonl": {
+      "bytes": 1066,
+      "sha256": "b3369ef4a03a249f1a4c9bde63b46ad69136810699d1e71c94333f13039e7d86"
+    },
+    "preservation-result.json.context-7-3693819878566669311-3398176372227768567.jsonl": {
+      "bytes": 1062,
+      "sha256": "8e13f98864c78e7c4786d6e001856da2334ddb2d90d9f324be6a557f1efd0c36"
+    },
+    "preservation-result.json.context-8-3693819878566669312-3398176372227768568.jsonl": {
+      "bytes": 1057,
+      "sha256": "e10b288b465541582bbe46df3d5a4c60e58045d3132cbb09845aae9feb223167"
+    },
+    "README.md": {
+      "bytes": 4522,
+      "sha256": "4929c19c9dde82444cfc193f5110f1eaa55d1552fe7a3ff627dd781fcdc2e91b"
+    }
+  },
+  "excluded_material": "Private keys, passphrases, raw current KES states and state hashes, encrypted backup payloads, original host-state backup directories, and full management journals are not copied into this evidence directory.",
+  "finished_utc": "2026-11-01T21:24:14.537669+00:00",
+  "tool_versions_observed": {
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.99.1 (5f94df478 2026-08-27)",
+    "LLVM": "23.1.1",
+    "cardano_cli": "11.6.0.0; git 90cc2b9ae147abacf8169c848ec10dc4296796f6; GHC 9.12",
+    "native_GHC": "9.12.4"
+  },
+  "node_source": {
+    "commit": "d248299eb7db5e448ce688bfda52b1ba86be4377",
+    "dirty": false,
+    "selected_consensus_commit": "a337d69f4946d5a1b20ecaaeae635dd47822e3d2",
+    "test_result": "cardano-node-test passed; no live node/forging test"
+  },
+  "evidence_validation": {
+    "all_indexed_file_digests_match": true,
+    "receipt_sequences": [
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76
+    ],
+    "public_signature_proofs": 18,
+    "final_pool_count": 3
+  },
+  "archive": {
+    "source_public_index_sha256": "3d13298f378f1a36e9bc2b981642800e9ed0a0262c023e9558697fe6309b8c0f",
+    "source_workspace": "/home/westbam/pico2-qualification-2p9qdufn",
+    "scope": "Public documentation and evidence only; no new hardware operations. Raw observations retain original command paths as provenance, not replay instructions."
+  },
+  "artifact_log_files": {
+    "artifact://8": "source-first-run.log",
+    "artifact://11": "source-second-run.log",
+    "artifact://15": "baseline-verification.log",
+    "artifact://29": "protected-source-checks.log",
+    "artifact://46": "release-workflow-gates.log",
+    "artifact://42": "downloaded-base-verification.log"
+  }
+}
