@@ -9,9 +9,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, Read},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -162,18 +162,36 @@ struct ShelleyGenesis {
     max_kes_evolutions: u8,
 }
 
+fn regular_file(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "public input must be a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 impl Config {
     /// Read and validate without creating directories, sockets, locks, or USB
     /// handles. Genesis files are read-only inputs.
     pub fn load(path: &Path, mode: RunMode) -> Result<Self, Error> {
         let mut bytes = Vec::new();
-        File::open(path)?
+        regular_file(path)?
             .take(MAX_CONFIG_BYTES + 1)
             .read_to_end(&mut bytes)?;
+        Self::from_bytes(&bytes, mode)
+    }
+
+    pub(crate) fn from_bytes(bytes: &[u8], mode: RunMode) -> Result<Self, Error> {
         if bytes.len() as u64 > MAX_CONFIG_BYTES {
             return Err(Error::Invalid("configuration exceeds 1 MiB"));
         }
-        let raw: RawConfig = serde_json::from_slice(&bytes)?;
+        let raw: RawConfig = serde_json::from_slice(bytes)?;
         if raw.version != 1 {
             return Err(Error::InvalidField {
                 field: "version",
@@ -343,7 +361,7 @@ fn checked_socket_path(directory: &Path, path: &Path) -> Result<PathBuf, Error> 
 fn read_genesis(path: &Path, field: &'static str) -> Result<Vec<u8>, Error> {
     let path = checked_absolute(path, field)?;
     let mut bytes = Vec::new();
-    File::open(path)?
+    regular_file(&path)?
         .take(MAX_GENESIS_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_GENESIS_BYTES {
@@ -576,6 +594,25 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn special_public_input_files_are_rejected_without_blocking() {
+        let fixture = Fixture::new();
+        let fifo = fixture.0.join("candidate.json");
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .unwrap();
+        assert!(
+            matches!(regular_file(&fifo), Err(error) if error.kind() == io::ErrorKind::InvalidInput)
+        );
+        assert!(crate::manager::setup::review_config(&fifo, RunMode::Normal).is_err());
+        let link = fixture.0.join("candidate-link.json");
+        std::os::unix::fs::symlink(&fifo, &link).unwrap();
+        assert!(crate::manager::setup::review_config(&link, RunMode::Normal).is_err());
     }
 
     fn byron(start: &str, k: &str, magic: &str, duration: &str) -> String {

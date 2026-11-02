@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline firmware verification and explicit attended RP2350 provisioning."""
 import argparse
+import contextlib
+import fcntl
 import json
 import hashlib
 import os
@@ -20,6 +22,7 @@ WRITES_ATTEMPTED = False
 ACTIVE_ACTION = None
 ACTIVE_CHECKPOINT = None
 BOUND_TOOL = None
+BOUND_DISTRIBUTION_BUNDLE = None
 TRACE_HOOK = None
 OUTPUT_LIMIT = 65536
 EVIDENCE_OUTPUT_LIMIT = 4096
@@ -230,7 +233,7 @@ def verify_authority(directory, *, trust=(PRIMARY, SIGNER)):
             and actual == expected, "public authority statement mismatch")
     with tempfile.TemporaryDirectory(prefix="pico2-gpgv-") as temporary:
         keyring = Path(temporary) / "authority.gpg"
-        run(["gpg", "--batch", "--no-options", "--dearmor", "--output", keyring,
+        run(["gpg", "--batch", "--no-options", "--homedir", temporary, "--dearmor", "--output", keyring,
              directory / "release-authority.asc"])
         status, _ = run(["gpgv", "--homedir", temporary, "--keyring", keyring,
                          "--status-fd", "1", directory / "firmware-key.json.asc",
@@ -533,7 +536,8 @@ def tool_identity():
 
 def bind_tool(expected=None):
     global BOUND_TOOL
-    identity = tool_identity()
+    identity = (bind_distribution_tool(BOUND_DISTRIBUTION_BUNDLE)
+                if BOUND_DISTRIBUTION_BUNDLE is not None else tool_identity())
     require(expected is None or identity == expected, "picotool or libusb identity changed")
     BOUND_TOOL = identity
     return identity
@@ -781,6 +785,18 @@ def application_report(serial, *, blank=False, expected=None,
     require(type(envelope) is dict and envelope.get("outcome") == "success"
             and envelope.get("error") is None, "application security unavailable")
     report = envelope.get("result")
+    validate_application_security(report, serial, expected=expected)
+    if blank:
+        require(report["storage_blank_at_boot"] is True, "state was not wholly blank at boot")
+        status_data, _ = run(["pico2-kes-agent-cli", "--json", "status"], failure_code=4)
+        status_envelope = json.loads(status_data, object_pairs_hook=unique_object)
+        require(status_envelope.get("outcome") == "success"
+                and status_envelope.get("result", {}).get("commissioning_state") == "blank",
+                "device is not still uncommissioned")
+    return report
+
+
+def validate_application_security(report, serial, *, expected=None):
     integer8 = ("chip_revision", "rom_version", "page2_lock0", "page2_lock1",
                 "page63_lock0", "page63_lock1")
     integer32 = ("critical", "boot_flags0", "boot_flags1", "debugen", "debugen_lock",
@@ -815,13 +831,6 @@ def application_report(serial, *, blank=False, expected=None,
     require(report["profile"] == classification, "forged or incomplete profile classification")
     if expected is not None:
         require(report["bootkey0"] == expected, "application boot authority mismatch")
-    if blank:
-        require(report["storage_blank_at_boot"] is True, "state was not wholly blank at boot")
-        status_data, _ = run(["pico2-kes-agent-cli", "--json", "status"], failure_code=4)
-        status_envelope = json.loads(status_data, object_pairs_hook=unique_object)
-        require(status_envelope.get("outcome") == "success"
-                and status_envelope.get("result", {}).get("commissioning_state") == "blank",
-                "device is not still uncommissioned")
     return report
 
 
@@ -1073,44 +1082,705 @@ def bind_helper(original, configured, serial):
     elf_segments(configured, helper=True)
 
 
-def msd_copy(serial, bundle, *, picoboot_available):
-    pause("Stop the commissioning daemon. Hold BOOTSEL while reconnecting this exact board; mount its USB mass-storage volume.")
+def mount_attached(mount_id, device, volume):
+    matches = []
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        if len(fields) >= 6 and fields[0] == mount_id:
+            mountpoint = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[4])
+            matches.append((fields[2], mountpoint))
+    return matches == [(device, str(volume))]
+
+
+class BootselMount:
+    def __init__(self, volume, fd, mount_id, device, usb_device):
+        self.volume, self.fd, self.mount_id = volume, fd, mount_id
+        self.device, self.usb_device = device, usb_device
+
+    def close(self):
+        os.close(self.fd)
+
+    def verify(self):
+        pinned = os.fstat(self.fd)
+        current = self.volume.stat(follow_symlinks=False)
+        require(stat.S_ISDIR(current.st_mode) and (current.st_dev, current.st_ino)
+                == (pinned.st_dev, pinned.st_ino)
+                and f"{os.major(pinned.st_dev)}:{os.minor(pinned.st_dev)}" == self.device
+                and mount_attached(self.mount_id, self.device, self.volume),
+                "verified BOOTSEL mount detached or replaced")
+
+    def open_output(self):
+        self.verify()
+        fd = os.open(ARTIFACTS[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=self.fd)
+        return os.fdopen(fd, "wb")
+
+    def check_space(self, size):
+        self.verify()
+        info = os.fstatvfs(self.fd)
+        require(info.f_bavail * info.f_frsize >= size, "insufficient mass-storage space")
+
+
+def mounted_bootsel(serial, *, picoboot_available=True):
     vendor, product, bus, address = selected_usb_board()
     require((vendor, product) == ("2e8a", "000f"), "RP2350 BOOTSEL volume not present")
     if picoboot_available:
         Board(serial).identify()
     volume = Path(input("Absolute RP2350 mass-storage mount path: ").strip())
-    require(volume.is_absolute() and volume.is_dir() and not volume.is_symlink(), "invalid mass-storage mount")
-    matches = []
-    for line in Path("/proc/self/mountinfo").read_text().splitlines():
-        fields = line.split()
-        if len(fields) >= 6 and fields[4].replace("\\040", " ") == str(volume.resolve()):
-            matches.append(fields[2])
-    require(len(matches) == 1, "path is not a distinct mounted volume")
-    block_path = (Path("/sys/dev/block") / matches[0]).resolve(strict=True)
-    candidates = []
-    for entry in Path("/sys/bus/usb/devices").iterdir():
-        try:
-            if int((entry / "busnum").read_text()) == bus and int((entry / "devnum").read_text()) == address:
-                candidates.append(entry.resolve())
-        except FileNotFoundError:
-            pass
-    require(len(candidates) == 1 and candidates[0] in block_path.parents, "volume belongs to another USB device")
-    info = bounded_file(volume / "INFO_UF2.TXT", 4096).decode("ascii")
-    require(re.search(r"(?m)^Board-ID: RP2350[ \r]*$", info), "volume is not an RP2350 bootloader")
-    if not picoboot_available:
+    require(volume.is_absolute() and not volume.is_symlink(), "invalid mass-storage mount")
+    volume = volume.resolve(strict=True)
+    fd = os.open(volume, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        fdinfo = Path(f"/proc/self/fdinfo/{fd}").read_text()
+        ids = re.findall(r"(?m)^mnt_id:\s*(\d+)\s*$", fdinfo)
+        require(len(ids) == 1, "mount identity unavailable")
+        meta = os.fstat(fd)
+        device = f"{os.major(meta.st_dev)}:{os.minor(meta.st_dev)}"
+        require(mount_attached(ids[0], device, volume), "path is not a distinct mounted volume")
+        block_path = (Path("/sys/dev/block") / device).resolve(strict=True)
+        candidates = []
+        for entry in Path("/sys/bus/usb/devices").iterdir():
+            try:
+                if int((entry / "busnum").read_text()) == bus and int((entry / "devnum").read_text()) == address:
+                    candidates.append(entry.resolve())
+            except FileNotFoundError:
+                pass
+        require(len(candidates) == 1 and candidates[0] in block_path.parents, "volume belongs to another USB device")
+        info_fd = os.open("INFO_UF2.TXT", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        with os.fdopen(info_fd, "rb") as info_file:
+            info = info_file.read(4097)
+        require(len(info) <= 4096 and re.search(r"(?m)^Board-ID: RP2350[ \r]*$", info.decode("ascii")),
+                "volume is not an RP2350 bootloader")
+        mount = BootselMount(volume, fd, ids[0], device, candidates[0])
+        mount.verify()
+        return mount
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def msd_copy(serial, bundle, *, picoboot_available):
+    pause("Stop the commissioning daemon. Hold BOOTSEL while reconnecting this exact board; mount its USB mass-storage volume.")
+    mount = mounted_bootsel(serial, picoboot_available=picoboot_available)
+    try:
+        if picoboot_available:
+            source = bounded_file(Path(bundle) / ARTIFACTS[1], 4 * 1024 * 1024)
+            mount.check_space(len(source))
+            with mount.open_output() as output:
+                require(output.write(source) == len(source), "short UF2 copy")
+                mount.verify()
+                output.flush()
+                os.fsync(output.fileno())
+                mount.verify()
+            mount.verify()
+            return {"uf2_sha256": sha256(source), "mounted_device": mount.device}
         classes = []
         for entry in Path("/sys/bus/usb/devices").iterdir():
-            if entry.name.startswith(candidates[0].name + ":"):
+            if entry.name.startswith(mount.usb_device.name + ":"):
                 classes.append((entry / "bInterfaceClass").read_text().strip())
+        mount.verify()
         require("08" in classes and "ff" not in classes, "MSD missing or PICOBOOT vendor interface remains")
         return {"msd_interface": True, "picoboot_interface": False}
-    source = bounded_file(Path(bundle) / ARTIFACTS[1], 4 * 1024 * 1024)
-    with (volume / ARTIFACTS[1]).open("wb") as output:
-        output.write(source)
-        output.flush()
-        os.fsync(output.fileno())
-    return {"uf2_sha256": sha256(source), "mounted_device": matches[0]}
+    finally:
+        mount.close()
+
+
+def signed_distribution(bundle):
+    root = Path(bundle).resolve().parent
+    manifest_path = root / "distribution.json"
+    signature = root / "distribution.json.asc"
+    certificate = Path(bundle) / "release-authority.asc"
+    bounded_file(manifest_path)
+    bounded_file(signature)
+    bounded_file(certificate)
+    with tempfile.TemporaryDirectory(prefix="pico2-distribution-gpgv-") as temporary:
+        keyring = Path(temporary) / "authority.gpg"
+        clean_loader = {key: None for key in os.environ if key.startswith("LD_")}
+        run(["/usr/bin/gpg", "--batch", "--no-options", "--homedir", temporary, "--dearmor", "--output", keyring, certificate],
+            extra_env=clean_loader)
+        status, _ = run(["/usr/bin/gpgv", "--homedir", temporary, "--keyring", keyring,
+                         "--status-fd", "1", signature, manifest_path], failure_code=5, extra_env=clean_loader)
+    text = status.decode("ascii")
+    signatures = [line.split() for line in text.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")]
+    require(len(signatures) == 1 and len(signatures[0]) == 12
+            and signatures[0][2] == SIGNER and signatures[0][11] == PRIMARY
+            and not any(f"[GNUPG:] {bad}" in text for bad in
+                        ("REVKEYSIG", "EXPKEYSIG", "EXPSIG", "BADSIG", "ERRSIG")),
+            "distribution signature is not from the pinned authority")
+    manifest = read_json(manifest_path)
+    require(type(manifest) is dict and manifest.get("schema_version") == 1
+            and manifest.get("purpose") == "pico2-kes-agent-distribution-v1"
+            and manifest.get("qualification") in ("candidate", "qualified"),
+            "unsupported distribution evidence")
+    return manifest
+
+
+def bind_distribution_tool(bundle):
+    global BOUND_TOOL
+    manifest = signed_distribution(bundle)
+    path = shutil.which("picotool")
+    require(path is not None, "picotool unavailable")
+    path = Path(path).resolve(strict=True)
+    root = Path(bundle).resolve().parent
+    runtime = root / "runtime" if path == root / "tools" / "picotool" else path.parent / "runtime"
+    require(os.environ.get("LD_LIBRARY_PATH") == str(runtime)
+            and not any(k.startswith("LD_") and k != "LD_LIBRARY_PATH" for k in os.environ),
+            "untrusted dynamic loader environment")
+    names = ("libusb-1.0.so.0", "libudev.so.1", "libstdc++.so.6", "libgcc_s.so.1")
+    expected = {"tools/picotool": path, "tools/firmware.py": Path(__file__),
+                "firmware/firmware.py": Path(bundle) / "firmware.py",
+                "firmware/release.json": Path(bundle) / "release.json",
+                "firmware/release.json.sig": Path(bundle) / "release.json.sig",
+                "firmware/" + ARTIFACTS[1]: Path(bundle) / ARTIFACTS[1]}
+    expected.update({"runtime/" + name: runtime / name for name in names})
+    entries = manifest.get("artifacts")
+    require(type(entries) is list, "distribution artifacts missing")
+    digests = {}
+    for name, file in expected.items():
+        matches = [entry for entry in entries if type(entry) is dict and entry.get("path") == name]
+        require(len(matches) == 1, "missing or duplicate signed tool artifact")
+        digest = sha256(bounded_file(file, MAX_ELF))
+        require(matches[0].get("sha256") == digest, "signed tool or runtime digest mismatch")
+        digests[name] = digest
+    provenance_path = Path(bundle).resolve().parent / "runtime/provenance.json"
+    provenance_entries = [entry for entry in entries
+                          if type(entry) is dict and entry.get("path") == "runtime/provenance.json"]
+    require(len(provenance_entries) == 1, "missing or duplicate signed runtime provenance")
+    provenance_bytes = bounded_file(provenance_path)
+    require(sha256(provenance_bytes) == provenance_entries[0].get("sha256"),
+            "runtime provenance digest mismatch")
+    provenance = json.loads(provenance_bytes, object_pairs_hook=unique_object)
+    exact_keys(provenance, ("schema_version", "os", "libraries"))
+    require(type(provenance["schema_version"]) is int and provenance["schema_version"] == 1
+            and provenance["os"] == {"id": "debian", "version": "12"}
+            and type(provenance["libraries"]) is list, "invalid runtime provenance")
+    packages = dict(zip(names, ("libusb-1.0-0", "libudev1", "libstdc++6", "libgcc-s1")))
+    library_provenance = {}
+    for entry in provenance["libraries"]:
+        exact_keys(entry, ("path", "package", "package_version", "sha256"))
+        name = entry["path"]
+        require(type(name) is str and name.startswith("runtime/") and name[8:] in packages
+                and name not in library_provenance and entry["package"] == packages[name[8:]]
+                and type(entry["package_version"]) is str
+                and re.fullmatch(r"[A-Za-z0-9.+:~_-]{1,255}", entry["package_version"])
+                and entry["sha256"] == digests[name], "invalid signed library provenance")
+        library_provenance[name] = entry
+    require(set(library_provenance) == {"runtime/" + name for name in names},
+            "incomplete signed library provenance")
+    clean_loader = {key: None for key in os.environ if key.startswith("LD_")}
+    notes, _ = run(["/usr/bin/readelf", "-n", path], extra_env=clean_loader)
+    ids = re.findall(rb"Build ID:\s*([0-9a-fA-F]+)", notes)
+    require(len(ids) == 1, "picotool GNU build ID unavailable")
+    version, loader_log = run([str(path), "version"], extra_env={"LD_DEBUG": "libs", "LD_DEBUG_OUTPUT": None})
+    require(version.startswith(b"picotool v2.3.1 (") and b"without libusb" not in version.lower()
+            and b"without usb support" not in version.lower(), "picotool 2.3.1 with libusb is required")
+    libraries = re.findall(rb"(?m)^\s*\d+:\s*calling init:\s*(/\S*/libusb-1\.0\.so[^\s]*)\s*$", loader_log)
+    require(len(libraries) == 1 and Path(os.fsdecode(libraries[0])).resolve(strict=True)
+            == (runtime / names[0]).resolve(strict=True), "loaded libusb differs from signed runtime")
+    identity = {"path": str(path), "sha256": digests["tools/picotool"],
+                "build_id": ids[0].decode().lower(), "version": version.decode("utf-8"),
+                "provisioner_sha256": digests["tools/firmware.py"], "trace_hook": None,
+                "libusb": {"path": str((runtime / names[0]).resolve()),
+                           "sha256": digests["runtime/" + names[0]],
+                           "package": library_provenance["runtime/" + names[0]]["package"],
+                           "version": library_provenance["runtime/" + names[0]]["package_version"],
+                           "provenance": "signed-distribution", "build_os": provenance["os"],
+                           "provenance_sha256": sha256(provenance_bytes)},
+                "runtime_sha256": {name: digests["runtime/" + name] for name in names},
+                "distribution_qualification": manifest["qualification"]}
+    BOUND_TOOL = identity
+    return identity
+
+
+def qualification_evidence():
+    reference = input("Public reference for the reviewed applicable physical, tool and image qualification evidence "
+                      "(absolute file path or public reference): ").strip()
+    require(reference and len(reference) <= 4096 and all(ord(c) >= 32 and ord(c) != 127 for c in reference),
+            "qualification evidence reference required")
+    evidence = {"reference": reference}
+    path = Path(reference)
+    if path.is_absolute() or reference.startswith("./") or path.exists():
+        content = bounded_file(path, MAX_RECORD)
+        require(content, "qualification evidence file is empty")
+        evidence["sha256"] = sha256(content)
+    return evidence
+
+
+def protected_ancestry(path, owner):
+    path = Path(path)
+    require(path.is_absolute(), "evidence path must be absolute")
+    for directory in reversed((path, *path.parents)):
+        try:
+            metadata = directory.lstat()
+        except FileNotFoundError:
+            return
+        require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid in (0, owner)
+                and (metadata.st_mode & 0o022 == 0
+                     or metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX),
+                "unsafe evidence directory ancestry")
+
+
+def first_install_history(record_path, bundle, *,
+                          config=Path("/etc/pico2-kes-agent/config.json"),
+                          journal=Path("/var/lib/pico2-kes-agent/operations.journal"),
+                          records=Path("/var/lib/p2kesup/records"),
+                          directory=Path("/var/lib/p2kesup/firmware"), owner=0):
+    record_path, directory = Path(record_path), Path(directory)
+    require(record_path.parent == directory and re.fullmatch(r"[0-9a-f]{32}\.json", record_path.name),
+            "first-install record must use the protected firmware directory")
+    for path in (config.parent, journal.parent, records, directory):
+        protected_ancestry(path, owner)
+    for path, mode in ((records, 0o750), (directory, 0o700)):
+        metadata = path.lstat()
+        require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == owner
+                and stat.S_IMODE(metadata.st_mode) == mode, "unsafe evidence directory")
+    for entry in directory.iterdir():
+        if entry.name == ".lock":
+            continue
+        raise ValueError("existing first-install evidence must be reopened, not replayed")
+    try:
+        metadata = config.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == owner
+                and metadata.st_nlink == 1 and metadata.st_mode & 0o022 == 0,
+                "unsafe device configuration")
+        configuration = read_json(config)
+        require(type(configuration) is dict and type(configuration.get("device")) is dict,
+                "cannot establish existing device configuration")
+        device = configuration["device"]
+        require(not any(device.get(field) is not None for field in ("id", "identity_public_key", "usb_serial")),
+                "existing device identity or selection excludes first-install")
+    try:
+        metadata = journal.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == owner
+                and metadata.st_nlink == 1 and metadata.st_mode & 0o022 == 0 and metadata.st_size == 0,
+                "existing or unsafe lifecycle journal excludes first-install")
+    active = 0
+    for entry in records.iterdir():
+        if entry.name == ".lock":
+            continue
+        metadata = entry.lstat()
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == owner
+                and stat.S_IMODE(metadata.st_mode) == 0o640 and metadata.st_nlink == 1,
+                "unsafe maintenance evidence")
+        prior = read_json(entry)
+        exact_keys(prior, ("schema_version", "operation_id", "action", "plan_digest", "selected",
+                           "approved_scope", "previous_service_state", "pre_observations",
+                           "checkpoints", "post_observations", "outcome", "bundle_digest",
+                           "image_digest", "physical_selection"))
+        require(type(prior["schema_version"]) is int and prior["schema_version"] == 1
+                and type(prior["operation_id"]) is str
+                and re.fullmatch(r"[0-9a-f]{32}", prior["operation_id"])
+                and type(prior["plan_digest"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", prior["plan_digest"])
+                and type(prior["action"]) is str and type(prior["outcome"]) is str
+                and all(type(prior[key]) is list for key in
+                        ("approved_scope", "pre_observations", "checkpoints", "post_observations")),
+                "unknown maintenance evidence")
+        if prior.get("outcome") == "completed" and prior.get("action") in (
+                "install", "config", "service", "commission_service"):
+            continue
+        scope = prior.get("approved_scope")
+        require(type(scope) is list and len(scope) == 1 and type(scope[0]) is str,
+                "existing maintenance evidence excludes first-install")
+        action = json.loads(scope[0], object_pairs_hook=unique_object)
+        operation = prior.get("operation_id")
+        manifest_digest = sha256(bounded_file(Path(bundle).parent / "distribution.json"))
+        require(type(action) is dict and prior.get("action") == "firmware_transfer"
+                and prior.get("outcome") == "intent-durable"
+                and action.get("action") == "firmware_first_install" and action.get("apply") is True
+                and action.get("record") == str(record_path)
+                and action.get("manifest_digest") == manifest_digest
+                and prior.get("bundle_digest") == manifest_digest
+                and type(operation) is str and re.fullmatch(r"[0-9a-f]{32}", operation)
+                and Path(bundle).parent == Path("/var/lib/p2kesup/staging") / operation
+                and any(type(checkpoint) is dict and checkpoint.get("name") == "staged-authenticated"
+                        and checkpoint.get("evidence") == manifest_digest
+                        for checkpoint in prior.get("checkpoints", [])),
+                "existing maintenance evidence excludes first-install")
+        parent_executable = Path(f"/proc/{os.getppid()}/exe").resolve(strict=True)
+        parent_meta = parent_executable.stat()
+        require(str(parent_executable).startswith("/usr/lib/pico2-kes-agent/components/manager/")
+                and parent_executable.name == "p2kesup" and parent_meta.st_uid == 0
+                and parent_meta.st_mode & 0o022 == 0, "original operation requires its manager")
+        active += 1
+        require(active == 1, "multiple first-install maintenance records")
+
+
+@contextlib.contextmanager
+def first_install_lock(record_path):
+    directory = Path("/var/lib/p2kesup/firmware")
+    require(os.geteuid() == 0 and Path(record_path).parent == directory,
+            "first-install requires the protected root-owned firmware directory")
+    protected_ancestry(directory, 0)
+    metadata = directory.lstat()
+    require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == 0
+            and stat.S_IMODE(metadata.st_mode) == 0o700, "unsafe firmware record directory")
+    fd = os.open(directory / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        meta = os.fstat(fd)
+        require(stat.S_ISREG(meta.st_mode) and meta.st_uid == 0 and meta.st_nlink == 1
+                and stat.S_IMODE(meta.st_mode) == 0o600, "unsafe firmware lock")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def first_install(bundle, record_path, apply=False):
+    if not apply or os.path.lexists(record_path):
+        return _first_install(bundle, record_path, apply)
+    with first_install_lock(record_path):
+        first_install_history(record_path, bundle)
+        return _first_install(bundle, record_path, apply)
+
+
+def _first_install(bundle, record_path, apply=False):
+    global WRITES_ATTEMPTED
+    WRITES_ATTEMPTED = False
+    record_path = Path(record_path)
+    if os.path.lexists(record_path):
+        metadata = record_path.lstat()
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == os.geteuid()
+                and metadata.st_mode & 0o077 == 0, "record must be an owner-only regular file")
+        record = json.loads(bounded_file(record_path, MAX_RECORD), object_pairs_hook=unique_object)
+        require(type(record) is dict and record.get("schema_version") == 1
+                and record.get("action") == "first-install", "not a first-install record")
+        return {"apply": False, "reopened": True, "record": record,
+                "outcome": "read-only reconciliation; no reflash or application admission"}
+    identity = bind_distribution_tool(bundle)
+    manifest = verify_bundle(bundle)
+    image_digest = next(item["sha256"] for item in manifest["artifacts"] if item["name"] == ARTIFACTS[1])
+    bundle_digest = sha256(bounded_file(Path(bundle) / "release.json"))
+    preview = {"apply": False, "bundle_sha256": bundle_digest, "uf2_sha256": image_digest,
+               "firmware_region": [FIRMWARE_START, FIRMWARE_END],
+               "preserved_state_region": [FIRMWARE_END, STATE_END],
+               "outcome": "preview only; hardware and factory eligibility require attended review"}
+    script_entry = next(item for item in manifest["artifacts"] if item["name"] == "firmware.py")
+    require(sha256(bounded_file(Path(__file__), MAX_ELF)) == script_entry["sha256"],
+            "running firmware tool differs from authenticated bundle")
+    vendor, product, bus, address = selected_usb_board()
+    require((vendor, product) == ("2e8a", "000f"), "one RP2350 BOOTSEL board required")
+    data, _ = run(["picotool", "info", "--device", "--debug", "--bus", str(bus),
+                   "--address", str(address)], failure_code=4)
+    matches = re.findall(rb"(?m)^[ \t]*chipid:[ \t]*0x([0-9a-f]{16})[ \t]*$", data)
+    require(len(matches) == 1, "missing or ambiguous BOOTSEL CHIPID")
+    chipid = matches[0].decode("ascii")
+    info = parse_bootsel_info(data, chipid)
+    require(info["stepping"] == "A2", "hardware stepping lacks qualification")
+    board = Board(chipid)
+    snapshot = board.snapshot()
+    public_policy(snapshot, manifest["bootkey_sha256"], "prepare")
+    preview["hardware"] = snapshot
+    preview["tool_identity"] = identity
+    if not apply:
+        return preview
+    require(sys.stdin.isatty() and sys.stdout.isatty()
+            and os.ttyname(sys.stdin.fileno()) == os.ttyname(sys.stdout.fileno())
+            and os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp(),
+            "first-install requires a direct foreground terminal")
+    if identity["distribution_qualification"] == "candidate":
+        require(input("This authenticated release is a candidate, not qualified. "
+                      "Type DISPOSABLE only after explicit offline selection for reviewed disposable-host acceptance: ").strip()
+                == "DISPOSABLE", "candidate acceptance not confirmed")
+    config = Path("/etc/pico2-kes-agent/config.json")
+    if config.exists():
+        configuration = read_json(config)
+        require(type(configuration) is dict and type(configuration.get("device")) is dict,
+                "cannot establish existing device configuration")
+        require(not configuration["device"].get("usb_serial"), "existing device pin excludes first-install")
+    print("Review the applicable qualification evidence for this exact observed hardware, tool and authenticated image:")
+    print(json.dumps({"physical_chipid": chipid, "hardware": snapshot, "tool_identity": identity,
+                      "bundle_sha256": bundle_digest, "uf2_sha256": image_digest}, sort_keys=True))
+    evidence = qualification_evidence()
+    require(input("Having reviewed that evidence and factory eligibility, prior pins and maintenance records, "
+                  "type FACTORY only if applicable qualification is established and no contradictory evidence exists: ").strip() == "FACTORY",
+            "factory and qualification review not confirmed")
+    attended(chipid, "Confirm the physically selected factory board; this CHIPID is not an application pin.")
+    mount = mounted_bootsel(chipid)
+    try:
+        source = bounded_file(Path(bundle) / ARTIFACTS[1], 4 * 1024 * 1024)
+        require(sha256(source) == image_digest, "firmware changed after authentication")
+        mount.check_space(len(source))
+        require(sha256(bounded_file(Path(bundle) / "release.json")) == bundle_digest,
+                "bundle changed after authentication")
+        require(bind_distribution_tool(bundle) == identity, "signed tool or runtime changed after review")
+        board.identify()
+        mount.verify()
+        first_install_history(record_path, bundle)
+        record = {"schema_version": 1, "action": "first-install", "bundle_sha256": bundle_digest,
+                  "uf2_sha256": image_digest, "physical_chipid": chipid, "hardware": snapshot,
+                  "tool_identity": identity, "qualification_evidence": evidence, "mounted_device": mount.device,
+                  "firmware_region": [FIRMWARE_START, FIRMWARE_END],
+                  "preserved_state_region": [FIRMWARE_END, STATE_END], "checkpoints": ["intent"]}
+        save_record(record_path, record, create=True)
+        record["checkpoints"].append("transfer-started")
+        save_record(record_path, record)
+        WRITES_ATTEMPTED = True
+        with mount.open_output() as output:
+            require(output.write(source) == len(source), "short UF2 copy")
+            mount.verify()
+            record["checkpoints"].append("transfer-complete")
+            save_record(record_path, record)
+            output.flush()
+            os.fsync(output.fileno())
+            mount.verify()
+        mount.verify()
+        record["checkpoints"].append("flush-complete")
+        save_record(record_path, record)
+        return {"apply": True, "record": record,
+                "outcome": "transfer and flush only; application and blank admission remain unobserved"}
+    finally:
+        mount.close()
+
+
+def update_history(record_path, bundle, serial, image_digest, *, directory=Path("/var/lib/p2kesup/firmware"),
+                   records=Path("/var/lib/p2kesup/records"), config=Path("/etc/pico2-kes-agent/config.json"),
+                   staging=Path("/var/lib/p2kesup/staging"), owner=0):
+    record_path, bundle = Path(record_path), Path(bundle)
+    require(os.geteuid() == owner and record_path.parent == directory
+            and re.fullmatch(r"[0-9a-f]{32}\.json", record_path.name),
+            "update requires the original protected firmware record")
+    operation = record_path.stem
+    require(bundle == staging / operation / "firmware",
+            "update requires the original authenticated staging directory")
+    for path in (directory, records, config.parent, bundle):
+        protected_ancestry(path, owner)
+    for path, mode in ((directory, 0o700), (records, 0o750)):
+        meta = path.lstat()
+        require(stat.S_ISDIR(meta.st_mode) and meta.st_uid == owner and stat.S_IMODE(meta.st_mode) == mode,
+                "unsafe maintenance evidence directory")
+    def protected_json(path, mode):
+        meta = path.lstat()
+        require(stat.S_ISREG(meta.st_mode) and meta.st_uid == owner and meta.st_nlink == 1
+                and stat.S_IMODE(meta.st_mode) == mode, "unsafe maintenance evidence")
+        return read_json(path)
+    maintenance = {}
+    for entry in records.iterdir():
+        if entry.name == ".lock":
+            continue
+        prior = protected_json(entry, 0o640)
+        require(type(prior) is dict and prior.get("schema_version") == 1
+                and prior.get("operation_id") == entry.stem
+                and re.fullmatch(r"[0-9a-f]{32}\.json", entry.name),
+                "unknown maintenance history blocks update")
+        maintenance[entry.name] = prior
+    transfers = {}
+    for name, prior in maintenance.items():
+        if name == record_path.name or prior.get("action") not in ("firmware-update", "firmware_transfer"):
+            continue
+        if prior.get("action") == "firmware_transfer":
+            scope = prior.get("approved_scope")
+            require(type(scope) is list and len(scope) == 1 and type(scope[0]) is str,
+                    "unresolved original firmware operation blocks new transfer")
+            action = json.loads(scope[0], object_pairs_hook=unique_object)
+            require(type(action) is dict and action.get("action") == "firmware_first_install"
+                    and action.get("apply") is True and type(action.get("record")) is str,
+                    "unresolved original firmware operation blocks new transfer")
+            path = Path(action["record"])
+            require(path.parent == directory and re.fullmatch(r"[0-9a-f]{32}\.json", path.name),
+                    "unresolved original firmware operation blocks new transfer")
+        else:
+            path = directory / name
+        transfers.setdefault(path.name, []).append(prior)
+        if prior.get("outcome") in ("cancelled", "failed-known"):
+            checkpoints = prior.get("checkpoints")
+            require(not os.path.lexists(path) and type(checkpoints) is list
+                    and all(type(c) is dict and c.get("name") in ("intent-durable", "staged-authenticated")
+                            for c in checkpoints),
+                    "unresolved original firmware operation blocks new transfer")
+        else:
+            require(prior.get("outcome") == "completed" and os.path.lexists(path),
+                    "unresolved original firmware operation blocks new transfer")
+    for entry in directory.iterdir():
+        if entry.name == ".lock":
+            continue
+        require(re.fullmatch(r"[0-9a-f]{32}\.json", entry.name) is not None,
+                "unknown firmware history blocks update")
+        prior = protected_json(entry, 0o600)
+        matches = transfers.get(entry.name, [])
+        require(type(prior) is dict and prior.get("schema_version") == 1
+                and prior.get("action") in ("first-install", "update")
+                and len(matches) == 1 and matches[0].get("outcome") == "completed"
+                and matches[0].get("action") == ("firmware_transfer" if prior["action"] == "first-install"
+                                                  else "firmware-update"),
+                "unresolved original firmware operation blocks new transfer")
+        if prior["action"] == "first-install":
+            original = matches[0]
+            action = json.loads(original["approved_scope"][0], object_pairs_hook=unique_object)
+            stage = staging / original["operation_id"]
+            protected_ancestry(stage, owner)
+            distribution = protected_json(stage / "distribution.json", 0o600)
+            digest = sha256(bounded_file(stage / "distribution.json"))
+            artifacts = distribution.get("artifacts") if type(distribution) is dict else None
+            require(type(artifacts) is list, "unresolved original firmware operation blocks new transfer")
+            def artifact(path):
+                found = [item.get("sha256") for item in artifacts
+                         if type(item) is dict and item.get("path") == path]
+                return found[0] if len(found) == 1 else None
+            checkpoints = original.get("checkpoints")
+            require(type(checkpoints) is list and action.get("manifest_digest") == digest
+                    and original.get("bundle_digest") == digest
+                    and type(prior.get("bundle_sha256")) is str
+                    and re.fullmatch(r"[0-9a-f]{64}", prior["bundle_sha256"])
+                    and prior["bundle_sha256"] == artifact("firmware/release.json")
+                    and type(prior.get("uf2_sha256")) is str
+                    and re.fullmatch(r"[0-9a-f]{64}", prior["uf2_sha256"])
+                    and prior["uf2_sha256"] == artifact("firmware/" + ARTIFACTS[1])
+                    and type(prior.get("physical_chipid")) is str
+                    and re.fullmatch(r"[0-9a-f]{16}", prior["physical_chipid"])
+                    and type(prior.get("checkpoints")) is list
+                    and "transfer-started" in prior["checkpoints"]
+                    and any(type(c) is dict and c.get("name") == "staged-authenticated"
+                            and c.get("evidence") == digest for c in checkpoints),
+                    "unresolved original firmware operation blocks new transfer")
+            admissions = [json.loads(c["evidence"], object_pairs_hook=unique_object)
+                          for c in checkpoints if type(c) is dict and c.get("name") == "application-blank-attended"]
+            require(any(type(admission) is dict and admission.get("serial") == serial
+                        and admission.get("manifest_digest") == digest
+                        and admission.get("physical_chipid") == prior["physical_chipid"]
+                        and admission.get("tool_record_sha256") == sha256(bounded_file(entry))
+                        and admission.get("transfer_checkpoints") == prior["checkpoints"]
+                        for admission in admissions),
+                    "unresolved original firmware operation blocks new transfer")
+    original = protected_json(records / record_path.name, 0o640)
+    require(type(original) is dict and original.get("schema_version") == 1
+            and original.get("operation_id") == operation and original.get("action") == "firmware-update"
+            and original.get("outcome") == "service-quiesced"
+            and type(original.get("approved_scope")) is list and len(original["approved_scope"]) == 1
+            and type(original.get("pre_observations")) is list and len(original["pre_observations"]) == 1
+            and type(original.get("checkpoints")) is list,
+            "original approved firmware maintenance intent is unavailable")
+    action = json.loads(original["approved_scope"][0], object_pairs_hook=unique_object)
+    evidence = json.loads(original["pre_observations"][0], object_pairs_hook=unique_object)
+    digest = sha256(bounded_file(bundle.parent / "distribution.json"))
+    require(type(action) is dict and action.get("action") == "firmware_update"
+            and action.get("apply") is True and action.get("serial") == serial
+            and action.get("record") == str(record_path) and action.get("manifest_digest") == digest
+            and original.get("bundle_digest") == digest and original.get("image_digest") == image_digest
+            and any(type(c) is dict and c.get("name") == "staged-authenticated" and c.get("evidence") == digest
+                    for c in original["checkpoints"])
+            and any(type(c) is dict and c.get("name") == "service-quiesced" for c in original["checkpoints"]),
+            "firmware update differs from approved staged intent")
+    meta = config.lstat()
+    require(stat.S_ISREG(meta.st_mode) and meta.st_uid == owner and meta.st_nlink == 1
+            and meta.st_mode & 0o022 == 0, "unsafe pinned configuration")
+    device = read_json(config).get("device")
+    require(type(device) is dict and device.get("usb_serial") == serial
+            and type(device.get("id")) is str and re.fullmatch(r"[0-9a-f]{32}", device["id"])
+            and type(device.get("identity_public_key")) is str
+            and re.fullmatch(r"[0-9a-f]{64}", device["identity_public_key"])
+            and action.get("device_id") == device["id"]
+            and action.get("identity_public_key") == device["identity_public_key"]
+            and type(evidence) is dict and type(evidence.get("device_info")) is dict
+            and evidence["device_info"].get("device_id") == device["id"]
+            and evidence["device_info"].get("usb_serial") == serial,
+            "pinned identity or reviewed device changed")
+    security = evidence.get("security")
+    require(type(security) is dict and security.get("stepping") == "A2",
+            "qualified hardware evidence unavailable")
+    parent = Path(f"/proc/{os.getppid()}/exe").resolve(strict=True)
+    parent_meta = parent.stat()
+    require(str(parent).startswith("/usr/lib/pico2-kes-agent/components/manager/")
+            and parent.name == "p2kesup" and parent_meta.st_uid == 0
+            and parent_meta.st_mode & 0o022 == 0, "original operation requires its manager")
+    state, _ = run(["/usr/bin/systemctl", "show", "--property=ActiveState", "--value",
+                    "pico2-kes-agentd.service"], failure_code=4)
+    require(state.strip() == b"inactive", "daemon is not quiesced")
+    return {"operation_id": operation, "security": security}
+
+
+def update(bundle, serial, record_path, apply=False):
+    global WRITES_ATTEMPTED
+    WRITES_ATTEMPTED = False
+    require(type(serial) is str and re.fullmatch(r"[0-9a-f]{16}", serial), "invalid device serial")
+    record_path = Path(record_path)
+    if os.path.lexists(record_path):
+        meta = record_path.lstat()
+        require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.geteuid()
+                and meta.st_nlink == 1 and meta.st_mode & 0o077 == 0, "unsafe original firmware record")
+        record = json.loads(bounded_file(record_path, MAX_RECORD), object_pairs_hook=unique_object)
+        require(type(record) is dict and record.get("schema_version") == 1
+                and record.get("action") == "update" and record.get("serial") == serial,
+                "original firmware record does not match")
+        return {"apply": False, "reopened": True, "record": record,
+                "outcome": "read-only reconciliation; no reflash or update completion"}
+    identity = bind_distribution_tool(bundle)
+    manifest = verify_bundle(bundle)
+    image_digest = next(item["sha256"] for item in manifest["artifacts"] if item["name"] == ARTIFACTS[1])
+    bundle_digest = sha256(bounded_file(Path(bundle) / "release.json"))
+    tool = next(item for item in manifest["artifacts"] if item["name"] == "firmware.py")
+    require(sha256(bounded_file(Path(__file__), MAX_ELF)) == tool["sha256"],
+            "running firmware tool differs from authenticated bundle")
+    preview = {"apply": False, "serial": serial, "bundle_sha256": bundle_digest,
+               "uf2_sha256": image_digest, "firmware_region": [FIRMWARE_START, FIRMWARE_END],
+               "preserved_state_region": [FIRMWARE_END, STATE_END],
+               "outcome": "preview only; pinned pre-state and attended hardware qualification required"}
+    if not apply:
+        return preview
+    require(sys.stdin.isatty() and sys.stdout.isatty()
+            and os.ttyname(sys.stdin.fileno()) == os.ttyname(sys.stdout.fileno())
+            and os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp(),
+            "update requires a direct foreground terminal")
+    with first_install_lock(record_path):
+        handoff = update_history(record_path, bundle, serial, image_digest)
+        security = handoff["security"]
+        validate_application_security(security, serial,
+                                      expected=manifest["bootkey_sha256"] if security.get("profile") == PROFILE else None)
+        require(security["profile"] in ("unlocked", PROFILE), "incomplete security profile")
+        if identity["distribution_qualification"] == "candidate":
+            require(input("This authenticated release is a candidate, not qualified. Type DISPOSABLE only "
+                          "for explicitly reviewed disposable-host acceptance: ").strip() == "DISPOSABLE",
+                    "candidate acceptance not confirmed")
+        print(json.dumps({"serial": serial, "hardware": security, "tool_identity": identity,
+                          "bundle_sha256": bundle_digest, "uf2_sha256": image_digest}, sort_keys=True))
+        evidence = qualification_evidence()
+        require(input("After reviewing qualification for this hardware, tool and image, type QUALIFIED: ").strip()
+                == "QUALIFIED", "qualification review not confirmed")
+        attended(serial, "Confirm the exact previously pinned board; no OTP or erase is performed.")
+        pause("With the daemon stopped, hold BOOTSEL while reconnecting this exact board and mount its volume.")
+        picoboot = security["profile"] == "unlocked"
+        mount = mounted_bootsel(serial, picoboot_available=picoboot)
+        try:
+            source = bounded_file(Path(bundle) / ARTIFACTS[1], 4 * 1024 * 1024)
+            require(sha256(source) == image_digest, "firmware changed after authentication")
+            mount.check_space(len(source))
+            require(sha256(bounded_file(Path(bundle) / "release.json")) == bundle_digest
+                    and bind_distribution_tool(bundle) == identity, "authenticated source changed after review")
+            if picoboot:
+                Board(serial).identify()
+            mount.verify()
+            require(update_history(record_path, bundle, serial, image_digest) == handoff,
+                    "original maintenance intent changed")
+            record = {"schema_version": 1, "action": "update", "operation_id": handoff["operation_id"],
+                      "serial": serial, "bundle_sha256": bundle_digest, "uf2_sha256": image_digest,
+                      "hardware": security, "tool_identity": identity, "qualification_evidence": evidence,
+                      "mounted_device": mount.device, "firmware_region": [FIRMWARE_START, FIRMWARE_END],
+                      "preserved_state_region": [FIRMWARE_END, STATE_END], "checkpoints": ["intent"]}
+            save_record(record_path, record, create=True)
+            record["checkpoints"].append("transfer-started")
+            save_record(record_path, record)
+            WRITES_ATTEMPTED = True
+            with mount.open_output() as output:
+                require(output.write(source) == len(source), "short UF2 copy")
+                mount.verify()
+                record["checkpoints"].append("transfer-complete")
+                save_record(record_path, record)
+                output.flush()
+                os.fsync(output.fileno())
+                mount.verify()
+            mount.verify()
+            record["checkpoints"].append("flush-complete")
+            save_record(record_path, record)
+            return {"apply": True, "record": record,
+                    "outcome": "transfer and flush only; daemon post-check required"}
+        finally:
+            mount.close()
 
 
 def _prepare_resume_record(record_path, serial, bundle, manifest):
@@ -1138,9 +1808,13 @@ def _prepare_resume_record(record_path, serial, bundle, manifest):
     return record, before
 
 
-def provision(stage, serial, bundle, record_path, apply=False, *, resume=False):
-    global WRITES_ATTEMPTED
+def provision(stage, serial, bundle, record_path, apply=False, *, resume=False, distribution=False):
+    global WRITES_ATTEMPTED, BOUND_DISTRIBUTION_BUNDLE
     WRITES_ATTEMPTED = False
+    BOUND_DISTRIBUTION_BUNDLE = Path(bundle) if distribution else None
+    if distribution:
+        require(TRACE_HOOK is None, "distribution provisioning does not allow a trace hook")
+        bind_tool()
     if resume and (stage != "prepare" or not apply):
         raise ToolError("--resume requires --stage prepare --apply", 2)
     manifest = verify_bundle(bundle)
@@ -1383,10 +2057,14 @@ def _permission_reconciliation_record(record_path, serial, bundle, manifest):
     return record, expected
 
 
-def reconcile_prepare(serial, bundle, record_path, apply=False):
+def reconcile_prepare(serial, bundle, record_path, apply=False, *, distribution=False):
     """Observe helper postconditions without modifying the incident record or device."""
-    global WRITES_ATTEMPTED
+    global WRITES_ATTEMPTED, BOUND_DISTRIBUTION_BUNDLE
     WRITES_ATTEMPTED = False
+    BOUND_DISTRIBUTION_BUNDLE = Path(bundle) if distribution else None
+    if distribution:
+        require(TRACE_HOOK is None, "distribution reconciliation does not allow a trace hook")
+        bind_tool()
     if not apply:
         raise ToolError("reconcile-prepare requires --apply for attended read-only observation", 2)
     manifest = verify_bundle(bundle)
@@ -1418,6 +2096,15 @@ def main():
     sealing.add_argument("--commit", required=True)
     verifying = commands.add_parser("verify")
     verifying.add_argument("--bundle", required=True, type=Path)
+    first = commands.add_parser("first-install")
+    first.add_argument("--bundle", required=True, type=Path)
+    first.add_argument("--record", required=True, type=Path)
+    first.add_argument("--apply", action="store_true")
+    updating = commands.add_parser("update")
+    updating.add_argument("--bundle", required=True, type=Path)
+    updating.add_argument("--serial", required=True)
+    updating.add_argument("--record", required=True, type=Path)
+    updating.add_argument("--apply", action="store_true")
     inspecting = commands.add_parser("inspect")
     inspecting.add_argument("--serial", required=True)
     provisioning = commands.add_parser("provision")
@@ -1428,6 +2115,8 @@ def main():
     provisioning.add_argument("--apply", action="store_true")
     provisioning.add_argument("--resume", action="store_true",
                               help="resume only the pre-OTP checkpoint after completed firmware installation")
+    provisioning.add_argument("--distribution", action="store_true",
+                              help="authenticate packaged tool and runtime against the signed distribution")
     provisioning.add_argument("--trace-hook", type=Path,
                               help="executable wrapper invoked as HOOK PICOTOOL ARG... for public commands")
     erasing = commands.add_parser("erase-state")
@@ -1442,6 +2131,8 @@ def main():
     reconciling.add_argument("--bundle", required=True, type=Path)
     reconciling.add_argument("--record", required=True, type=Path)
     reconciling.add_argument("--apply", required=True, action="store_true")
+    reconciling.add_argument("--distribution", action="store_true",
+                             help="authenticate packaged tool and runtime against the signed distribution")
     args = parser.parse_args()
     global TRACE_HOOK
     if getattr(args, "trace_hook", None):
@@ -1455,16 +2146,20 @@ def main():
                                   args.key_file, args.out_dir), sort_keys=True))
         elif args.command == "verify":
             print(json.dumps(verify_bundle(args.bundle), sort_keys=True))
+        elif args.command == "first-install":
+            print(json.dumps(first_install(args.bundle, args.record, args.apply), sort_keys=True))
+        elif args.command == "update":
+            print(json.dumps(update(args.bundle, args.serial, args.record, args.apply), sort_keys=True))
         elif args.command == "inspect":
             print(json.dumps(inspect_device(args.serial), sort_keys=True))
         elif args.command == "provision":
             print(json.dumps(provision(args.stage, args.serial, args.bundle, args.record,
-                                       args.apply, resume=args.resume), sort_keys=True))
+                                       args.apply, resume=args.resume, distribution=args.distribution), sort_keys=True))
         elif args.command == "erase-state":
             print(json.dumps(erase_state(args.serial, args.record, args.apply), sort_keys=True))
         elif args.command == "reconcile-prepare":
-            print(json.dumps(reconcile_prepare(args.serial, args.bundle, args.record, args.apply),
-                             sort_keys=True))
+            print(json.dumps(reconcile_prepare(args.serial, args.bundle, args.record, args.apply,
+                                               distribution=args.distribution), sort_keys=True))
         else:
             validate_policy(read_json(args.policy))
             print("policy valid")

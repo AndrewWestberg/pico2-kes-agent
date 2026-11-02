@@ -139,6 +139,9 @@ struct RuntimeTransport {
     inner: Option<Transport>,
     outstanding: Option<(u64, Digest32)>,
     epoch: u64,
+    observation_probe: usb::ObservationProbe,
+    observation_cache: management::SnapshotCache,
+    contexts: Vec<(TargetContext, Instant)>,
 }
 
 impl RuntimeTransport {
@@ -163,6 +166,9 @@ impl RuntimeTransport {
             inner,
             outstanding,
             epoch: 1,
+            observation_probe: usb::ObservationProbe::default(),
+            observation_cache: management::SnapshotCache::default(),
+            contexts: Vec::new(),
         })
     }
 
@@ -180,6 +186,7 @@ impl RuntimeTransport {
 
     fn disconnect(&mut self) {
         self.inner = None;
+        self.contexts.clear();
     }
 
     const fn has_outstanding(&self) -> bool {
@@ -188,6 +195,31 @@ impl RuntimeTransport {
 }
 
 impl DeviceTransport for RuntimeTransport {
+    fn observation_cache(&mut self) -> Option<&mut management::SnapshotCache> {
+        Some(&mut self.observation_cache)
+    }
+    fn record_context(&mut self, context: TargetContext) {
+        self.contexts
+            .retain(|(existing, _)| existing.target != context.target);
+        self.contexts.push((context, Instant::now()));
+    }
+    fn clear_context(&mut self, target: PoolTarget) {
+        self.contexts
+            .retain(|(existing, _)| existing.target != target);
+    }
+
+    fn observed_context(&self, target: PoolTarget) -> Option<(u64, u64)> {
+        let (context, at) = self
+            .contexts
+            .iter()
+            .find(|(context, _)| context.target == target)?;
+        let age = at.elapsed();
+        if age >= Duration::from_secs(u64::from(context.lease_seconds)) {
+            return None;
+        }
+        Some((context.period, u64::try_from(age.as_micros()).ok()?))
+    }
+
     fn prepare_mutation(&mut self) -> Result<(), usb::Error> {
         self.ensure_connected()?;
         if self.has_outstanding() {
@@ -199,6 +231,64 @@ impl DeviceTransport for RuntimeTransport {
 
     fn request(&mut self, request: &Request) -> Result<usb::Reply, usb::Error> {
         self.ensure_connected()?;
+        if matches!(
+            request,
+            Request::FirmwareInfo | Request::PoolObservation { .. }
+        ) {
+            let mut state = std::mem::take(&mut self.observation_probe);
+            let probe = state.ensure(|| {
+                let probe = self
+                    .inner
+                    .as_mut()
+                    .ok_or(usb::Error::NotFound)?
+                    .request(&Request::FirmwareInfo);
+                match probe {
+                    Ok(reply) => {
+                        let identity_ok = match reply.decode() {
+                            Ok(Response::FirmwareInfo(info)) => {
+                                let identity =
+                                    self.inner.as_ref().ok_or(usb::Error::NotFound)?.identity();
+                                let (serial, device) = match identity {
+                                    usb::ConnectedIdentity::Committed(pin) => {
+                                        (pin.serial, Some(pin.device))
+                                    }
+                                    usb::ConnectedIdentity::Blank => {
+                                        let Mode::Commissioning { selected_serial } = self.mode
+                                        else {
+                                            return Err(usb::Error::IdentityMismatch);
+                                        };
+                                        (selected_serial, None)
+                                    }
+                                };
+                                if info.device != device
+                                    || info.serial.as_slice() != serial.as_bytes()
+                                {
+                                    return Err(usb::Error::IdentityMismatch);
+                                }
+                                true
+                            }
+                            _ => false,
+                        };
+                        if identity_ok {
+                            return Ok(reply);
+                        }
+                    }
+                    Err(usb::Error::IdentityMismatch) => return Err(usb::Error::IdentityMismatch),
+                    Err(usb::Error::Signature) => return Err(usb::Error::Signature),
+                    Err(usb::Error::Busy) => return Err(usb::Error::Busy),
+                    Err(_) => {}
+                }
+                self.disconnect();
+                self.ensure_connected()?;
+                Err(usb::Error::Unsupported)
+            });
+            self.observation_probe = state;
+            if let Some(reply) = probe?
+                && matches!(request, Request::FirmwareInfo)
+            {
+                return Ok(reply);
+            }
+        }
         let mutation = match request {
             Request::Mutate(mutation) | Request::Commission(mutation) => {
                 Some((mutation.sequence(), mutation.usb_digest()))
@@ -272,6 +362,7 @@ fn poll_target<T: DeviceTransport>(
     usb: &mut T,
     context: TargetContext,
 ) -> Result<Option<PublicationUpdate>, PollError> {
+    usb.clear_context(context.target);
     let context_reply = usb.request(&Request::Context {
         target: context.target,
         network: context.network,
@@ -297,6 +388,7 @@ fn poll_target<T: DeviceTransport>(
             diagnostics: accepted.diagnostics,
         });
     }
+    usb.record_context(context);
 
     let current_reply = usb.request(&Request::Current {
         target: context.target,
@@ -709,6 +801,15 @@ fn serve_management(
     stream.set_write_timeout(Some(MANAGEMENT_TIMEOUT))?;
     let request = read_frame(stream)?;
     let request_id = request_id(&request);
+    let observation = serde_json::from_slice::<Value>(&request)
+        .ok()
+        .and_then(|value| value["action"].as_str().map(str::to_owned))
+        .is_some_and(|action| {
+            matches!(
+                action.as_str(),
+                "host.observe" | "device.info" | "pool.observe"
+            )
+        });
     let (response, bindings) = {
         let mut state = state
             .lock()
@@ -716,6 +817,7 @@ fn serve_management(
         let DeviceState { journal, usb } = &mut *state;
         let mut management = Management::new(config, journal, usb);
         match management.dispatch(&request) {
+            Ok(response) if observation => (response, None),
             Ok(response) => {
                 let bindings = management
                     .reconstructed_registry()
@@ -772,6 +874,24 @@ fn request_id(request: &[u8]) -> Option<String> {
 
 fn error_response(request_id: Option<&str>, error: &management::Error) -> Vec<u8> {
     let (outcome, code, message, request_digest) = match error {
+        management::Error::RevisionConflict => (
+            "rejected",
+            "revision_conflict",
+            "host snapshot changed",
+            None,
+        ),
+        management::Error::DeviceTarget(code) => (
+            "rejected",
+            management::device_error_code(*code),
+            "device rejected pool observation",
+            None,
+        ),
+        management::Error::Usb(usb::Error::Unsupported) => (
+            "rejected",
+            "unsupported",
+            "device observation extension is unavailable",
+            None,
+        ),
         management::Error::Protocol | management::Error::InvalidInput => {
             ("rejected", "invalid_input", "request is invalid", None)
         }

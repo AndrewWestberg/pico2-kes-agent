@@ -87,6 +87,9 @@ pub enum Action {
     DeviceStatus,
     DeviceSecurity,
     DeviceInventory,
+    HostObserve,
+    DeviceInfo,
+    PoolObserve,
     DeviceCommission,
     PoolList,
     PoolStatus,
@@ -106,6 +109,9 @@ impl Action {
             "device.status" => Self::DeviceStatus,
             "device.security" => Self::DeviceSecurity,
             "device.inventory" => Self::DeviceInventory,
+            "host.observe" => Self::HostObserve,
+            "device.info" => Self::DeviceInfo,
+            "pool.observe" => Self::PoolObserve,
             "device.commission" => Self::DeviceCommission,
             "pool.list" => Self::PoolList,
             "pool.status" => Self::PoolStatus,
@@ -144,6 +150,7 @@ pub enum Outcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     UnsupportedVersion,
+    Unsupported,
     InvalidInput,
     PermissionDenied,
     Busy,
@@ -178,6 +185,7 @@ impl ErrorCode {
     fn parse(s: &str) -> Result<Self, Error> {
         Ok(match s {
             "unsupported_version" => Self::UnsupportedVersion,
+            "unsupported" => Self::Unsupported,
             "invalid_input" => Self::InvalidInput,
             "permission_denied" => Self::PermissionDenied,
             "busy" => Self::Busy,
@@ -495,7 +503,19 @@ impl<'a> Parser<'a> {
                                 src: &self.src[start..self.pos],
                                 pos: 0,
                             };
-                            p.public_object(false)?;
+                            if p.is_observation_object()? {
+                                let mut p = Parser {
+                                    src: &self.src[start..self.pos],
+                                    pos: 0,
+                                };
+                                p.observation_object(0)?;
+                            } else {
+                                let mut p = Parser {
+                                    src: &self.src[start..self.pos],
+                                    pos: 0,
+                                };
+                                p.public_object(false)?;
+                            }
                         }
                         result = Some(());
                     }
@@ -662,6 +682,7 @@ impl<'a> Parser<'a> {
             "request_digest",
             "page_size",
             "cursor",
+            "snapshot_id",
         ];
         self.object_start()?;
         let (mut first, mut seen) = (true, 0);
@@ -713,6 +734,7 @@ impl<'a> Parser<'a> {
                         Err(Error::InvalidField)
                     }
                 })?,
+                12 => self.hex(32)?,
                 _ => unreachable!(),
             }
         }
@@ -720,9 +742,12 @@ impl<'a> Parser<'a> {
             Action::DeviceStatus
             | Action::DeviceSecurity
             | Action::DeviceInventory
+            | Action::HostObserve
+            | Action::DeviceInfo
             | Action::PoolList => 0,
             Action::DeviceCommission => 1 << 0,
             Action::PoolStatus => 1 << 1,
+            Action::PoolObserve => (1 << 1) | (1 << 2),
             Action::PoolEnroll => (1 << 4) | (1 << 5),
             Action::GenerationCreate | Action::PoolDelete => (1 << 1) | (1 << 2),
             Action::GenerationPublicKey
@@ -733,8 +758,14 @@ impl<'a> Parser<'a> {
             Action::OperationReconcile => (1 << 8) | (1 << 9),
         };
         let allowed = required
-            | if action == Action::PoolList {
-                (1 << 10) | (1 << 11)
+            | if action == Action::PoolList || action == Action::HostObserve {
+                (1 << 10)
+                    | (1 << 11)
+                    | if action == Action::HostObserve {
+                        1 << 12
+                    } else {
+                        0
+                    }
             } else {
                 0
             };
@@ -989,6 +1020,279 @@ impl<'a> Parser<'a> {
             Ok(out)
         })
     }
+    fn is_observation_object(&mut self) -> Result<bool, Error> {
+        self.object_start()?;
+        let mut first = true;
+        let mut found = false;
+        while self.next(&mut first)? {
+            found |= self.text(|s| Ok(s == "schema_version"))?;
+            self.byte(b':')?;
+            self.skip_value(0)?;
+        }
+        Ok(found)
+    }
+    fn observation_object(&mut self, mut schema: u8) -> Result<(), Error> {
+        if schema == 0 {
+            let mut probe = Parser {
+                src: self.src,
+                pos: self.pos,
+            };
+            probe.object_start()?;
+            let mut first = true;
+            while probe.next(&mut first)? {
+                let name = probe.text(|s| {
+                    Ok(if s == "bindings" {
+                        1
+                    } else if s == "security_profile" {
+                        2
+                    } else if s == "publication" {
+                        3
+                    } else {
+                        0
+                    })
+                })?;
+                probe.byte(b':')?;
+                probe.skip_value(0)?;
+                if name != 0 {
+                    if schema != 0 && schema != name {
+                        return Err(Error::InvalidField);
+                    }
+                    schema = name;
+                }
+            }
+        }
+        let names: &[&str] = match schema {
+            1 => &[
+                "schema_version",
+                "snapshot_id",
+                "bindings",
+                "next_cursor",
+                "total",
+                "observed_at_unix_us",
+                "daemon",
+                "config_identity",
+                "journal_position",
+            ],
+            2 => &[
+                "schema_version",
+                "device_id",
+                "usb_serial",
+                "version",
+                "build_id",
+                "source_commit",
+                "protocol_major",
+                "storage_version",
+                "capacity",
+                "security_profile",
+                "supported_observations",
+            ],
+            3 => &[
+                "schema_version",
+                "device_id",
+                "pool_id",
+                "incarnation_id",
+                "revision",
+                "health",
+                "active",
+                "staged",
+                "publication",
+                "period_floor",
+                "failure",
+                "context",
+            ],
+            4 => &[
+                "pool_id",
+                "incarnation_id",
+                "network",
+                "socket_path",
+                "configured",
+                "effective",
+                "retired",
+                "conflicting",
+            ],
+            5 => &[
+                "schema_version",
+                "component",
+                "version",
+                "build_id",
+                "source_commit",
+                "pid",
+            ],
+            6 => &[
+                "generation_id",
+                "revision",
+                "role",
+                "period",
+                "health",
+                "artifact_digest",
+                "certificate_present",
+                "certificate_start",
+                "certificate_lifetime",
+                "certificate_expiry",
+                "current_absolute_period",
+                "relative_period",
+                "remaining_valid_periods",
+                "reason",
+            ],
+            7 => &[
+                "revision",
+                "timestamp_us",
+                "high_water_us",
+                "kind",
+                "generation_id",
+                "relative_period",
+                "certificate_digest",
+            ],
+            8 => &["valid", "source", "age_us", "reason"],
+            _ => return Err(Error::InvalidField),
+        };
+        self.object_start()?;
+        let (mut first, mut seen) = (true, 0);
+        let (mut certificate, mut start, mut lifetime) = (None, None, None);
+        while self.next(&mut first)? {
+            let n = self.key(names, &mut seen)?;
+            match (schema, n) {
+                (1 | 2 | 3 | 5, 0) => {
+                    if self.number()? != 1 {
+                        return Err(Error::UnsupportedVersion);
+                    }
+                }
+                (1, 1 | 7) => self.hex(32)?,
+                (1, 2) => {
+                    self.byte(b'[')?;
+                    let mut first = true;
+                    let mut count = 0;
+                    loop {
+                        if self.consume(b']') {
+                            break;
+                        }
+                        if !first {
+                            self.byte(b',')?;
+                            if self.consume(b']') {
+                                return Err(Error::InvalidJson);
+                            }
+                        }
+                        first = false;
+                        count += 1;
+                        if count > 16 {
+                            return Err(Error::InvalidField);
+                        }
+                        self.observation_object(4)?;
+                    }
+                }
+                (1, 3) => {
+                    if !self.null() {
+                        self.bounded_text(256)?;
+                    }
+                }
+                (1, 4 | 5 | 8) | (5, 5) | (3, 4) | (6, 1 | 3) | (7, 0..=2) => {
+                    self.number()?;
+                }
+                (1, 6) => self.observation_object(5)?,
+                (2 | 3, 1) => {
+                    if schema == 3 || !self.null() {
+                        self.hex(16)?;
+                    }
+                }
+                (3, 2) | (4, 0) => self.hex(28)?,
+                (3, 3) | (4, 1) | (6, 0) => self.hex(16)?,
+                (2, 2) | (4, 2 | 3) => self.bounded_text(4096)?,
+                (2, 3 | 9) => self.bounded_text(64)?,
+                (2, 4) => self.hex(32)?,
+                (2, 5) => self.text(|s| {
+                    if (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        Ok(())
+                    } else {
+                        Err(Error::InvalidField)
+                    }
+                })?,
+                (2, 6 | 7) => {
+                    u16::try_from(self.number()?).map_err(|_| Error::InvalidField)?;
+                }
+                (2, 8) | (3, 5) | (6, 2 | 4) => {
+                    u8::try_from(self.number()?).map_err(|_| Error::InvalidField)?;
+                }
+                (2, 10) => {
+                    self.number()?;
+                }
+                (3, 6 | 7) => {
+                    if !self.null() {
+                        self.observation_object(6)?;
+                    }
+                }
+                (3, 8) => self.observation_object(7)?,
+                (3, 9) | (6, 9..=12) | (7, 5) | (8, 2) => {
+                    if !self.null() {
+                        self.number()?;
+                    }
+                }
+                (3, 10) => {
+                    if !self.null() {
+                        u16::try_from(self.number()?).map_err(|_| Error::InvalidField)?;
+                    }
+                }
+                (3, 11) => self.observation_object(8)?,
+                (4, 4..=7) | (8, 0) => {
+                    self.security_bool()?;
+                }
+                (5, 1..=4) => self.bounded_text(64)?,
+                (6, 5) => self.hex(32)?,
+                (6, 6) => certificate = Some(self.security_bool()?),
+                (6, 7) => {
+                    start = Some(!self.null());
+                    if start == Some(true) {
+                        self.number()?;
+                    }
+                }
+                (6, 8) => {
+                    lifetime = Some(!self.null());
+                    if lifetime == Some(true) {
+                        self.number()?;
+                    }
+                }
+                (6, 13) | (8, 1 | 3) => {
+                    if !self.null() {
+                        self.bounded_text(4096)?;
+                    }
+                }
+                (7, 3) => self.text(|s| {
+                    if matches!(s, "none" | "drop" | "key") {
+                        Ok(())
+                    } else {
+                        Err(Error::InvalidField)
+                    }
+                })?,
+                (7, 4) => {
+                    if !self.null() {
+                        self.hex(16)?;
+                    }
+                }
+                (7, 6) => {
+                    if !self.null() {
+                        self.hex(32)?;
+                    }
+                }
+                _ => return Err(Error::InvalidField),
+            }
+        }
+        if seen != (1u128 << names.len()) - 1
+            || (schema == 6 && (start != lifetime || certificate != start))
+        {
+            return Err(Error::InvalidField);
+        }
+        Ok(())
+    }
+    fn bounded_text(&mut self, max: usize) -> Result<(), Error> {
+        self.text(|s| {
+            if !s.is_empty() && s.len() <= max {
+                Ok(())
+            } else {
+                Err(Error::InvalidField)
+            }
+        })
+    }
+
     fn public_object(&mut self, nested: bool) -> Result<(), Error> {
         const N: &[&str] = &[
             "device_id",
@@ -1131,5 +1435,75 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn observation_arguments_are_strict() {
+        let id = "00000000000000000000000000000000";
+        for action in ["host.observe", "device.info"] {
+            let mut buf = [0u8; 512];
+            use core::fmt::Write;
+            struct Buffer<'a>(&'a mut [u8], usize);
+            impl core::fmt::Write for Buffer<'_> {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    let end = self.1 + s.len();
+                    self.0
+                        .get_mut(self.1..end)
+                        .ok_or(core::fmt::Error)?
+                        .copy_from_slice(s.as_bytes());
+                    self.1 = end;
+                    Ok(())
+                }
+            }
+            let mut b = Buffer(&mut buf, 0);
+            write!(b, "{{\"version\":1,\"request_id\":\"{id}\",\"action\":\"{action}\",\"arguments\":{{}}}}").unwrap();
+            assert!(Message::decode(&b.0[..b.1]).is_ok());
+        }
+        let bad = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"host.observe\",\"arguments\":{\"page_size\":0}}";
+        assert!(Message::decode(bad).is_err());
+        let duplicate = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"device.info\",\"arguments\":{\"x\":1,\"x\":2}}";
+        assert!(Message::decode(duplicate).is_err());
+        let missing = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"pool.observe\",\"arguments\":{}}";
+        assert!(Message::decode(missing).is_err());
+        assert_eq!(
+            Message::decode(&[b' '; MAX_FRAME + 1]).unwrap_err(),
+            Error::Oversized
+        );
+        let request = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"device.info\",\"arguments\":{}}";
+        let mut maximum = [b' '; MAX_FRAME];
+        maximum[..request.len()].copy_from_slice(request);
+        let message = Message::decode(&maximum).unwrap();
+        let mut framed = [0; MAX_FRAME + 4];
+        assert_eq!(message.encode_frame(&mut framed).unwrap(), MAX_FRAME + 4);
+    }
+
+    #[test]
+    fn observation_results_require_exact_fields_and_certificate_pairs() {
+        let device = r#"{"schema_version":1,"device_id":null,"usb_serial":"abc","version":"development-unqualified","build_id":"0000000000000000000000000000000000000000000000000000000000000000","source_commit":"0000000000000000000000000000000000000000","protocol_major":1,"storage_version":2,"capacity":64,"security_profile":"unqualified","supported_observations":3}"#;
+        assert!(Parser::new(device).observation_object(0).is_ok());
+        assert!(
+            Parser::new(r#"{"schema_version":1,"security_profile":"x"}"#)
+                .observation_object(0)
+                .is_err()
+        );
+        assert!(
+            Parser::new(r#"{"schema_version":1,"schema_version":1,"security_profile":"x"}"#)
+                .observation_object(0)
+                .is_err()
+        );
+        assert!(
+            Parser::new(r#"{"schema_version":1,"security_profile":"x","unexpected":1}"#)
+                .observation_object(0)
+                .is_err()
+        );
+        let generation = r#"{"generation_id":"00000000000000000000000000000000","revision":1,"role":1,"period":2,"health":0,"artifact_digest":"0000000000000000000000000000000000000000000000000000000000000000","certificate_present":false,"certificate_start":null,"certificate_lifetime":null,"certificate_expiry":null,"current_absolute_period":null,"relative_period":null,"remaining_valid_periods":null,"reason":"missing"}"#;
+        assert!(Parser::new(generation).observation_object(6).is_ok());
+        let mismatched = r#"{"generation_id":"00000000000000000000000000000000","revision":1,"role":1,"period":2,"health":0,"artifact_digest":"0000000000000000000000000000000000000000000000000000000000000000","certificate_present":true,"certificate_start":1,"certificate_lifetime":null,"certificate_expiry":null,"current_absolute_period":null,"relative_period":null,"remaining_valid_periods":null,"reason":null}"#;
+        assert!(Parser::new(mismatched).observation_object(6).is_err());
     }
 }

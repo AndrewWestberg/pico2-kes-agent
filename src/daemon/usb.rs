@@ -71,6 +71,7 @@ pub enum Error {
     WrongSerial,
     Interface,
     Protocol,
+    Unsupported,
     IdentityMismatch,
     Signature,
     Busy,
@@ -93,6 +94,7 @@ impl std::fmt::Display for Error {
             Self::WrongSerial => formatter.write_str("USB serial does not match selection"),
             Self::Interface => formatter.write_str("KES vendor bulk interface is unavailable"),
             Self::Protocol => formatter.write_str("invalid KES USB response"),
+            Self::Unsupported => formatter.write_str("device observation extension is unsupported"),
             Self::IdentityMismatch => {
                 formatter.write_str("device identity does not match the installed pin")
             }
@@ -152,9 +154,51 @@ impl Reply {
     }
 }
 
+#[derive(Default)]
+pub struct ObservationProbe {
+    probed: bool,
+    unsupported: bool,
+}
+
+impl ObservationProbe {
+    pub fn ensure(
+        &mut self,
+        probe: impl FnOnce() -> Result<Reply, Error>,
+    ) -> Result<Option<Reply>, Error> {
+        if self.unsupported {
+            return Err(Error::Unsupported);
+        }
+        if self.probed {
+            return Ok(None);
+        }
+        match probe() {
+            Ok(reply) => {
+                self.probed = true;
+                Ok(Some(reply))
+            }
+            Err(Error::Unsupported) => {
+                self.unsupported = true;
+                Err(Error::Unsupported)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 pub trait DeviceTransport {
     /// Check connectivity and admission before recording a new durable intent.
     fn prepare_mutation(&mut self) -> Result<(), Error>;
+
+    fn observation_cache(&mut self) -> Option<&mut crate::daemon::management::SnapshotCache> {
+        None
+    }
+
+    fn record_context(&mut self, _context: crate::daemon::context::TargetContext) {}
+    fn clear_context(&mut self, _target: kes_core::operation::PoolTarget) {}
+
+    fn observed_context(&self, _target: kes_core::operation::PoolTarget) -> Option<(u64, u64)> {
+        None
+    }
 
     fn request(&mut self, request: &Request) -> Result<Reply, Error>;
 
@@ -420,4 +464,39 @@ fn request_mutation(request: &Request) -> Option<Outstanding> {
         sequence: mutation.sequence(),
         digest: mutation.usb_digest(),
     })
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_is_probed_once_but_identity_failure_is_not_downgraded() {
+        let mut state = ObservationProbe::default();
+        let mut calls = 0;
+        for _ in 0..2 {
+            let result = state.ensure(|| {
+                calls += 1;
+                Err(Error::Unsupported)
+            });
+            assert!(matches!(result, Err(Error::Unsupported)));
+        }
+        assert_eq!(calls, 1);
+        let mut new_identity = ObservationProbe::default();
+        assert!(matches!(
+            new_identity.ensure(|| {
+                calls += 1;
+                Err(Error::IdentityMismatch)
+            }),
+            Err(Error::IdentityMismatch)
+        ));
+        assert!(matches!(
+            new_identity.ensure(|| {
+                calls += 1;
+                Err(Error::Unsupported)
+            }),
+            Err(Error::Unsupported)
+        ));
+        assert_eq!(calls, 3);
+    }
 }

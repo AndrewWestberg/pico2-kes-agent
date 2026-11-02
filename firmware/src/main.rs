@@ -35,6 +35,27 @@ embassy_rp::bind_interrupts!(struct Irqs {
 
 type Device<'d> = LifecycleDevice<FittedFlash<'d>, HealthCheckedEntropy<'d>>;
 
+const FIRMWARE_VERSION: &str = env!("P2KES_FIRMWARE_VERSION");
+const FIRMWARE_SOURCE_COMMIT: &str = env!("P2KES_FIRMWARE_SOURCE_COMMIT");
+const FIRMWARE_BUILD_ID: [u8; 32] = {
+    let hex = env!("P2KES_FIRMWARE_BUILD_ID").as_bytes();
+    let mut bytes = [0; 32];
+    let mut index = 0;
+    while index < bytes.len() {
+        const fn nibble(byte: u8) -> u8 {
+            match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'a'..=b'f' => byte - b'a' + 10,
+                b'A'..=b'F' => byte - b'A' + 10,
+                _ => panic!("invalid firmware build ID"),
+            }
+        }
+        bytes[index] = (nibble(hex[index * 2]) << 4) | nibble(hex[index * 2 + 1]);
+        index += 1;
+    }
+    bytes
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupError {
     Flash,

@@ -18,3 +18,8 @@ Thumbs.db
 .vscode/
 .idea/
 __pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+*.egg-info/

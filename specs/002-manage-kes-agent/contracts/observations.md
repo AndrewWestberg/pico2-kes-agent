@@ -1,16 +1,26 @@
 # Public observations and version contracts
 
-Status: proposed extensions. Existing [management contract](../../001-pico2-kes-agent/contracts/management-cli.md), mutation receipts, storage and node-service bytes remain unchanged.
+Status: implemented additive observation interfaces; packaged and physical acceptance remains pending. Existing [management contract](../../001-pico2-kes-agent/contracts/management-cli.md), mutation receipts, storage and node-service bytes remain unchanged.
 
 ## Host command versions
 
 All three host executables gain `--version` and `--version --json`, requiring no config, daemon or device. JSON is `{ "schema_version": 1, "component": string, "version": string, "build_id": string, "source_commit": string }`; human output is not parsed. Release builds embed immutable build IDs and commit identity; development builds are explicitly development/unqualified, not silently the release corresponding to Cargo's package version.
+
+The manager, daemon and CLI implement these standalone forms. Build-time
+`P2KES_BUILD_VERSION`, `P2KES_BUILD_ID` and `P2KES_SOURCE_COMMIT` must be supplied
+together; partial metadata fails the build. Version/build IDs are nonempty ASCII
+graphical strings of at most 64 bytes, and the source commit is 40 or 64 ASCII
+hex characters. Without these inputs, all three values are
+`development-unqualified`. Supplying metadata does not establish qualification:
+release packaging must authenticate and bind it to the selected payloads.
 
 Installed versions come from authenticated ownership metadata matched to file digests, or an explicitly trusted executable's version output. Do not execute arbitrary PATH candidates merely to inventory them. Record PATH candidates, systemd ExecStart, `/proc/<MainPID>/exe` when permitted, and the manager's own executable independently. The live daemon self-report is running evidence; a symlink target is not proof that an old running inode was replaced. Inaccessible paths are unknown, not absent.
 
 ## Management transport
 
 Retain version-1 request/response envelopes, 4-byte length framing, 16,384-byte maximum and existing outcomes/errors. Add only read-only actions:
+
+The CLI's optional global `--expected-peer-pid PID --expected-peer-uid UID` must be supplied together. When an independently authenticated caller supplies them, the connected Linux peer is checked before request bytes; these flags neither authenticate their own values nor alter management frames. Manager lifecycle admission binds the caller and normal or restricted commissioning authority and expires; original commissioning recovery uses restricted authority without a blank-state or normal-pin prerequisite.
 
 | Action / CLI spelling | Arguments | Result |
 |---|---|---|
@@ -34,7 +44,17 @@ Keep `PKA1`, protocol major 1, canonical CBOR, 4,096-byte payload bound, CRC, re
 
 Each request and response uses a definite canonical integer-keyed map with schema key `0 = 1`. FirmwareInfo request has only key 0. Response keys: 0 schema; 1 device ID or null if blank; 2 serial; 3 release version (bounded UTF-8 ≤64 bytes); 4 build ID (32-byte identifier); 5 source commit (ASCII hex, 40 or 64 bytes); 6 protocol major; 7 storage version; 8 capacity; 9 security profile (≤64 UTF-8 bytes); 10 supported observation bitmap (u64). Never include arbitrary release text or unbounded strings.
 
+Bitmap bit 0 denotes FirmwareInfo and bit 1 PoolObservation. Development firmware
+uses `development-unqualified`, a zero 32-byte build ID and a 40-character zero
+hex source value, explicitly unavailable identity rather than a qualified release.
+Firmware release builds require the same three metadata inputs as the host,
+with `P2KES_BUILD_ID` exactly 64 hexadecimal characters for its 32 bytes.
+
 PoolObservation request keys: 0 schema; 1 pool ID; 2 incarnation ID. Response keys: 0 schema; 1 device ID; 2 target (existing PoolTarget encoding); 3 pool revision; 4 health; 5 active generation or null; 6 staged generation or null; 7 existing Publication encoding; 8 accepted absolute period floor or null; 9 public failure code or null. Generation maps use: 0 generation ID; 1 revision; 2 role; 3 period; 4 health; 5 artifact digest; 6 certificate start or null; 7 lifetime or null. ID widths and unsigned integer bounds reuse existing types. Certificate start/lifetime must be both present or both absent. Derive expiry/relative/remaining on host with checked arithmetic. Context-source/age are host fields, not fabricated device facts. All optional absence has a host-visible reason.
+
+An inaccessible pool uses the target-error form `{0: 1, 1: device, 2: target,
+9: failure_code}`. It does not invent a revision, generation or publication.
+Successful observations use the full keys 0–9 above.
 
 Use the existing firmware status/target-error envelope conventions rather than inventing a mutation receipt for reads. Wire fixtures must specify missing/duplicate/extra keys, invalid types/widths, arithmetic overflow and maximum-size responses. Public generation accessors read existing lifecycle metadata; this extension does not change persistent layout or release operational secrets.
 
@@ -46,6 +66,8 @@ For each source retain `observed_at`, monotonic age, last successful public valu
 
 Initial local overview ≤5 seconds; all responsive 64-pool observations ≤10 seconds; loss becomes visible ≤10 seconds. Publish partial progress while scanning. At most one outstanding management request and one queued refresh; mutations supersede queued refresh but never cancel an admitted operation as though it were not sent. Existing daemon scheduling must continue giving healthy pools service under monitoring load.
 
+Manager public diagnostic history retains at most 256 entries, each truncated at 4096 escaped bytes plus a truncation marker; individual text fields are limited to 256 characters before escaping. It contains selected public observation metadata, never raw socket/subprocess streams, keys or passphrases. Service → **Export public diagnostics to a new protected file** requires an absolute destination, publishes mode 0600 without clobber, and can still disclose sensitive public identities and paths; review before sharing.
+
 ## Required cutover
 
-Update `crates/kes-protocol/src/{management,usb}.rs`, firmware dispatch and public lifecycle accessors, `src/daemon/{management,usb,runtime,context}.rs`, CLI dispatch/formatting, host binary version entrypoints, protocol fixtures, fake-device adapters, fuzz targets and contract documentation together. Existing lifecycle, receipts, node sockets and storage formats remain intentionally unchanged. Older component combinations without these observations remain inspectable with explicit limitations, but are not advertised as full-feature qualified combinations.
+The additive observations and peer-binding options do not change existing lifecycle mutation envelopes or receipts, node-service bytes, device storage, backup or OTP wire/persistence formats. Older component combinations without these observations remain inspectable with explicit limitations, but are not advertised as full-feature qualified combinations. The unpublished internal host service action now uses `operation: start|stop|restart`, not `start: bool`; no automatic migration of old internal payloads is implied.

@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
@@ -308,6 +309,376 @@ class InspectTests(unittest.TestCase):
 
 
 
+class FirstInstallTests(unittest.TestCase):
+    def test_preview_does_not_write(self):
+        digest = firmware.sha256(b"manifest")
+        manifest = {"artifacts": [{"name": firmware.ARTIFACTS[1], "sha256": "a" * 64},
+                                  {"name": "firmware.py", "sha256": digest}],
+                    "bootkey_sha256": "b" * 64}
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(firmware, "verify_bundle", return_value=manifest), \
+             mock.patch.object(firmware, "bounded_file", return_value=b"manifest"), \
+             mock.patch.object(firmware, "bind_distribution_tool", return_value={"distribution_qualification": "qualified"}), \
+             mock.patch.object(firmware, "selected_usb_board", return_value=("2e8a", "000f", 1, 2)), \
+             mock.patch.object(firmware, "run", return_value=(b" chipid: 0x0123456789abcdef\n", b"")), \
+             mock.patch.object(firmware, "parse_bootsel_info", return_value={"stepping": "A2"}), \
+             mock.patch.object(firmware, "Board") as board, \
+             mock.patch.object(firmware, "public_policy"), \
+             mock.patch.object(firmware, "save_record") as save:
+            board.return_value.snapshot.return_value = {}
+            record = Path(directory) / "record"
+            result = firmware.first_install(Path(directory), record)
+            self.assertFalse(result["apply"])
+            self.assertFalse(record.exists())
+            save.assert_not_called()
+
+    def test_qualification_evidence_requires_reference_and_hashes_file(self):
+        with mock.patch("builtins.input", return_value=""):
+            with self.assertRaises(ValueError):
+                firmware.qualification_evidence()
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "qualification.txt"
+            evidence.write_bytes(b"public evidence")
+            with mock.patch("builtins.input", return_value=str(evidence)):
+                result = firmware.qualification_evidence()
+            self.assertEqual(result, {"reference": str(evidence),
+                                      "sha256": firmware.sha256(b"public evidence")})
+
+    def test_history_rejects_other_record_and_missing_config_with_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            records = root / "records"
+            records.mkdir(mode=0o750)
+            firmware_dir = root / "firmware"
+            firmware_dir.mkdir(mode=0o700)
+            config, journal = root / "config.json", root / "journal"
+            old = firmware_dir / ("a" * 32 + ".json")
+            old.write_text('{"schema_version":1,"action":"first-install","checkpoints":["intent"]}')
+            old.chmod(0o600)
+            target = firmware_dir / ("b" * 32 + ".json")
+            with self.assertRaises(ValueError):
+                firmware.first_install_history(target, root / "bundle", config=config, journal=journal,
+                                               records=records, directory=firmware_dir, owner=os.geteuid())
+            old.unlink()
+            journal.write_bytes(b"commissioned operation")
+            with self.assertRaises(ValueError):
+                firmware.first_install_history(target, root / "bundle", config=config, journal=journal,
+                                               records=records, directory=firmware_dir, owner=os.geteuid())
+
+    def test_pinned_mount_rejects_detached_and_replaced_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            volume = root / "volume"
+            volume.mkdir()
+            fd = os.open(volume, os.O_RDONLY | os.O_DIRECTORY)
+            dev = os.fstat(fd).st_dev
+            mount = firmware.BootselMount(volume, fd, "42", f"{os.major(dev)}:{os.minor(dev)}", root)
+            try:
+                with mock.patch.object(firmware, "mount_attached", return_value=False):
+                    with self.assertRaises(ValueError):
+                        mount.verify()
+                volume.rename(root / "old")
+                volume.mkdir()
+                with mock.patch.object(firmware, "mount_attached", return_value=True):
+                    with self.assertRaises(ValueError):
+                        mount.verify()
+                    with self.assertRaises(ValueError):
+                        mount.open_output()
+                self.assertFalse((volume / firmware.ARTIFACTS[1]).exists())
+            finally:
+                mount.close()
+
+    def test_interrupted_transfer_preserves_original_intent(self):
+        self.addCleanup(setattr, firmware, "WRITES_ATTEMPTED", False)
+        image = b"image"
+        manifest_bytes = b"manifest"
+        manifest = {"artifacts": [
+            {"name": firmware.ARTIFACTS[1], "sha256": firmware.sha256(image)},
+            {"name": "firmware.py", "sha256": firmware.sha256(manifest_bytes)}],
+            "bootkey_sha256": "b" * 64}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = root / "record"
+            (root / firmware.ARTIFACTS[1]).write_bytes(b"occupied")
+            mount = mock.Mock()
+            mount.device = "1:2"
+            mount.open_output.side_effect = FileExistsError("occupied")
+            def read_fixture(path, *args):
+                return image if Path(path).name == firmware.ARTIFACTS[1] else manifest_bytes
+            with contextlib.ExitStack() as stack:
+                for patch in (
+                    mock.patch.object(firmware, "verify_bundle", return_value=manifest),
+                    mock.patch.object(firmware, "first_install_lock", return_value=contextlib.nullcontext()),
+                    mock.patch.object(firmware, "first_install_history"),
+                    mock.patch.object(firmware, "bounded_file", side_effect=read_fixture),
+                    mock.patch.object(firmware, "bind_distribution_tool", return_value={"distribution_qualification": "qualified"}),
+                    mock.patch.object(firmware, "selected_usb_board", return_value=("2e8a", "000f", 1, 2)),
+                    mock.patch.object(firmware, "run", return_value=(b" chipid: 0x0123456789abcdef\n", b"")),
+                    mock.patch.object(firmware, "parse_bootsel_info", return_value={"stepping": "A2"}),
+                    mock.patch.object(firmware, "public_policy"),
+                    mock.patch.object(firmware, "attended"),
+                    mock.patch.object(firmware, "mounted_bootsel", return_value=mount),
+                    mock.patch.object(firmware.sys.stdin, "isatty", return_value=True),
+                    mock.patch.object(firmware.sys.stdout, "isatty", return_value=True),
+                    mock.patch.object(firmware.sys.stdin, "fileno", return_value=0),
+                    mock.patch.object(firmware.sys.stdout, "fileno", return_value=1),
+                    mock.patch.object(firmware.os, "ttyname", return_value="/dev/tty"),
+                    mock.patch.object(firmware.os, "tcgetpgrp", return_value=1),
+                    mock.patch.object(firmware.os, "getpgrp", return_value=1),
+                    mock.patch("builtins.input", side_effect=["reviewed qualification report", "FACTORY"]),
+                    mock.patch.object(Path, "exists", return_value=False),
+                ):
+                    stack.enter_context(patch)
+                board = stack.enter_context(mock.patch.object(firmware, "Board"))
+                board.return_value.snapshot.return_value = {}
+                with self.assertRaises(FileExistsError):
+                    firmware.first_install(root, record, True)
+            saved = json.loads(record.read_text())
+            self.assertEqual(saved["checkpoints"], ["intent", "transfer-started"])
+            self.assertEqual((root / firmware.ARTIFACTS[1]).read_bytes(), b"occupied")
+
+    def test_ambiguous_board_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(2):
+                device = root / str(index)
+                device.mkdir()
+                for name, value in (("idVendor", "2e8a"), ("idProduct", "000f"),
+                                    ("busnum", "1"), ("devnum", str(index + 1))):
+                    (device / name).write_text(value)
+            with self.assertRaisesRegex(ValueError, "multiple"):
+                firmware.selected_usb_board(root)
+
+    def test_uf2_cannot_touch_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.uf2"
+            block = bytearray(512)
+            struct.pack_into("<IIIIIIII", block, 0, 0x0a324655, 0x9e5d5157,
+                             0x2000, firmware.FIRMWARE_END, 256, 0, 1, 0xe48bff59)
+            struct.pack_into("<I", block, 508, 0x0ab16f30)
+            path.write_bytes(block)
+            with self.assertRaisesRegex(ValueError, "erase sector outside firmware"):
+                firmware.validate_uf2(path, [(firmware.FIRMWARE_END, bytes(256))])
+
+    def test_existing_record_is_read_only_even_with_apply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = Path(directory) / "record"
+            original = {"schema_version": 1, "action": "first-install", "checkpoints": ["intent"]}
+            record.write_text(json.dumps(original))
+            record.chmod(0o600)
+            with mock.patch.object(firmware, "verify_bundle") as verify, \
+                 mock.patch.object(firmware, "selected_usb_board") as board:
+                result = firmware.first_install(Path(directory), record, True)
+            self.assertEqual(result["record"], original)
+            self.assertEqual(json.loads(record.read_text()), original)
+            verify.assert_not_called()
+            board.assert_not_called()
+
+
+class UpdateTests(unittest.TestCase):
+    def test_preview_and_original_record_are_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = root / "record"
+            manifest = {"artifacts": [
+                {"name": firmware.ARTIFACTS[1], "sha256": "a" * 64},
+                {"name": "firmware.py", "sha256": firmware.sha256(b"manifest")}],
+                "bootkey_sha256": "b" * 64}
+            with mock.patch.object(firmware, "verify_bundle", return_value=manifest), \
+                 mock.patch.object(firmware, "bounded_file", return_value=b"manifest"), \
+                 mock.patch.object(firmware, "bind_distribution_tool", return_value={"distribution_qualification": "qualified"}), \
+                 mock.patch.object(firmware, "save_record") as save, \
+                 mock.patch.object(firmware, "mounted_bootsel") as mount:
+                result = firmware.update(root, "0123456789abcdef", record)
+                self.assertFalse(result["apply"])
+                self.assertEqual(result["preserved_state_region"], [firmware.FIRMWARE_END, firmware.STATE_END])
+                save.assert_not_called()
+                mount.assert_not_called()
+            original = {"schema_version": 1, "action": "update", "serial": "0123456789abcdef",
+                        "checkpoints": ["intent", "transfer-started"]}
+            record.write_text(json.dumps(original))
+            record.chmod(0o600)
+            with mock.patch.object(firmware, "verify_bundle") as verify, \
+                 mock.patch.object(firmware, "mounted_bootsel") as mount:
+                result = firmware.update(root, original["serial"], record, True)
+                self.assertEqual(result["record"], original)
+                self.assertEqual(json.loads(record.read_text()), original)
+                verify.assert_not_called()
+                mount.assert_not_called()
+
+    def test_update_rejects_wrong_destination_and_preserves_failed_checkpoints(self):
+        self.addCleanup(setattr, firmware, "WRITES_ATTEMPTED", False)
+        image = b"image"
+        manifest = {"artifacts": [
+            {"name": firmware.ARTIFACTS[1], "sha256": firmware.sha256(image)},
+            {"name": "firmware.py", "sha256": firmware.sha256(b"manifest")}],
+            "bootkey_sha256": "b" * 64}
+        for failure, checkpoints in (("mount", None), ("copy", ["intent", "transfer-started"]),
+                                     ("flush", ["intent", "transfer-started", "transfer-complete"])):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                record = root / "record"
+                mount = mock.Mock()
+                mount.device = "1:2"
+                if failure == "mount":
+                    mount.check_space.side_effect = ValueError("wrong destination")
+                output = mock.MagicMock()
+                output.__enter__.return_value = output
+                output.write.return_value = len(image)
+                if failure == "copy":
+                    output.write.side_effect = OSError("copy interrupted")
+                if failure == "flush":
+                    output.flush.side_effect = OSError("flush interrupted")
+                mount.open_output.return_value = output
+                def read_fixture(path, *args):
+                    return image if Path(path).name == firmware.ARTIFACTS[1] else b"manifest"
+                with contextlib.ExitStack() as stack:
+                    for patch in (
+                        mock.patch.object(firmware, "verify_bundle", return_value=manifest),
+                        mock.patch.object(firmware, "first_install_lock", return_value=contextlib.nullcontext()),
+                        mock.patch.object(firmware, "update_history", return_value={"operation_id": "a" * 32, "security": {"profile": "unlocked"}}),
+                        mock.patch.object(firmware, "validate_application_security"),
+                        mock.patch.object(firmware, "Board"),
+                        mock.patch.object(firmware, "bounded_file", side_effect=read_fixture),
+                        mock.patch.object(firmware, "bind_distribution_tool", return_value={"distribution_qualification": "qualified"}),
+                        mock.patch.object(firmware, "attended"),
+                        mock.patch.object(firmware, "pause"),
+                        mock.patch.object(firmware, "qualification_evidence", return_value={"reference": "reviewed"}),
+                        mock.patch.object(firmware, "mounted_bootsel", return_value=mount),
+                        mock.patch.object(firmware.sys.stdin, "isatty", return_value=True),
+                        mock.patch.object(firmware.sys.stdout, "isatty", return_value=True),
+                        mock.patch.object(firmware.sys.stdin, "fileno", return_value=0),
+                        mock.patch.object(firmware.sys.stdout, "fileno", return_value=1),
+                        mock.patch.object(firmware.os, "ttyname", return_value="/dev/tty"),
+                        mock.patch.object(firmware.os, "tcgetpgrp", return_value=1),
+                        mock.patch.object(firmware.os, "getpgrp", return_value=1),
+                        mock.patch("builtins.input", return_value="QUALIFIED"),
+                    ):
+                        stack.enter_context(patch)
+                    with self.assertRaises((ValueError, OSError)):
+                        firmware.update(root, "0123456789abcdef", record, True)
+                if checkpoints is None:
+                    self.assertFalse(record.exists())
+                else:
+                    self.assertEqual(json.loads(record.read_text())["checkpoints"], checkpoints)
+
+    def test_completed_first_install_and_pre_effect_failures_allow_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware_dir, records, staging = root / "firmware", root / "records", root / "staging"
+            firmware_dir.mkdir(mode=0o700)
+            records.mkdir(mode=0o750)
+            old, transfer, failed, new = (c * 32 for c in "abcd")
+            serial, chipid = "0123456789abcdef", "fedcba9876543210"
+            image, release = "a" * 64, "b" * 64
+            old_path = firmware_dir / (old + ".json")
+            tool = {"schema_version": 1, "action": "first-install", "physical_chipid": chipid,
+                    "bundle_sha256": release, "uf2_sha256": image,
+                    "checkpoints": ["intent", "transfer-started", "transfer-complete", "flush-complete"]}
+            def save(path, value, mode):
+                path.write_text(json.dumps(value))
+                path.chmod(mode)
+            save(old_path, tool, 0o600)
+            stage = staging / transfer
+            stage.mkdir(parents=True)
+            distribution = {"artifacts": [{"path": "firmware/release.json", "sha256": release},
+                                           {"path": "firmware/" + firmware.ARTIFACTS[1], "sha256": image}]}
+            (stage / "distribution.json").write_text(json.dumps(distribution))
+            (stage / "distribution.json").chmod(0o600)
+            digest = firmware.sha256((stage / "distribution.json").read_bytes())
+            report = {"serial": serial, "manifest_digest": digest, "physical_chipid": chipid,
+                      "tool_record_sha256": firmware.sha256(old_path.read_bytes()),
+                      "transfer_checkpoints": tool["checkpoints"]}
+            original = {"schema_version": 1, "operation_id": transfer, "action": "firmware_transfer",
+                        "outcome": "completed", "bundle_digest": digest,
+                        "approved_scope": [json.dumps({"action": "firmware_first_install", "apply": True,
+                                                       "record": str(old_path), "manifest_digest": digest})],
+                        "checkpoints": [{"name": "staged-authenticated", "evidence": digest},
+                                        {"name": "application-blank-attended", "evidence": json.dumps(report)}]}
+            save(records / (transfer + ".json"), original, 0o640)
+            failure = {"schema_version": 1, "operation_id": failed, "action": "firmware-update",
+                       "outcome": "failed-known", "checkpoints": [{"name": "intent-durable"}],
+                       "approved_scope": [json.dumps({"action": "firmware_update", "apply": True,
+                                                       "record": str(firmware_dir / (failed + ".json"))})]}
+            save(records / (failed + ".json"), failure, 0o640)
+            bundle = staging / new / "firmware"
+            bundle.mkdir(parents=True)
+            (bundle.parent / "distribution.json").write_text("{}")
+            new_digest = firmware.sha256(b"{}")
+            device = {"usb_serial": serial, "id": "c" * 32, "identity_public_key": "d" * 64}
+            save(root / "config", {"device": device}, 0o600)
+            action = {"action": "firmware_update", "apply": True, "serial": serial,
+                      "record": str(firmware_dir / (new + ".json")), "manifest_digest": new_digest,
+                      "device_id": device["id"], "identity_public_key": device["identity_public_key"]}
+            intent = {"schema_version": 1, "operation_id": new, "action": "firmware-update",
+                      "outcome": "service-quiesced", "approved_scope": [json.dumps(action)],
+                      "pre_observations": [json.dumps({"device_info": {"device_id": device["id"],
+                                                                        "usb_serial": serial},
+                                                       "security": {"stepping": "A2"}})],
+                      "bundle_digest": new_digest, "image_digest": image,
+                      "checkpoints": [{"name": "staged-authenticated", "evidence": new_digest},
+                                      {"name": "service-quiesced"}]}
+            save(records / (new + ".json"), intent, 0o640)
+            def check():
+                return firmware.update_history(firmware_dir / (new + ".json"), bundle, serial, image,
+                                               directory=firmware_dir, records=records, config=root / "config",
+                                               staging=staging, owner=os.geteuid())
+            with mock.patch.object(firmware, "protected_ancestry"):
+                # The fixture deliberately cannot satisfy the production manager executable pin.
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                for outcome in ("cancelled", "uncertain"):
+                    failure["outcome"] = outcome
+                    save(records / (failed + ".json"), failure, 0o640)
+                    with self.assertRaisesRegex(ValueError, "original operation requires its manager" if outcome == "cancelled" else "unresolved original"):
+                        check()
+                failure["outcome"] = "failed-known"
+                failure["checkpoints"].append({"name": "service-quiesced"})
+                save(records / (failed + ".json"), failure, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+                failure["checkpoints"].pop()
+                save(records / (failed + ".json"), failure, 0o640)
+                failed_tool = firmware_dir / (failed + ".json")
+                save(failed_tool, {"schema_version": 1, "action": "update",
+                                   "checkpoints": ["intent", "transfer-started"]}, 0o600)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+                failed_tool.unlink()
+                duplicate = dict(original, operation_id="e" * 32)
+                duplicate_path = records / ("e" * 32 + ".json")
+                save(duplicate_path, duplicate, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+                duplicate_path.unlink()
+                report["serial"] = "ffffffffffffffff"
+                original["checkpoints"][1]["evidence"] = json.dumps(report)
+                save(records / (transfer + ".json"), original, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+
+    def test_new_record_cannot_hide_interrupted_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware_dir, records, staging = root / "firmware", root / "records", root / "staging"
+            firmware_dir.mkdir(mode=0o700)
+            records.mkdir(mode=0o750)
+            old, new = "a" * 32, "b" * 32
+            old_tool = firmware_dir / (old + ".json")
+            old_tool.write_text(json.dumps({"schema_version": 1, "action": "update",
+                                            "checkpoints": ["intent", "transfer-started"]}))
+            old_tool.chmod(0o600)
+            old_record = records / (old + ".json")
+            old_record.write_text(json.dumps({"schema_version": 1, "operation_id": old,
+                                              "action": "firmware-update", "outcome": "uncertain"}))
+            old_record.chmod(0o640)
+            with self.assertRaisesRegex(ValueError, "unresolved original"):
+                firmware.update_history(firmware_dir / (new + ".json"), staging / new / "firmware",
+                                        "0123456789abcdef", "a" * 64, directory=firmware_dir,
+                                        records=records, config=root / "config", staging=staging,
+                                        owner=os.geteuid())
+
+
 class ProvisionTests(unittest.TestCase):
     def setUp(self):
         self.identity = {"path": "/fixture/picotool", "sha256": "aa" * 32,
@@ -318,6 +689,42 @@ class ProvisionTests(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.addCleanup(setattr, firmware, "BOUND_TOOL", None)
+        self.addCleanup(setattr, firmware, "BOUND_DISTRIBUTION_BUNDLE", None)
+
+    def test_distribution_binding_rechecks_exact_original_identity(self):
+        original = {"path": "/signed/picotool", "libusb": {"provenance": "signed-distribution"}}
+        changed = {"path": "/signed/picotool", "libusb": {"provenance": "changed"}}
+        self.addCleanup(setattr, firmware, "BOUND_DISTRIBUTION_BUNDLE", None)
+        firmware.BOUND_DISTRIBUTION_BUNDLE = Path("/authenticated/firmware")
+        with mock.patch.object(firmware, "bind_distribution_tool", side_effect=[original, original, changed]) as bind, \
+             mock.patch.object(firmware, "tool_identity") as system:
+            self.assertEqual(firmware.bind_tool(), original)
+            self.assertEqual(firmware.bind_tool(original), original)
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                firmware.bind_tool(original)
+            self.assertEqual(bind.call_count, 3)
+            system.assert_not_called()
+
+    def test_packaged_provisioning_rejects_trace_hook(self):
+        with mock.patch.object(firmware, "TRACE_HOOK", "/untrusted/hook"):
+            with self.assertRaisesRegex(ValueError, "trace hook"):
+                firmware.provision("prepare", "0123456789abcdef", "/bundle", "/record",
+                                   distribution=True)
+
+    def test_packaged_provision_and_reconciliation_bind_before_verification(self):
+        self.addCleanup(setattr, firmware, "BOUND_DISTRIBUTION_BUNDLE", None)
+        for reconcile in (False, True):
+            with self.subTest(reconcile=reconcile), \
+                 mock.patch.object(firmware, "bind_distribution_tool", return_value=self.identity) as bind, \
+                 mock.patch.object(firmware, "verify_bundle", side_effect=ValueError("stop")):
+                with self.assertRaisesRegex(ValueError, "stop"):
+                    if reconcile:
+                        firmware.reconcile_prepare("0123456789abcdef", "/bundle", "/record",
+                                                   True, distribution=True)
+                    else:
+                        firmware.provision("prepare", "0123456789abcdef", "/bundle", "/record",
+                                           True, distribution=True)
+                bind.assert_called_once_with(Path("/bundle"))
 
     def snapshot(self):
         return {"stepping": "A2", "secure_boot": False,
@@ -848,6 +1255,87 @@ class ProvisionTests(unittest.TestCase):
 
 
 class ToolEvidenceTests(unittest.TestCase):
+    def test_signed_runtime_identity_rejects_changed_library(self):
+        self.addCleanup(setattr, firmware, "BOUND_TOOL", None)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tool = root / "picotool"
+            runtime = root / "runtime"
+            runtime.mkdir()
+            tool.write_bytes(b"picotool")
+            names = ("libusb-1.0.so.0", "libudev.so.1", "libstdc++.so.6", "libgcc_s.so.1")
+            for name in names:
+                (runtime / name).write_bytes(name.encode())
+            entries = [{"path": "tools/picotool", "sha256": firmware.sha256(tool.read_bytes())},
+                       {"path": "tools/firmware.py", "sha256": firmware.sha256(Path(firmware.__file__).read_bytes())}]
+            inner = root / "firmware"
+            inner.mkdir()
+            for name in ("firmware.py", "release.json", "release.json.sig", firmware.ARTIFACTS[1]):
+                (inner / name).write_bytes(name.encode())
+                entries.append({"path": "firmware/" + name, "sha256": firmware.sha256(name.encode())})
+            entries += [{"path": "runtime/" + name, "sha256": firmware.sha256(name.encode())}
+                        for name in names]
+            packages = ("libusb-1.0-0", "libudev1", "libstdc++6", "libgcc-s1")
+            provenance = {"schema_version": 1, "os": {"id": "debian", "version": "12"},
+                          "libraries": [{"path": "runtime/" + name, "package": package,
+                                         "package_version": "1.2.3", "sha256": firmware.sha256(name.encode())}
+                                        for name, package in zip(names, packages)]}
+            provenance_path = runtime / "provenance.json"
+            provenance_path.write_text(json.dumps(provenance))
+            provenance_entry = {"path": "runtime/provenance.json",
+                                "sha256": firmware.sha256(provenance_path.read_bytes())}
+            entries.append(provenance_entry)
+            manifest = {"artifacts": entries, "components": [{"name": "tool", "build_id": "fixture"}],
+                        "qualification": "qualified"}
+            lib = runtime / names[0]
+            def fake_run(command, **kwargs):
+                if command[0] == "/usr/bin/readelf":
+                    return b"Build ID: abcd1234\n", b""
+                return b"picotool v2.3.1 (fixture)\n", f"123: calling init: {lib}\n".encode()
+            with mock.patch.object(firmware, "signed_distribution", return_value=manifest), \
+                 mock.patch.object(firmware.shutil, "which", return_value=str(tool)), \
+                 mock.patch.dict(os.environ, {"LD_LIBRARY_PATH": str(runtime)}, clear=True), \
+                 mock.patch.object(firmware, "run", side_effect=fake_run):
+                identity = firmware.bind_distribution_tool(root / "firmware")
+                self.assertEqual(identity["libusb"]["sha256"], firmware.sha256(names[0].encode()))
+                self.assertEqual(identity["build_id"], "abcd1234")
+                self.assertEqual(identity["libusb"]["package"], "libusb-1.0-0")
+                self.assertEqual(identity["libusb"]["version"], "1.2.3")
+                self.assertEqual(identity["libusb"]["provenance"], "signed-distribution")
+                tools = root / "tools"
+                tools.mkdir()
+                bundled_tool = tools / "picotool"
+                bundled_tool.write_bytes(tool.read_bytes())
+                with mock.patch.object(firmware.shutil, "which", return_value=str(bundled_tool)):
+                    self.assertEqual(firmware.bind_distribution_tool(root / "firmware")["path"], str(bundled_tool))
+                    with mock.patch.dict(os.environ, {"LD_LIBRARY_PATH": str(tools / "runtime")}):
+                        with self.assertRaisesRegex(ValueError, "untrusted dynamic loader"):
+                            firmware.bind_distribution_tool(root / "firmware")
+                    other = root / "other" / names[0]
+                    other.parent.mkdir()
+                    other.write_bytes(names[0].encode())
+                    with mock.patch.object(firmware, "run", side_effect=lambda command, **kwargs:
+                                           (b"Build ID: abcd1234\n", b"") if command[0] == "/usr/bin/readelf"
+                                           else (b"picotool v2.3.1 (fixture)\n",
+                                                 f"123: calling init: {other}\n".encode())):
+                        with self.assertRaisesRegex(ValueError, "loaded libusb differs"):
+                            firmware.bind_distribution_tool(root / "firmware")
+                entries.remove(provenance_entry)
+                with self.assertRaises(ValueError):
+                    firmware.bind_distribution_tool(root / "firmware")
+                entries.append(provenance_entry)
+                provenance["libraries"][0]["sha256"] = "0" * 64
+                provenance_path.write_text(json.dumps(provenance))
+                provenance_entry["sha256"] = firmware.sha256(provenance_path.read_bytes())
+                with self.assertRaises(ValueError):
+                    firmware.bind_distribution_tool(root / "firmware")
+                provenance["libraries"][0]["sha256"] = firmware.sha256(names[0].encode())
+                provenance_path.write_text(json.dumps(provenance))
+                provenance_entry["sha256"] = firmware.sha256(provenance_path.read_bytes())
+                (runtime / names[1]).write_bytes(b"changed")
+                with self.assertRaises(ValueError):
+                    firmware.bind_distribution_tool(root / "firmware")
+
     def test_tool_identity_rejects_changed_binary_with_same_version(self):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "picotool"

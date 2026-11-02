@@ -1,14 +1,30 @@
+import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest import mock
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 import publish_release as publisher
+
+
+def write_host_fixture(root, tag, commit, build_id):
+    for name in ("p2kesup", "pico2-kes-agentd", "pico2-kes-agent-cli"):
+        path = root / "bin" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        identity = json.dumps({"schema_version": 1, "component": name, "version": tag,
+                               "source_commit": commit, "build_id": build_id})
+        path.write_text("#!/usr/bin/python3\nimport sys\n"
+                        "assert sys.argv[1:] == ['--version', '--json']\n"
+                        f"print({identity!r})\n", encoding="utf-8")
+        path.chmod(0o755)
 
 
 class GithubBoundary:
@@ -122,6 +138,223 @@ class PublishTests(unittest.TestCase):
             existing={"tag_name": "v0.1.0-rc.2", "draft": True, "prerelease": True})
         self.assertFalse(success)
         self.assertFalse(any(c[0] == "release" for c in boundary.calls))
+
+    def test_incomplete_and_duplicate_assets_are_rejected(self):
+        assets = [{"name": p.name, "size": p.stat().st_size}
+                  for p in self.bundle.iterdir()]
+        altered = [dict(asset) for asset in assets]
+        altered[0]["size"] += 1
+        for invalid in (assets[:-1], assets + [assets[0]], altered,
+                        assets + [{"name": "unexpected", "size": 1}]):
+            with self.subTest(assets=invalid):
+                with self.assertRaises(ValueError):
+                    publisher.require_asset_set({"assets": invalid}, self.bundle)
+
+    def test_runtime_provenance_refuses_duplicate_unknown_and_mismatched_entries(self):
+        entries = [{"path": path, "package": package, "package_version": "1.2-3",
+                    "sha256": "a" * 64} for path, package in publisher.RUNTIME_PACKAGES.items()]
+        artifacts = {entry["path"]: {"sha256": entry["sha256"]} for entry in entries}
+        path = self.bundle / "provenance.json"
+        def check(libraries):
+            path.write_text(json.dumps({"schema_version": 1, "os": {"id": "debian", "version": "12"},
+                                        "libraries": libraries}), encoding="utf-8")
+            publisher.validate_runtime_provenance(path, artifacts)
+        check(entries)
+        for bad in (entries + [entries[0]], entries[:-1],
+                    [{**entries[0], "unexpected": True}, *entries[1:]],
+                    [{**entries[0], "sha256": "b" * 64}, *entries[1:]],
+                    [{**entries[0], "path": "../libusb"}, *entries[1:]]):
+            with self.subTest(libraries=bad), self.assertRaises(ValueError):
+                check(bad)
+        path.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
+        with self.assertRaises(ValueError):
+            publisher.validate_runtime_provenance(path, artifacts)
+
+    def test_host_builds_reject_stale_or_mismatched_identity(self):
+        write_host_fixture(self.bundle, "vfixture", self.commit, "f" * 64)
+        publisher.require_host_builds(self.bundle, "vfixture", self.commit, "f" * 64)
+        for field, value in (("version", "vold"), ("source_commit", "b" * 40),
+                             ("build_id", "c" * 64), ("component", "wrong"),
+                             ("schema_version", True), ("unexpected", "extra")):
+            path = self.bundle / "bin/p2kesup"
+            identity = {"schema_version": 1, "component": "p2kesup", "version": "vfixture",
+                        "source_commit": self.commit, "build_id": "f" * 64}
+            identity[field] = value
+            path.write_text("#!/usr/bin/python3\nprint(" + repr(json.dumps(identity)) + ")\n")
+            path.chmod(0o755)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                publisher.require_host_builds(self.bundle, "vfixture", self.commit, "f" * 64)
+            write_host_fixture(self.bundle, "vfixture", self.commit, "f" * 64)
+
+    def test_component_inventory_digest_and_tuple_validation(self):
+        entries = [
+            {"path": "deploy/z", "size_bytes": 2, "sha256": "b" * 64, "mode": 0o755},
+            {"path": "install.sh", "size_bytes": 1, "sha256": "a" * 64, "mode": 0o644},
+            {"path": "install.sh.asc", "size_bytes": 3, "sha256": "c" * 64, "mode": 0o644},
+        ]
+        encoded = ("deploy/z\0" + "2\0" + "b" * 64 + "\0" + "493\n" +
+                   "install.sh\0" + "1\0" + "a" * 64 + "\0" + "420\n").encode()
+        self.assertEqual(publisher.component_digest("deployment", entries), hashlib.sha256(encoded).hexdigest())
+        self.assertEqual(publisher.component_digest("deployment", entries),
+                         publisher.component_digest("deployment", list(reversed(entries))))
+        changed = [dict(entry) for entry in entries]
+        changed[0]["mode"] = 0o644
+        self.assertNotEqual(publisher.component_digest("deployment", entries),
+                            publisher.component_digest("deployment", changed))
+        valid = {name: "a" * 64 for name in publisher.COMPONENT_PATHS}
+        publisher.validate_tuples([valid])
+        for tuples in ([valid, valid], [{**valid, "tool": "A" * 64}],
+                       [{**valid, "extra": "a" * 64}], [{k: v for k, v in valid.items() if k != "cli"}]):
+            with self.subTest(tuples=tuples), self.assertRaises(ValueError):
+                publisher.validate_tuples(tuples)
+
+    def test_promotion_preserves_source_and_all_payloads(self):
+        candidate = {"qualification": "candidate", "release": {"source_commit": "a" * 40},
+                     "artifacts": [{"path": "bin/p2kesup", "sha256": "b" * 64}]}
+        approved = {"source_commit": "a" * 40, "payloads": {"bin/p2kesup": "b" * 64}}
+        publisher.require_promotion_identity(candidate, approved)
+        for changed in ({"source_commit": "c" * 40, "payloads": approved["payloads"]},
+                        {"source_commit": approved["source_commit"], "payloads": {"bin/p2kesup": "d" * 64}},
+                        {"source_commit": approved["source_commit"], "payloads": {}}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                publisher.require_promotion_identity(candidate, changed)
+
+    def test_archive_rejects_traversal_links_and_duplicates(self):
+        entries = {"firmware/image": {"size_bytes": 1}}
+        valid = tarfile.TarInfo("firmware/image")
+        valid.size = 1
+        publisher.require_archive_member(valid, entries, set())
+        for name, kind, seen in (("../image", tarfile.REGTYPE, set()),
+                                 ("firmware/image", tarfile.SYMTYPE, set()),
+                                 ("firmware/image", tarfile.LNKTYPE, set()),
+                                 ("firmware/image", tarfile.REGTYPE, {"firmware/image"})):
+            member = tarfile.TarInfo(name)
+            member.type, member.size = kind, 1
+            with self.subTest(name=name, kind=kind), self.assertRaises(ValueError):
+                publisher.require_archive_member(member, entries, seen)
+
+    def test_real_disposable_authority_rejects_tamper_and_wrong_pin(self):
+        home = self.bundle / "gnupg"
+        home.mkdir(mode=0o700)
+        with mock.patch.dict(os.environ, {"GNUPGHOME": str(home)}):
+            def gpg(*args):
+                return subprocess.check_output(["gpg", "--batch", *args])
+            gpg("--pinentry-mode", "loopback", "--passphrase", "",
+                "--quick-generate-key", "Release Test <release-test@example.invalid>", "ed25519", "cert", "0")
+            listing = gpg("--with-colons", "--list-keys").decode()
+            primary = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+            gpg("--pinentry-mode", "loopback", "--passphrase", "",
+                "--quick-add-key", primary, "ed25519", "sign", "0")
+            listing = gpg("--with-colons", "--list-keys").decode()
+            fingerprints = [line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:")]
+            certificate = self.bundle / "authority.asc"
+            certificate.write_bytes(gpg("--armor", "--export", primary))
+            data = self.bundle / "distribution.json"
+            data.write_bytes(b"authenticated bytes")
+            trust = (primary, fingerprints[1])
+            publisher.sign_detached(data, certificate, trust=trust)
+            publisher.verify_detached(data, self.bundle / "distribution.json.asc", certificate, trust=trust)
+            with self.assertRaises(ValueError):
+                publisher.verify_detached(data, self.bundle / "distribution.json.asc", certificate)
+            data.write_bytes(b"altered bytes")
+            with self.assertRaises(ValueError):
+                publisher.verify_detached(data, self.bundle / "distribution.json.asc", certificate, trust=trust)
+            payload = self.bundle / "payload"
+            for name in publisher.REQUIRED_ASSETS:
+                path = payload / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"same verifier" if name in ("firmware/firmware.py", "tools/firmware.py")
+                                 else certificate.read_bytes() if name == "firmware/release-authority.asc"
+                                 else name.encode())
+                if name in ("bin/p2kesup", "bin/pico2-kes-agentd", "bin/pico2-kes-agent-cli", "tools/picotool"):
+                    path.chmod(0o755)
+            (payload / "runtime/provenance.json").write_text(json.dumps({
+                "schema_version": 1, "os": {"id": "debian", "version": "12"},
+                "libraries": [{"path": path, "package": package, "package_version": "1.2-3",
+                               "sha256": publisher.digest_file(payload / path)}
+                              for path, package in publisher.RUNTIME_PACKAGES.items()]}), encoding="utf-8")
+            write_host_fixture(payload, "vfixture", self.commit, "f" * 64)
+            candidate, qualified = self.bundle / "candidate", self.bundle / "qualified"
+            inner = {"tag": "vfixture", "commit": self.commit}
+            with mock.patch.object(publisher.firmware, "verify_bundle", return_value=inner):
+                prepared = self.bundle / "prepared"
+                mixed = {name: "current" for name in publisher.COMPONENT_PATHS}
+                mixed["daemon"] = "b" * 64
+                publisher.prepare_distribution(payload, prepared, "vfixture", self.commit, "f" * 64,
+                                               compatible_tuples=[mixed], trust=trust)
+                prepared_metadata = prepared / "prepared.json"
+                prepared_bytes = prepared_metadata.read_bytes()
+                altered = json.loads(prepared_bytes)
+                altered["components"][0]["digest"] = "0" * 64
+                prepared_metadata.write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    publisher.sign_prepared(prepared, self.bundle / "bad-inventory", "vfixture",
+                                            self.commit, "f" * 64, trust=trust)
+                prepared_metadata.write_bytes(prepared_bytes)
+                with mock.patch.object(publisher, "host_version", side_effect=AssertionError("signer ran host binary")), \
+                     mock.patch.object(publisher.firmware, "verify_bundle", side_effect=AssertionError("signer ran firmware")):
+                    with self.assertRaises(ValueError):
+                        publisher.sign_prepared(prepared, self.bundle / "bad-source", "vfixture", "b" * 40, "f" * 64, trust=trust)
+                    artifact = prepared / "bin/p2kesup"
+                    original = artifact.read_bytes()
+                    artifact.write_bytes(original + b"altered")
+                    with self.assertRaises(ValueError):
+                        publisher.sign_prepared(prepared, self.bundle / "bad-payload", "vfixture", self.commit, "f" * 64, trust=trust)
+                    artifact.write_bytes(original)
+                    manifest = publisher.sign_prepared(prepared, candidate, "vfixture", self.commit, "f" * 64, trust=trust)
+                self.assertIn("unlocked", manifest["compatibility"]["security_profiles"])
+                tuples = manifest["compatibility"]["tuples"]
+                self.assertEqual(len(tuples), 2)
+                self.assertEqual(tuples[1]["daemon"], "b" * 64)
+                self.assertEqual(tuples[1]["deployment"], tuples[0]["deployment"])
+                self.assertEqual({c["name"]: c["digest"] for c in manifest["components"]}, tuples[0])
+                evidence_dir = self.bundle / "evidence"
+                evidence_dir.mkdir()
+                evidence_hashes = {}
+                for name in publisher.GATES:
+                    path = evidence_dir / name
+                    path.write_text("reviewed fixture", encoding="utf-8")
+                    evidence_hashes[name] = publisher.digest_file(path)
+                approval = evidence_dir / "approval.json"
+                approval.write_text(json.dumps({"schema_version": 1, "approved": True,
+                    "candidate_sha256": publisher.digest_file(candidate / "distribution.json"),
+                    "source_commit": self.commit,
+                    "payloads": {a["path"]: a["sha256"] for a in manifest["artifacts"]},
+                    "evidence": evidence_hashes}), encoding="utf-8")
+                publisher.sign_detached(approval, certificate, trust=trust)
+                publisher.check_promotion(candidate, approval, self.commit, trust=trust)
+                with mock.patch.object(publisher.firmware, "verify_bundle", side_effect=AssertionError("signer ran firmware")), \
+                     mock.patch.object(publisher, "host_version", side_effect=AssertionError("signer ran host binary")):
+                    publisher.sign_promotion(candidate, qualified, approval, self.commit, trust=trust)
+                promoted = publisher.verify_distribution(qualified, trust=trust)
+                self.assertEqual(promoted["qualification"], "qualified")
+                self.assertEqual(promoted["artifacts"], manifest["artifacts"])
+                self.assertEqual(promoted["release"], manifest["release"])
+                self.assertEqual(promoted["components"], manifest["components"])
+                self.assertEqual(promoted["compatibility"], manifest["compatibility"])
+                artifact = candidate / "bin/p2kesup"
+                original = artifact.read_bytes()
+                artifact.write_bytes(original + b"altered")
+                with self.assertRaises(ValueError):
+                    publisher.verify_distribution(candidate, trust=trust)
+                artifact.write_bytes(original)
+                metadata, signature = candidate / "distribution.json", candidate / "distribution.json.asc"
+                original_metadata, original_signature = metadata.read_bytes(), signature.read_bytes()
+                for field, value in (("purpose", "wrong-purpose"), ("qualification", "unknown")):
+                    altered = dict(manifest)
+                    altered[field] = value
+                    metadata.write_text(json.dumps(altered), encoding="utf-8")
+                    signature.unlink()
+                    publisher.sign_detached(metadata, certificate, trust=trust)
+                    with self.subTest(field=field), self.assertRaises(ValueError):
+                        publisher.verify_distribution(candidate, trust=trust)
+                metadata.write_bytes(original_metadata)
+                signature.write_bytes(original_signature)
+                with self.assertRaises(ValueError):
+                    publisher.sign_promotion(candidate, qualified, approval, self.commit, trust=trust)
+                (evidence_dir / "Q1.md").write_text("tampered", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    publisher.sign_promotion(candidate, self.bundle / "bad", approval, self.commit, trust=trust)
 
 
 class ReleaseInspectionTests(unittest.TestCase):

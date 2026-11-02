@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "release_status": "development-unqualified",
+  "acceptance_claim": false,
+  "captured_utc": "2026-11-02T22:14:09Z",
+  "repository": "/home/westbam/Development/pico2-kes-agent",
+  "source": {
+    "revision": "f23486803f9d2c730a4c943d6c32cdead361bfe9",
+    "dirty_sha256": "993f2348ed070ae2cc68cfc577631ca9f83ee232688eea569f978ccdd5519a4e",
+    "algorithm": "qualification-dirty-v1",
+    "implementation": "qualification/src/evidence.rs::candidate",
+    "untracked_source_files_hashed": 28,
+    "generated_untracked_evidence_excluded": true
+  },
+  "artifacts": [
+    {
+      "path": "/home/westbam/Development/pico2-kes-agent/target/debug/p2kesup",
+      "sha256": "b65a7e7dac766238796e65f149eb577b3336f3fe26755479c0403379172efc8a",
+      "bytes": 61147480,
+      "scope": "development debug executable"
+    },
+    {
+      "path": "/home/westbam/Development/pico2-kes-agent/target/debug/pico2-kes-agent-cli",
+      "sha256": "50a7dc49952e40ee7e801bcb7ba24da4c0a9a97577eb53da0aafe2994abd705e",
+      "bytes": 51114016,
+      "scope": "development debug executable"
+    },
+    {
+      "path": "/home/westbam/Development/pico2-kes-agent/target/debug/pico2-kes-agentd",
+      "sha256": "581ff152ec3b93c26b1922a96693b29da1fab38d1851585719c39999d60e8256",
+      "bytes": 52341880,
+      "scope": "development debug executable"
+    },
+    {
+      "path": "/home/westbam/Development/pico2-kes-agent/target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware",
+      "sha256": "90e1a80ae240b7d857c6468ec8773d0fd32a1c495a0df4658912c2f5ca0af0bd",
+      "bytes": 466376,
+      "scope": "unflashed target ELF"
+    }
+  ],
+  "build_inputs": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "611e7e0c3cda9bfd7dbe21af8919389ba7793d363bf2c0d6e75c5d90dd76e18a"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "0b629faf8cbab2e62295f3faa4c3524cd5fdb92da5fef4b692a006d68db32559"
+    },
+    {
+      "path": "qualification/native-sources.json",
+      "sha256": "861b76774eca248afd9576524f733daea23feea6a4cfaede48e822a61d81d255"
+    },
+    {
+      "path": ".specify/memory/constitution.md",
+      "sha256": "e1508401333469992c0a893ab19d740e5b764549ef97c87969da1a6b178ff501"
+    }
+  ],
+  "artifact_source_relation": "Artifacts were built and exercised in this session before final documentation/task-marker bookkeeping. Hashes identify those artifacts; this is not a signed or reproducible-release assertion.",
+  "earlier_scoped_reports": [
+    {
+      "path": "/home/westbam/Development/pico2-kes-agent/evidence/f23486803f9d2c730a4c943d6c32cdead361bfe9-615982a894f261dd0055905c683597def2687cc72e35ba4f08ec60b51cce50b1/load/report.json",
+      "scope": "host-model full-capacity and client isolation"
+    },
+    {
+      "path": "/home/westbam/Development/pico2-kes-agent/evidence/f23486803f9d2c730a4c943d6c32cdead361bfe9-bcc3fa4a4d1463368c41e596c3efe6f1c850359b5d86f87aa8c6bf748348b132/native/report.json",
+      "scope": "configured native gate failure plus passing protocol regressions"
+    }
+  ],
+  "calibration": {
+    "candidate_observe_sha256": "0c0ef43811955fea8418e931d62b65bc82f0de4f880db9dda001e0571735552a",
+    "restored_observe_sha256": "0c0ef43811955fea8418e931d62b65bc82f0de4f880db9dda001e0571735552a",
+    "defect_applied_to_candidate": false,
+    "isolated_copy_removed": true
+  },
+  "native_supplement": {
+    "required_node_revision": "746f1b3cbdaada2c3ed2f702b0946643248dd30b",
+    "required_consensus_revision": "6673fce255f12addb602b0ae2d0a20f51a2cd519",
+    "built_node_sha256": "43b4e48aab23469c7ea759624e7079d15412a9e86aad9baf5580a8ad5676ddb2",
+    "observed_version": "cardano-node 11.2.0.164 - linux-x86_64 - ghc-9.12\ngit rev 746f1b3cbdaada2c3ed2f702b0946643248dd30b",
+    "isolated_copy_removed": true,
+    "report": "native-check.md"
+  },
+  "task_status": {
+    "completed": 57,
+    "total": 70,
+    "blocked": [
+      "T019",
+      "T023",
+      "T030",
+      "T039",
+      "T046",
+      "T052",
+      "T056",
+      "T060",
+      "T063",
+      "T067",
+      "T068",
+      "T069",
+      "T070"
+    ]
+  },
+  "promotion_performed": false,
+  "post_implementation_hooks": "No .specify/extensions.yml exists; no registered hooks dispatched."
+}

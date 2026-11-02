@@ -33,6 +33,88 @@ impl Drop for TestDir {
 }
 
 #[test]
+fn bootstrap_verifier_bounds_running_processes() {
+    let script = include_str!("../install.sh");
+    let helper = script
+        .split_once("verifier_code=$(cat <<'PY'\n")
+        .unwrap()
+        .1
+        .split_once("\nPY\n")
+        .unwrap()
+        .0;
+    let exercise = r#"
+import sys
+python = sys.executable
+assert bounded_command([python, '-c', "import sys; assert sys.stdin.read() == ''; sys.stderr.write('ignored'); sys.stdout.write('ok')"]) == b'ok'
+assert len(bounded_command([python, '-c', "import sys; sys.stdout.write('x'*65536)"])) == 65536
+assert bounded_command([python, '-c', "import os; print(os.environ['BOUND_TEST'])"], env={'BOUND_TEST':'isolated'}, limit=1048576) == b'isolated\n'
+try:
+    bounded_command([python, '-c', "import os; os.write(1,b'x'*65537); import time; time.sleep(60)"])
+    raise AssertionError('overflow accepted')
+except ValueError:
+    pass
+for child in ("import time; time.sleep(60)", "import os,time; os.close(1); time.sleep(60)"):
+    try:
+        bounded_command([python, '-c', child], timeout=0.2)
+        raise AssertionError('timeout accepted')
+    except subprocess.TimeoutExpired:
+        pass
+try:
+    bounded_command([python, '-c', "raise SystemExit(7)"])
+    raise AssertionError('failure accepted')
+except subprocess.CalledProcessError as error:
+    assert error.returncode == 7
+"#;
+    let output = Command::new("/usr/bin/python3")
+        .args(["-I", "-c", &format!("{helper}\n{exercise}")])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn uninstall_file_review_rejects_modified_or_replaced_owned_files() {
+    use kes_core::identity::Digest32;
+    use pico2_kes_agent::manager::uninstall::observe_recovery_file;
+    use pico2_kes_agent::manager::{host::check_owned_file, model::ManagedFile};
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    let dir = TestDir::new();
+    let file = dir.0.join("component");
+    fs::write(&file, b"authenticated component").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    let meta = fs::metadata(&file).unwrap();
+    let entry = ManagedFile {
+        path: file.clone(),
+        digest: Digest32::parse_hex(&format!("{:x}", Sha256::digest(b"authenticated component")))
+            .unwrap(),
+        mode: 0o600,
+        owner: meta.uid(),
+        group: meta.gid(),
+        component: "manager".into(),
+    };
+    assert!(check_owned_file(&file, Some(&entry)).is_ok());
+    assert!(observe_recovery_file(&entry).unwrap());
+    fs::write(&file, b"modified component").unwrap();
+    assert!(check_owned_file(&file, Some(&entry)).is_err());
+    assert!(observe_recovery_file(&entry).is_err());
+    fs::remove_file(&file).unwrap();
+    assert!(!observe_recovery_file(&entry).unwrap());
+    let external = dir.0.join("external");
+    fs::write(&external, b"authenticated component").unwrap();
+    symlink(&external, &file).unwrap();
+    assert!(check_owned_file(&file, Some(&entry)).is_err());
+    assert!(observe_recovery_file(&entry).is_err());
+    assert_eq!(fs::read(&external).unwrap(), b"authenticated component");
+}
+
+#[test]
 fn daemon_process_memory_is_locked_nondumpable_and_coreless() {
     if std::env::var_os(CHILD).is_some() {
         memory::protect_process().expect("host must provide the configured lock allowance");
@@ -297,4 +379,217 @@ fn commissioning_preflight_needs_no_node_but_retains_host_protections() {
     assert!(!run(&["--commission"]).status.success());
     fs::write(&policy, b"BACKUP_PRIVATE_POLICY=off-primary\n").unwrap();
     assert!(!run(&["--commission"]).status.success());
+}
+
+#[test]
+fn invalid_setup_candidate_does_not_modify_working_config() {
+    use pico2_kes_agent::{config::RunMode, manager::setup};
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = TestDir::new();
+    let working = dir.0.join("config.json");
+    let candidate = dir.0.join("candidate.json");
+    fs::write(&working, b"operator configuration\n").unwrap();
+    fs::set_permissions(&working, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::write(&candidate, b"{\"version\":999}").unwrap();
+    let before = fs::metadata(&working).unwrap();
+    assert!(setup::review_config(&candidate, RunMode::Normal).is_err());
+    let after = fs::metadata(&working).unwrap();
+    assert_eq!(fs::read(&working).unwrap(), b"operator configuration\n");
+    assert_eq!(
+        (before.mode(), before.uid(), before.gid()),
+        (after.mode(), after.uid(), after.gid())
+    );
+}
+
+#[test]
+fn external_and_modified_files_are_not_adopted() {
+    use kes_core::identity::Digest32;
+    use pico2_kes_agent::manager::host::check_owned_file;
+    use pico2_kes_agent::manager::model::ManagedFile;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = TestDir::new();
+    let path = dir.0.join("managed");
+    fs::write(&path, b"original").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let meta = fs::metadata(&path).unwrap();
+    let digest: [u8; 32] = Sha256::digest(b"original").into();
+    let entry = ManagedFile {
+        path: path.clone(),
+        digest: Digest32::from_bytes(digest),
+        mode: 0o644,
+        owner: meta.uid(),
+        group: meta.gid(),
+        component: "test".into(),
+    };
+    assert!(check_owned_file(&path, None).is_err());
+    assert!(check_owned_file(&path, Some(&entry)).is_ok());
+    fs::write(&path, b"modified").unwrap();
+    assert!(check_owned_file(&path, Some(&entry)).is_err());
+    fs::write(&path, b"original").unwrap();
+    let hardlink = dir.0.join("hardlink");
+    fs::hard_link(&path, &hardlink).unwrap();
+    assert!(check_owned_file(&path, Some(&entry)).is_err());
+    fs::remove_file(&hardlink).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::write(&hardlink, b"original").unwrap();
+    std::os::unix::fs::symlink(&hardlink, &path).unwrap();
+    assert!(check_owned_file(&path, Some(&entry)).is_err());
+}
+
+#[test]
+fn host_plan_approval_expires_when_scope_changes() {
+    use pico2_kes_agent::manager::{
+        host::{HostAction, HostPlan},
+        model::InstallationRole,
+    };
+    let action = HostAction::Install {
+        bundle: PathBuf::from("/tmp/bundle"),
+        role: InstallationRole::Backup,
+        manifest_digest: "a".repeat(64),
+        candidate_accepted: false,
+    };
+    let mut plan = HostPlan::new(action).unwrap();
+    assert!(plan.validate().is_ok());
+    let mut changed_identity = plan.clone();
+    changed_identity.plan_id = if changed_identity.plan_id == "c".repeat(32) {
+        "d".repeat(32)
+    } else {
+        "c".repeat(32)
+    };
+    assert!(changed_identity.validate().is_err());
+    if let HostAction::Install { role, .. } = &mut plan.action {
+        *role = InstallationRole::Primary;
+    }
+    assert!(plan.validate().is_err());
+}
+
+#[test]
+fn blank_admission_rejects_unavailable_or_wrong_device() {
+    use pico2_kes_agent::manager::setup::validate_blank_observation;
+    use serde_json::json;
+    let status = json!({"commissioning_state":"blank","health":"ready"});
+    let info = json!({"schema_version":1,"device_id":null,"usb_serial":"0123456789abcdef",
+        "version":"1.0","build_id":"ab","source_commit":"cd",
+        "protocol_major":1,"storage_version":2,"security_profile":"profile"});
+    let firmware = pico2_kes_agent::manager::release::Component {
+        name: "firmware".into(),
+        version: "1.0".into(),
+        build_id: "ab".into(),
+        artifact: "firmware/pico2-kes-agent.uf2".into(),
+        digest: "00".repeat(32),
+    };
+    assert!(
+        validate_blank_observation(
+            &status,
+            &info,
+            "0123456789abcdef",
+            &firmware,
+            "cd",
+            &[2],
+            &["profile".into()]
+        )
+        .is_ok()
+    );
+    let mut wrong = info.clone();
+    wrong["device_id"] = json!("existing");
+    assert!(
+        validate_blank_observation(
+            &status,
+            &wrong,
+            "0123456789abcdef",
+            &firmware,
+            "cd",
+            &[2],
+            &["profile".into()]
+        )
+        .is_err()
+    );
+    assert!(
+        validate_blank_observation(
+            &json!({"health":"unavailable"}),
+            &info,
+            "0123456789abcdef",
+            &firmware,
+            "cd",
+            &[2],
+            &["profile".into()]
+        )
+        .is_err()
+    );
+    assert!(
+        validate_blank_observation(
+            &status,
+            &info,
+            "ffffffffffffffff",
+            &firmware,
+            "cd",
+            &[2],
+            &["profile".into()]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn reviewed_public_genesis_input_rejects_substitution() {
+    use pico2_kes_agent::manager::setup::{review_public_input, verify_public_inputs};
+    let dir = TestDir::new();
+    let path = dir.0.join("genesis.json");
+    fs::write(&path, b"first").unwrap();
+    let input = review_public_input(&path).unwrap();
+    assert!(verify_public_inputs(std::slice::from_ref(&input)).is_ok());
+    fs::write(path, b"changed").unwrap();
+    assert!(verify_public_inputs(&[input]).is_err());
+}
+
+#[test]
+fn uninstall_approval_is_bound_to_registry_and_selected_components() {
+    use pico2_kes_agent::manager::host::{HostAction, HostPlan};
+    let mut plan = HostPlan::new(HostAction::Uninstall {
+        selected_components: vec!["manager".into(), "cli".into()],
+        registry_digest: "a".repeat(64),
+        expected_service_state: None,
+        stop_service: false,
+    })
+    .unwrap();
+    assert!(plan.validate().is_ok());
+    if let HostAction::Uninstall {
+        registry_digest, ..
+    } = &mut plan.action
+    {
+        *registry_digest = "b".repeat(64);
+    }
+    assert!(plan.validate().is_err());
+}
+
+#[test]
+fn service_hidden_genesis_rejection_preserves_working_config_and_allows_new_action() {
+    use pico2_kes_agent::manager::{host, setup};
+    use std::os::unix::fs::MetadataExt;
+    let dir = TestDir(PathBuf::from(format!(
+        "/tmp/p2kesup-sandbox-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    fs::create_dir(&dir.0).unwrap();
+    fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let working = dir.0.join("working.json");
+    let genesis = dir.0.join("genesis.json");
+    fs::write(&working, b"working").unwrap();
+    fs::set_permissions(&working, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::write(&genesis, b"public").unwrap();
+    let before = fs::metadata(&working).unwrap();
+    let input = setup::review_public_input(&genesis).unwrap();
+    assert!(host::validate_service_input_visibility(&[input]).is_err());
+    let after = fs::metadata(&working).unwrap();
+    assert_eq!(fs::read(&working).unwrap(), b"working");
+    assert_eq!(
+        (before.mode(), before.uid(), before.gid()),
+        (after.mode(), after.uid(), after.gid())
+    );
+    assert!(host::maintenance_outcome_allows_new_action("failed-known"));
+    assert!(!host::maintenance_outcome_allows_new_action("uncertain"));
 }

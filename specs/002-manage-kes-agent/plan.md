@@ -16,7 +16,7 @@ Reuse the existing daemon's USB ownership, management socket, CLI receipts, stri
 
 **Language/Version**: Rust 1.99.1 / edition 2024, existing Python 3 firmware/publication tools and POSIX shell bootstrap. Firmware remains Rust for RP2350 A2, `thumbv8m.main-none-eabihf`.
 
-**Primary Dependencies**: Existing serde 1.0.228, serde_json 1.0.145, rustix 1.1.5, protocol/core/client/receipt/file helpers. Proposed pinned Ratatui 0.29.0 (Crossterm backend only) and Crossterm 0.28.1 for actual widgets/events; no async framework. Trusted OS GPG/GPGV/OpenSSL/Python for release verification and firmware tooling; authenticated patched picotool 2.3.1 for admitted device workflows. Resolve/audit lockfile and dependency maintenance/licenses before implementation adoption.
+**Primary Dependencies**: Existing serde 1.0.228, serde_json 1.0.145, rustix 1.1.5, protocol/core/client/receipt/file helpers. Pinned Ratatui 0.30.2 (`default-features = false`, Crossterm backend only) and Crossterm 0.29.0 for actual widgets/events; no async framework. The maintainer approved revising Ratatui from 0.29.0 after its dependency gate failed, then aligning Crossterm with the actual backend during T002; see the quickstart dependency review. Trusted OS GPG/GPGV/OpenSSL/Python for release verification and firmware tooling; authenticated patched picotool 2.3.1 for admitted device workflows. Resolve/audit lockfile and dependency maintenance/licenses before implementation adoption.
 
 **Storage**: Existing public config/journal/receipts and device storage unchanged. New bounded JSON installation/maintenance records, immutable host artifacts and XDG metadata cache. No database or primary plaintext-key storage. Firmware state `[0x10100000,0x10308000)` never appears in update payloads.
 
