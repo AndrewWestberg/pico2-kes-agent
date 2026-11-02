@@ -204,7 +204,7 @@ cargo run --locked -p qualification -- load
 cargo test --locked -p kes-core --test recovery
 ```
 
-After firmware changes, preserve the state partition, install the production image, power-cycle the board once, and verify the pinned identity returns ready. Repeated attended cut campaigns are not required.
+Preserve the state partition and install the production image. On the accepted Pico2 A2 with identified fitted storage, use disposable credentials to generate and certify a pool, advance it, remove power from both host and device, restore both, and demonstrate valid signing with the recovered generation and unchanged verification key and certificate. Verify the pinned identity returns ready without re-enrollment or state reconstruction. USB reset alone is not a substitute; repeated attended cut campaigns are not required.
 
 When the pinned native fixture is available, run its receiver/finalizer compatibility regression:
 
@@ -215,7 +215,7 @@ cargo run --locked -p qualification -- native-regression
 | Scenario | Required observed outcome |
 |---|---|
 | SC-001 capacity | All 64 pools correctly bound with 64 active+64 staged; 65th enrollment changes no existing pool |
-| SC-002/SC-009 faults/cleanup | Every modeled persistent boundary passes; obsolete regions are read-verified erased; one production-device power cycle returns the pinned identity ready |
+| SC-002/SC-009 faults/cleanup | Every modeled persistent boundary passes; obsolete regions are read-verified erased; one complete host/device power-loss recovery smoke preserves the certified generation and proves valid signing on the accepted A2 with identified fitted storage |
 | SC-003 recovery | All 64 valid pools ready <=60 s after device, daemon, valid context and requesting nodes are available |
 | SC-004 normal burst | Every one of 64 concurrent requests usable <=10 s under stalled/malformed-client pressure; zero cross-pool results |
 | SC-005 rotation | Offline backup does not block activation; lost replies/restart create no duplicate or superseded resurrection; an unrelated pool is unchanged |

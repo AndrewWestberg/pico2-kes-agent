@@ -1,22 +1,3 @@
-<!--
-Sync Impact Report — temporary review material; remove before committing.
-Version change: unversioned → 1.0.0 (initial project adoption).
-Basis: cardano-kes-forge constitution v1.1.0; its version and ratification date are
-not inherited. Direct adaptation authorized in place of the unavailable resolver.
-Modified principles relative to the source (titles retained):
-- I. Explicit Scope and Correctness: bind scope to the project's KES-agent specification.
-- II. Verifiable Behavior: distinguish host checks from device and node qualification.
-- III. Stable and Explicit Interfaces: include USB, sockets, storage, and backup contracts.
-- IV. Security at Trust Boundaries: define accepted authority, custody, and A2 claim limits.
-- V. Simple, Maintainable Rust: require bounded device resources and failure isolation.
-- VI. Software Observatory Quality Gate: retain the source gate without weakening it.
-Added sections: all sections are new locally; no heading sections added to the source structure.
-Adapted sections: Technical Constraints, Development Workflow, Governance.
-Removed sections: none.
-Dependent templates, commands, specifications, and application files: unchanged.
-Deferred placeholders and follow-up TODOs: none.
--->
-
 # pico2-kes-agent Constitution
 
 ## Core Principles
@@ -43,13 +24,20 @@ boundaries, or failure modes rather than implementation details. Verification re
 the checks run, their results, and any unverified behavior; tests alone do not replace a smoke run.
 
 Host tests and simulations MUST NOT be presented as proof of device durability, physical storage
-cleanup, hardware capacity, or node interoperability. Qualification MUST exercise the accepted
-Pico2 A2 and its identified fitted storage, including power interruption and recovery at persistent
-transition boundaries. End-to-end acceptance MUST demonstrate the specified 64-pool workload and
-accepted primary-producer blocks across evolution, rotation, and power recovery. Backup fidelity
-MUST be checked against disposable generation-time state and an independent standard-format
-decoder; running a backup producer is not a required acceptance gate. Evidence MUST distinguish
-qualification targets from measured results.
+cleanup, hardware capacity, or node interoperability. Recovery qualification MUST exercise every
+modeled persistent transition boundary with deterministic fault injection and MUST include one
+ordinary complete host/device power-loss recovery smoke on the accepted Pico2 A2 and its identified
+fitted storage. The smoke MUST verify the same pinned identity and retained acknowledged state,
+with required cleanup and catch-up before delivery; a USB reset alone is not a power-loss check.
+End-to-end acceptance MUST demonstrate the specified 64-pool workload, including active and staged
+generations, and pinned native-node build and protocol compatibility regressions. Repeated physical
+power-cut, live SIGHUP, and accepted-primary-block campaigns are OPTIONAL integration evidence,
+not release gates. Their absence MUST be disclosed and MUST NOT be represented as measured
+durability or live-forging evidence. Qualified fitted-storage erase/read behavior and required
+firmware/OTP hardware checks remain mandatory; simulations do not replace those checks.
+Backup fidelity MUST be checked against disposable generation-time state and an independent
+standard-format decoder; running a backup producer is not a required acceptance gate. Evidence
+MUST distinguish qualification targets from measured results.
 
 ### III. Stable and Explicit Interfaces
 
@@ -240,4 +228,22 @@ conflicts. Amendments MUST assess dependent guidance for inconsistency; changes 
 require a separate scoped change. The Sync Impact Report is temporary review material and MUST be
 removed before committing the amended constitution; it is not part of the governance rules.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-27 | **Last Amended**: 2026-10-27
+### Amendment record — 2.0.0 (2026-11-02)
+
+- **Approval:** The maintainer explicitly authorized a constitutional amendment in the
+  specification-analysis remediation request on 2026-11-02. This is a separate governance change,
+  not a waiver made by the read-only analysis command.
+- **Rationale and affected principle:** Principle II now aligns required recovery and native
+  compatibility evidence with the pragmatic acceptance policy: deterministic transition checks,
+  an ordinary physical power-loss smoke, the 64-pool workload, and native compatibility regressions.
+  Repeated physical-cut and live accepted-block campaigns are optional. This reduces mandatory
+  physical/interoperability evidence and therefore requires a MAJOR version change.
+- **Compatibility and migration:** No runtime, protocol, storage, custody, or cryptographic
+  contract changes. Feature-001 qualification guidance and feature-002 release-gate references
+  are synchronized in the accompanying scoped documentation change. Existing evidence retains
+  its original scope; a USB-reset result cannot be relabelled as power-loss evidence. Required
+  checks and candidate applicability must be established before release qualification.
+- **Retained obligations:** Security and durability behavior, qualified storage/OTP checks,
+  independent backup decoding, and Principle VI's sensor/performance gates are unchanged.
+
+**Version**: 2.0.0 | **Ratified**: 2026-10-27 | **Last Amended**: 2026-11-02
