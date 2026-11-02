@@ -12,19 +12,19 @@ Evidence MUST identify the exact source candidate. A passing report from another
 |---|---|---|
 | Host quality | `cargo fmt --all --check`; workspace tests; workspace Clippy with warnings denied | All commands pass with no ignored required behavior. |
 | Firmware | Release build for `thumbv8m.main-none-eabihf`; `qualification hardware` | Production firmware links within the fitted flash/RAM geometry and reports the production USB identity. |
-| Lifecycle and recovery | `cargo test --locked -p kes-core --test recovery` | Deterministic transaction cuts, retry/reboot behavior, cleanup, activation/discard ordering, and pool isolation pass. |
+| Lifecycle and recovery | `cargo test --locked -p kes-core --test recovery` | Deterministic fault injection exercises every modeled persistent transition boundary; retry/reboot behavior, cleanup, activation/discard ordering, and pool isolation pass without acknowledged/released rollback or ambiguous state served. |
 | Capacity and isolation | `cargo run --locked -p qualification -- load` | 64 active plus 64 staged generations work; a 65th enrollment and stalled/malformed clients do not disturb healthy pools; requests remain within 10 seconds and recovery within 60 seconds. |
 | Protocol robustness | Bounded runs of every registered fuzz target | USB, management, node-service, certificate, and artifact inputs cause no crash, unbounded allocation, or invariant failure. |
 | Restore interoperability | `cargo test --locked --test backup_restore` | The recovered conventional key is exact; tampered, wrong-recipient, and identity-mismatched inputs publish no output. |
 | Native compatibility | `cargo run --locked -p qualification -- native-regression` | The pinned cardano-node source builds and the exact node-service protocol regressions pass. Live SIGHUP and accepted-block campaigns are optional. |
 | Operator path | Staged or production install smoke; `operator_cli` and `host_security` tests | Installed binaries/configuration work, CLI exit classes and durable reconciliation are correct, and normal CLI operation never opens USB directly. |
-| Device path | Production USB reset or ordinary power cycle, followed by daemon/CLI status | The same pinned device identity reconnects and returns ready without re-enrollment or state reconstruction. |
+| Device path | One ordinary complete host/device power-loss recovery smoke on the accepted Pico2 A2 with identified fitted storage, followed by daemon/CLI status and recovered-generation use | The same pinned device identity reconnects and returns ready without re-enrollment or state reconstruction; the certified generation, verification key and certificate are preserved and valid signing succeeds. USB reset alone is not a substitute. |
 
 The foundation runner remains a useful bounded codec and memory-protection smoke. It MAY be run with `cargo run --locked -p qualification -- foundation`; it is not a substitute for the device, native, or operator checks above.
 
 ## Optional diagnostics
 
-Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepted blocks, repeated physical cuts, and environmental/endurance measurements MAY be run when useful. Their absence does not block acceptance. They MUST NOT be represented as required work in task plans or operator instructions.
+Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepted blocks, repeated physical cuts, and environmental/endurance measurements MAY be run when useful. Their absence does not block this feature's acceptance, and they MUST NOT be represented as required feature-001 campaigns. This local diagnostic scope does not waive separately applicable constitutional or feature-specific gates, including the manager's bounded performance comparison and calibration.
 
 ## Evidence and release rules
 
@@ -51,3 +51,9 @@ Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepte
 - **Referenced storage-contract SHA-256:** `9b0616cbd3e3ef3e5ee5e82f276e61e83df38faa6653a1c1fd45fea96ba6862b`, verified against the complete unchanged UTF-8 storage contract.
 - **Scope:** Rebind the reviewed storage contract, including its existing public Context diagnostic evidence requirements. The required qualification definition and its SHA-256 remain unchanged; the historical approval above remains intact.
 - **Evidence boundary:** This linkage is authorization, not a qualification pass, firmware attestation, or closure of the original advancing-Context incident.
+
+### Acceptance-baseline amendment — 2026-11-02
+
+- **Approver:** Project maintainer (the user in this conversation).
+- **Scope:** Require deterministic fault injection at every modeled persistent transition and one ordinary complete host/device power-loss recovery smoke on the accepted Pico2 A2 with identified fitted storage; USB reset alone does not satisfy it. Keep the specified 64-pool workload and pinned native build and protocol regressions required. Repeated physical cuts and live SIGHUP/accepted-block campaigns remain optional.
+- **Evidence boundary:** This amendment changes the qualification definition, not the historical approval hashes or measured results; current-candidate evidence must independently satisfy the amended requirements.
