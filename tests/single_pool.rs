@@ -91,7 +91,7 @@ fn inventory_finds_unbound_pool_without_mutation_and_allows_deletion() {
 
 #[test]
 fn inventory_errors_never_report_empty_success() {
-    let blank = TestRig::blank_commissioning("attended-board01");
+    let blank = TestRig::blank_commissioning("00afd9003906a634");
     assert_ne!(blank.inventory_cli().exit_code, 0);
     let rig = TestRig::commissioned_pool();
     for fault in 1..=3 {
@@ -105,8 +105,68 @@ fn inventory_errors_never_report_empty_success() {
 }
 
 #[test]
+fn observation_reports_device_only_pool_and_missing_context() {
+    let rig = TestRig::commissioned_pool();
+    rig.reload_pool_bindings(vec![]);
+    let inventory: Value = serde_json::from_slice(&rig.inventory_cli().stdout).unwrap();
+    let pool = &inventory["result"]["pools"][0];
+    let reply = management(
+        &rig,
+        json!({
+            "version": 1, "request_id": ID, "action": "pool.observe",
+            "arguments": {"pool_id": pool["pool_id"], "incarnation_id": pool["incarnation_id"]}
+        }),
+    );
+    assert_eq!(reply["outcome"], "success");
+    assert_eq!(reply["result"]["schema_version"], 1);
+    assert_eq!(reply["result"]["pool_id"], pool["pool_id"]);
+    assert_eq!(reply["result"]["incarnation_id"], pool["incarnation_id"]);
+    assert_eq!(reply["result"]["context"]["valid"], false);
+}
+
+#[test]
+fn host_observation_rejects_changed_snapshot() {
+    let rig = TestRig::commissioned_pool();
+    let first = management(
+        &rig,
+        json!({
+            "version": 1, "request_id": ID, "action": "host.observe",
+            "arguments": {"page_size": 1}
+        }),
+    );
+    let snapshot = first["result"]["snapshot_id"].as_str().unwrap();
+    rig.reload_pool_bindings(vec![]);
+    let second = management(
+        &rig,
+        json!({
+            "version": 1, "request_id": ID, "action": "host.observe",
+            "arguments": {"cursor": "1", "snapshot_id": snapshot, "page_size": 1}
+        }),
+    );
+    assert_eq!(second["error"]["code"], "revision_conflict");
+}
+
+#[test]
+fn unsupported_observation_is_probed_once_and_identity_errors_remain_distinct() {
+    let mut rig = TestRig::commissioned_pool();
+    rig.refuse_observations();
+    let request = json!({
+        "version": 1, "request_id": ID, "action": "device.info", "arguments": {}
+    });
+    let first = management(&rig, request.clone());
+    let second = management(&rig, request.clone());
+    assert_eq!(first["error"]["code"], "unsupported");
+    assert_eq!(second["error"]["code"], "unsupported");
+    assert_eq!(rig.observation_probes(), 1);
+    rig.replace_connected_device_with_different_identity();
+    let mismatch = management(&rig, request);
+    assert_ne!(mismatch["error"]["code"], "unsupported");
+    assert_ne!(mismatch["outcome"], "success");
+}
+
+#[test]
 fn attended_commissioning_publishes_pin_and_normal_restart_authenticates_it() {
-    let mut rig = TestRig::blank_commissioning("attended-board01");
+    let mut rig = TestRig::blank_commissioning("00afd9003906a634");
     let blank = status(&rig);
     assert_eq!(blank["result"]["commissioning_state"], "blank");
     assert_eq!(blank["result"]["health"], "ready");
@@ -117,7 +177,7 @@ fn attended_commissioning_publishes_pin_and_normal_restart_authenticates_it() {
     let cli_status: Value = serde_json::from_slice(&cli.stdout).unwrap();
     assert_eq!(cli_status["result"]["commissioning_state"], "blank");
     assert!(rig.pool_sockets().is_empty());
-    let response = rig.commission_cli("attended-board01", ID);
+    let response = rig.commission_cli("00afd9003906a634", ID);
     assert_eq!(response.exit_code, 0);
     let committed = status(&rig);
     assert_eq!(committed["result"]["commissioning_state"], "committed");
@@ -126,7 +186,7 @@ fn attended_commissioning_publishes_pin_and_normal_restart_authenticates_it() {
     let pin_bytes = std::fs::read(rig.pin_record_path()).unwrap();
     let record: Value = serde_json::from_slice(&pin_bytes).unwrap();
     assert_eq!(record["version"], 1);
-    assert_eq!(record["usb_serial"], "attended-board01");
+    assert_eq!(record["usb_serial"], "00afd9003906a634");
     assert_eq!(record["operation_id"], ID);
     for (field, size) in [
         ("device_id", 32),
@@ -162,9 +222,9 @@ fn commissioning_lost_reply_reconciles_original_identity_and_no_clobber() {
         Cut::AfterCleanBeforeUsbReply,
         Cut::BeforePinPublication,
     ] {
-        let mut rig = TestRig::blank_commissioning("attended-board01");
+        let mut rig = TestRig::blank_commissioning("00afd9003906a634");
         rig.cut_next_commission(cut);
-        let interrupted = rig.commission_cli("attended-board01", ID);
+        let interrupted = rig.commission_cli("00afd9003906a634", ID);
         assert!(matches!(interrupted.exit_code, 6 | 7));
         assert!(rig.receipt_path().exists());
         rig.restart_commissioning().unwrap();
@@ -180,7 +240,7 @@ fn commissioning_lost_reply_reconciles_original_identity_and_no_clobber() {
         );
         assert_eq!(std::fs::read(rig.pin_record_path()).unwrap(), first);
         assert_eq!(
-            rig.commission_cli("attended-board01", "ffeeddccbbaa99887766554433221100")
+            rig.commission_cli("00afd9003906a634", "ffeeddccbbaa99887766554433221100")
                 .exit_code,
             5
         );
@@ -189,9 +249,9 @@ fn commissioning_lost_reply_reconciles_original_identity_and_no_clobber() {
 }
 #[test]
 fn commissioning_storage_error_after_commit_recovers_identity() {
-    let mut rig = TestRig::blank_commissioning("attended-board01");
+    let mut rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.fail_commission_after_marker();
-    assert_ne!(rig.commission_cli("attended-board01", ID).exit_code, 0);
+    assert_ne!(rig.commission_cli("00afd9003906a634", ID).exit_code, 0);
     assert!(!rig.pin_record_path().exists());
     rig.reboot_device();
     rig.restart_commissioning().unwrap();
@@ -203,13 +263,13 @@ fn commissioning_storage_error_after_commit_recovers_identity() {
 
 #[test]
 fn commissioning_rejects_wrong_selection_and_nonblank_partial_state() {
-    let mut rig = TestRig::blank_commissioning("attended-board01");
+    let mut rig = TestRig::blank_commissioning("00afd9003906a634");
     assert_eq!(rig.commission_cli("other-board", ID).exit_code, 5);
     assert!(!rig.pin_record_path().exists());
     drop(rig);
-    let mut rig = TestRig::blank_commissioning("attended-board01");
+    let mut rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.cut_next_commission(Cut::PartialFirstWrite);
-    assert_ne!(rig.commission_cli("attended-board01", ID).exit_code, 0);
+    assert_ne!(rig.commission_cli("00afd9003906a634", ID).exit_code, 0);
     rig.restart_commissioning().unwrap();
     assert_ne!(rig.reconcile_cli().exit_code, 0);
     assert_ne!(status(&rig)["result"]["commissioning_state"], "blank");
@@ -218,21 +278,21 @@ fn commissioning_rejects_wrong_selection_and_nonblank_partial_state() {
 
 #[test]
 fn commissioning_status_fails_closed_on_bad_hello_and_disconnect() {
-    let rig = TestRig::blank_commissioning("attended-board01");
+    let rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.stale_hello();
     assert_ne!(status(&rig)["outcome"], "success");
 
-    let rig = TestRig::blank_commissioning("attended-board01");
+    let rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.malformed_hello();
     assert_ne!(status(&rig)["outcome"], "success");
 
-    let rig = TestRig::blank_commissioning("attended-board01");
+    let rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.disconnect_device();
     let disconnected = status(&rig);
     assert_eq!(disconnected["result"]["health"], "disconnected");
     assert_ne!(disconnected["result"]["commissioning_state"], "blank");
 
-    let rig = TestRig::blank_commissioning("attended-board01");
+    let rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.timeout_hello();
     let timeout = status(&rig);
     assert_eq!(timeout["result"]["health"], "disconnected");
@@ -757,7 +817,7 @@ fn generation_is_not_delivered_until_matching_certificate_and_fresh_context() {
 
 #[test]
 fn normal_mode_never_commissions_a_blank_device() {
-    let mut rig = TestRig::blank_commissioning("attended-board01");
+    let mut rig = TestRig::blank_commissioning("00afd9003906a634");
     rig.restart_normal_without_pin().unwrap();
     let result = status(&rig);
     assert_eq!(result["error"]["code"], "uncommissioned");
@@ -768,7 +828,7 @@ fn normal_mode_never_commissions_a_blank_device() {
 
 #[test]
 fn commissioning_mode_rejects_pool_mutations() {
-    let rig = TestRig::blank_commissioning("attended-board01");
+    let rig = TestRig::blank_commissioning("00afd9003906a634");
     let response = management(
         &rig,
         json!({

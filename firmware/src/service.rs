@@ -114,6 +114,102 @@ impl Operations for Runtime<'_> {
                 .map_err(|_| DispatchError::State)?;
                 encode(&Response::SecurityStatus(status), output)
             }
+            Request::FirmwareInfo => {
+                if matches!(
+                    self.handoff().receipt().map(Receipt::outcome),
+                    Some(ReceiptOutcome::Pending)
+                ) {
+                    return Err(DispatchError::State);
+                }
+                let record = self
+                    .device()
+                    .identity()
+                    .map(|identity| *identity.enrollment_record().public());
+                if record.is_none() && self.boot_admission != crate::flash::Admission::Blank {
+                    return Err(DispatchError::State);
+                }
+                let security = crate::security::read(
+                    self.flash_identity,
+                    self.boot_admission,
+                    self.serial.as_slice(),
+                )
+                .map_err(|_| DispatchError::State)?;
+                encode(
+                    &Response::FirmwareInfo(wire::FirmwareInfo {
+                        device: record.map(|record| record.device()),
+                        serial: self.serial,
+                        version: crate::FIRMWARE_VERSION,
+                        build_id: crate::FIRMWARE_BUILD_ID,
+                        source_commit: crate::FIRMWARE_SOURCE_COMMIT,
+                        protocol_major: wire::MAJOR,
+                        storage_version: record.map_or(2, |record| record.storage_version()),
+                        capacity: 64,
+                        security_profile: security
+                            .profile(kes_protocol::security::AUTHORIZED_BOOTKEY.as_ref()),
+                        supported_observations: 3,
+                    }),
+                    output,
+                )
+            }
+            Request::PoolObservation { target } => {
+                if matches!(
+                    self.handoff().receipt().map(Receipt::outcome),
+                    Some(ReceiptOutcome::Pending)
+                ) {
+                    return Err(DispatchError::State);
+                }
+                let device = self
+                    .device()
+                    .identity()
+                    .ok_or(DispatchError::State)?
+                    .enrollment_record()
+                    .public()
+                    .device();
+                let observed = match self.device_mut().pool_observation(target) {
+                    Ok(observed) => observed,
+                    Err(error) => {
+                        return encode(
+                            &Response::PoolObservationError {
+                                device,
+                                target,
+                                code: lifecycle_error_code(error),
+                            },
+                            output,
+                        );
+                    }
+                };
+                let status = observed.status;
+                let active = observed
+                    .generations
+                    .active
+                    .map(|generation| generation_observation(generation, status, true));
+                let staged = observed
+                    .generations
+                    .staged
+                    .map(|generation| generation_observation(generation, status, false));
+                let active_status = observed
+                    .generations
+                    .active
+                    .map(|generation| generation_status(generation, status, true));
+                let staged_status = observed
+                    .generations
+                    .staged
+                    .map(|generation| generation_status(generation, status, false));
+                encode(
+                    &Response::PoolObservation(wire::PoolObservation {
+                        device,
+                        target,
+                        revision: status.revision,
+                        health: pool_health(status, active_status, staged_status),
+                        active,
+                        staged,
+                        publication: publication(status.publication),
+                        period_floor: status.period_floor,
+                        failure: None,
+                    }),
+                    output,
+                )
+            }
             Request::Context {
                 target,
                 network,
@@ -849,6 +945,26 @@ fn rejected_receipt(mutation: &Mutation, code: u16) -> wire::PublicReceipt {
             code,
             result_digest,
         },
+    }
+}
+
+fn generation_observation(
+    generation: CoreGenerationStatus,
+    pool: CorePoolStatus,
+    active: bool,
+) -> wire::GenerationObservation {
+    let status = generation_status(generation, pool, active);
+    wire::GenerationObservation {
+        generation: status.generation,
+        revision: status.revision,
+        role: status.role,
+        period: status.period,
+        health: status.health,
+        artifact_digest: status.artifact_digest,
+        certificate_start: generation.certificate_start,
+        certificate_lifetime: generation
+            .certificate_start
+            .map(|_| u64::from(pool.kes_lifetime)),
     }
 }
 

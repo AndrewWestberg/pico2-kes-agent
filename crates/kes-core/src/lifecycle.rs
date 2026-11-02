@@ -181,6 +181,12 @@ pub struct PoolGenerations {
     pub staged: Option<GenerationStatus>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolObservation {
+    pub status: PoolStatus,
+    pub generations: PoolGenerations,
+}
+
 struct GenerationState {
     id: GenerationId,
     number: u64,
@@ -224,6 +230,27 @@ impl PoolState {
             return Err(Error::TargetMismatch);
         }
         Ok(())
+    }
+}
+
+impl PoolState {
+    fn status(&self) -> PoolStatus {
+        PoolStatus {
+            pool_id: self.enrollment.pool_id,
+            incarnation_id: self.enrollment.incarnation_id,
+            slot: self.slot,
+            revision: self.revision,
+            period_floor: self.period_floor,
+            kes_lifetime: self.enrollment.network.lifetime(),
+            publication: self.publication,
+        }
+    }
+
+    fn generations(&self) -> PoolGenerations {
+        PoolGenerations {
+            active: self.active.as_ref().map(generation_status),
+            staged: self.staged.as_ref().map(generation_status),
+        }
     }
 }
 
@@ -921,10 +948,7 @@ impl<F: Flash, E: Entropy> Device<F, E> {
     pub fn pool_generations(&mut self, pool_id: PoolId) -> Result<PoolGenerations, Error> {
         let index = self.find_pool(pool_id)?;
         let pool = self.take_pool(index)?;
-        let result = PoolGenerations {
-            active: pool.active.as_ref().map(generation_status),
-            staged: pool.staged.as_ref().map(generation_status),
-        };
+        let result = pool.generations();
         self.put_pool(index, pool);
         Ok(result)
     }
@@ -1164,17 +1188,23 @@ impl<F: Flash, E: Entropy> Device<F, E> {
     pub fn pool_status(&mut self, pool_id: PoolId) -> Result<PoolStatus, Error> {
         let index = self.find_pool(pool_id)?;
         let pool = self.take_pool(index)?;
-        let result = PoolStatus {
-            pool_id: pool.enrollment.pool_id,
-            incarnation_id: pool.enrollment.incarnation_id,
-            slot: pool.slot,
-            revision: pool.revision,
-            period_floor: pool.period_floor,
-            kes_lifetime: pool.enrollment.network.lifetime(),
-            publication: pool.publication,
-        };
+        let result = pool.status();
         self.put_pool(index, pool);
         Ok(result)
+    }
+
+    /// Read public metadata for an exact pool incarnation without advancing its lifecycle.
+    pub fn pool_observation(&mut self, target: PoolTarget) -> Result<PoolObservation, Error> {
+        let index = self.find_pool(target.pool)?;
+        let pool = self.take_pool(index)?;
+        let result = pool
+            .target_matches(target.pool, target.incarnation)
+            .map(|()| PoolObservation {
+                status: pool.status(),
+                generations: pool.generations(),
+            });
+        self.put_pool(index, pool);
+        result
     }
 
     pub fn pool_inventory(&mut self) -> Result<PoolInventory, Error> {
@@ -2527,6 +2557,53 @@ mod tests {
         edit(&mut pool);
         let pool = device.commit_pool_for(index, pool, None).unwrap();
         device.put_pool(index, pool);
+    }
+
+    #[test]
+    fn observation_is_exact_and_does_not_change_state() {
+        let (mut device, calls) = test_device();
+        let pool = test_enrollment(2);
+        device.enroll(&pool).unwrap();
+        device.set_recipient([3; 32]).unwrap();
+        device
+            .generate(pool.pool_id, OperationId::from_bytes([4; 16]))
+            .unwrap();
+        device
+            .generate(pool.pool_id, OperationId::from_bytes([5; 16]))
+            .unwrap();
+        let expected_status = device.pool_status(pool.pool_id).unwrap();
+        let expected_generations = device.pool_generations(pool.pool_id).unwrap();
+        let before = device.flash().0.clone();
+        let entropy_calls = calls.get();
+        let observed = device.pool_observation(target(pool)).unwrap();
+        assert_eq!(observed.status, expected_status);
+        assert_eq!(observed.generations, expected_generations);
+        assert!(
+            observed
+                .generations
+                .active
+                .unwrap()
+                .certificate_start
+                .is_none()
+        );
+        assert!(
+            observed
+                .generations
+                .staged
+                .unwrap()
+                .certificate_start
+                .is_none()
+        );
+        assert_eq!(
+            device.pool_observation(PoolTarget {
+                pool: pool.pool_id,
+                incarnation: IncarnationId::from_bytes([99; 16]),
+            }),
+            Err(Error::TargetMismatch)
+        );
+        assert_eq!(device.pool_observation(target(pool)).unwrap(), observed);
+        assert_eq!(device.flash().0, before);
+        assert_eq!(calls.get(), entropy_calls);
     }
 
     #[test]

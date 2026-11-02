@@ -4,6 +4,20 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Existing immutable candidate release tag
+        required: true
+      candidate_commit:
+        description: Full candidate source commit
+        required: true
+      publication_tag:
+        description: New immutable tag pointing to the same commit
+        required: true
+      evidence_run:
+        description: Workflow run containing signed promotion evidence artifact
+        required: true
 
 permissions:
   contents: read
@@ -13,7 +27,88 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  host-build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    container: debian:12
+    timeout-minutes: 40
+    steps:
+      - name: Install Debian build prerequisites
+        run: |
+          apt-get update
+          apt-get install -y binutils build-essential ca-certificates cmake curl git pkg-config libudev-dev libusb-1.0-0-dev libssl-dev python3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build host binaries with immutable identity
+        env:
+          P2KES_BUILD_VERSION: ${{ github.ref_name }}
+          P2KES_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -eu
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh
+          sh /tmp/rustup.sh -y --profile minimal --default-toolchain 1.99.1
+          . "$HOME/.cargo/env"
+          export P2KES_BUILD_ID="$(printf '%s' "$P2KES_SOURCE_COMMIT" | sha256sum | cut -d' ' -f1)"
+          cargo build --locked --release --bin p2kesup --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+          mkdir -p host-build/bin
+          cp target/release/p2kesup target/release/pico2-kes-agentd target/release/pico2-kes-agent-cli host-build/bin/
+      - name: Build patched picotool on Debian 12
+        run: |
+          set -eu
+          git clone https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk
+          git -C /tmp/pico-sdk checkout 079c6f39023649b154152db30f1d781e884879bc
+          git -C /tmp/pico-sdk submodule update --init lib/mbedtls
+          git clone https://github.com/raspberrypi/picotool.git /tmp/picotool
+          git -C /tmp/picotool checkout 2041936441b48a3cc53ae3da9e805229fe8f4e18
+          git -C /tmp/picotool apply "$GITHUB_WORKSPACE/tools/patches/picotool-signature-conversion.patch"
+          cmake -S /tmp/picotool -B /tmp/picotool-build -DPICO_SDK_PATH=/tmp/pico-sdk \
+            -DPICOTOOL_NO_LIBUSB=0 -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/host-build/toolchain"
+          cmake --build /tmp/picotool-build --parallel 2
+          cmake --install /tmp/picotool-build
+          python3 tools/check_picotool_signatures.py --source /tmp/picotool \
+            --build /tmp/picotool-build --sdk /tmp/pico-sdk
+          mkdir -p host-build/licenses
+          if test -f /tmp/picotool/LICENSE.TXT; then cp /tmp/picotool/LICENSE.TXT host-build/licenses/picotool.txt
+          else cp /tmp/picotool/LICENSE host-build/licenses/picotool.txt; fi
+          cp /tmp/pico-sdk/lib/mbedtls/LICENSE host-build/licenses/mbedtls.txt
+          mkdir -p host-build/runtime
+          for library in libusb-1.0.so.0 libudev.so.1 libstdc++.so.6 libgcc_s.so.1; do
+            cp -L "/usr/lib/x86_64-linux-gnu/$library" "host-build/runtime/$library"
+          done
+          for package in libusb-1.0-0 libudev1 libstdc++6 libgcc-s1; do
+            cp -L "/usr/share/doc/$package/copyright" "host-build/licenses/$package.txt"
+          done
+          python3 -c '
+          import hashlib, json, pathlib, subprocess
+          pairs = [("libusb-1.0.so.0", "libusb-1.0-0"), ("libudev.so.1", "libudev1"), ("libstdc++.so.6", "libstdc++6"), ("libgcc_s.so.1", "libgcc-s1")]
+          libraries = []
+          for name, package in pairs:
+              files = subprocess.check_output(["dpkg-query", "-L", package], text=True).splitlines()
+              if not any(pathlib.Path(p).name == name for p in files): raise SystemExit("runtime library not owned by expected package: " + name)
+              version = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", package], text=True).strip()
+              data = pathlib.Path("host-build/runtime", name).read_bytes()
+              libraries.append({"path": "runtime/" + name, "package": package, "package_version": version, "sha256": hashlib.sha256(data).hexdigest()})
+          pathlib.Path("host-build/runtime/provenance.json").write_text(json.dumps({"schema_version": 1, "os": {"id": "debian", "version": "12"}, "libraries": libraries}, indent=2) + "\n", encoding="utf-8")
+          '
+          ldd host-build/toolchain/bin/picotool > host-build/runtime-dependencies.txt
+          while read -r library rest; do
+            case "$rest" in *"not found"*) echo "Missing $library" >&2; exit 1;; esac
+            case "$library" in
+              linux-vdso.so.1|/lib64/ld-linux-x86-64.so.2|libc.so.6|libm.so.6|libpthread.so.0|libdl.so.2|librt.so.1|libusb-1.0.so.0|libudev.so.1|libstdc++.so.6|libgcc_s.so.1) ;;
+              *) echo "Unlisted picotool dependency: $library" >&2; exit 1;;
+            esac
+          done < host-build/runtime-dependencies.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: debian12-host-build
+          path: host-build/
+          if-no-files-found: error
+          retention-days: 7
+
   build:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -52,8 +147,11 @@ jobs:
       - name: Verify public authority and build compatible firmware and host tools
         env:
           PICO2_REQUIRE_FIRMWARE_AUTHORITY: '1'
+          P2KES_BUILD_VERSION: ${{ github.ref_name }}
+          P2KES_SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
+          export P2KES_BUILD_ID="$(printf '%s' "$P2KES_SOURCE_COMMIT" | sha256sum | cut -d' ' -f1)"
           ulimit -c 0
           sudo swapoff -a
           python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
@@ -89,12 +187,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  sign-and-publish:
+  seal-firmware:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    permissions:
-      contents: write
+    environment: release-signing
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -110,10 +207,10 @@ jobs:
           sudo swapoff -a
           python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
           sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0 gpg openssl
+          sudo apt-get install -y binutils libusb-1.0-0 gpg openssl
           chmod +x release-build/toolchain/bin/picotool
           echo "$GITHUB_WORKSPACE/release-build/toolchain/bin" >> "$GITHUB_PATH"
-      - name: Sign only the production flash image and authenticate the complete bundle
+      - name: Sign only the production flash image
         env:
           PICO2_FIRMWARE_SIGNING_KEY_PEM: ${{ secrets.PICO2_FIRMWARE_SIGNING_KEY_PEM }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -134,12 +231,242 @@ jobs:
             --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT" \
             --key-file "$PRIVATE_DIR/key.pem" --out-dir signed-release
           python3 tools/firmware.py verify --bundle signed-release
-      - name: Publish without overwriting historical assets
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed-firmware
+          path: signed-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  prepare-distribution:
+    needs: [seal-firmware, host-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: signed-firmware
+          path: signed-release/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: debian12-host-build
+          path: host-build/
+      - name: Verify and stage candidate without signing secrets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y binutils gpg openssl
+          mkdir -p payload/bin payload/tools payload/deploy payload/licenses payload/runtime
+          cp host-build/bin/* payload/bin/
+          chmod 0755 payload/bin/*
+          cp host-build/toolchain/bin/picotool payload/tools/picotool
+          chmod 0755 payload/tools/picotool
+          cp host-build/licenses/* payload/licenses/
+          cp host-build/runtime/* payload/runtime/
+          cp tools/firmware.py payload/tools/firmware.py
+          cp -a signed-release payload/firmware
+          cp install.sh payload/install.sh
+          cp deploy/install.sh deploy/uninstall.sh deploy/pico2-kes-agentd.service \
+            deploy/70-pico2-kes-agent.rules deploy/pico2-kes-agent-host-check \
+            deploy/cardano-node-memory-hardening.conf payload/deploy/
+          export PATH="$GITHUB_WORKSPACE/payload/tools:/usr/bin:/bin"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/payload/runtime"
+          BUILD_ID="$(printf '%s' "$SOURCE_COMMIT" | sha256sum | cut -d' ' -f1)"
+          tuple_args=()
+          if test -f release-compatible-tuples.json; then
+            tuple_args=(--compatible-tuples release-compatible-tuples.json)
+          fi
+          python3 tools/publish_release.py prepare --payload payload --output prepared \
+            --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT" --build-id "$BUILD_ID" "${tuple_args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: prepared-distribution
+          path: prepared/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-distribution:
+    needs: prepare-distribution
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: prepared-distribution
+          path: prepared/
+      - name: Revalidate bytes and sign without executing payloads
+        env:
+          PICO2_RELEASE_OPENPGP_PRIVATE_KEY: ${{ secrets.PICO2_RELEASE_OPENPGP_PRIVATE_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set +x
+          set -euo pipefail
+          ulimit -c 0
+          umask 077
+          test -n "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY"
+          GNUPGHOME="$(mktemp -d /dev/shm/pico2-release-gpg.XXXXXXXX)"
+          export GNUPGHOME
+          trap 'gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME"' EXIT HUP INT TERM
+          printf '%s\n' "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY" | gpg --batch --import
+          unset PICO2_RELEASE_OPENPGP_PRIVATE_KEY
+          BUILD_ID="$(printf '%s' "$SOURCE_COMMIT" | sha256sum | cut -d' ' -f1)"
+          python3 tools/publish_release.py sign-prepared --prepared prepared --output candidate \
+            --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT" --build-id "$BUILD_ID"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed-distribution
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-candidate:
+    needs: sign-distribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: signed-distribution
+          path: candidate/
+      - name: Reverify and publish immutable candidate
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 tools/publish_release.py --bundle signed-release \
+          sudo apt-get update
+          sudo apt-get install -y binutils gpg openssl
+          chmod 0755 candidate/tools/picotool
+          python3 tools/publish_release.py publish-distribution --bundle candidate \
             --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"
+
+  prepare-promotion:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          persist-credentials: false
+      - name: Authenticate candidate and acceptance without signing secrets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          EVIDENCE_RUN: ${{ inputs.evidence_run }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
+          test "$CANDIDATE_TAG" != "$PUBLICATION_TAG"
+          sudo apt-get update
+          sudo apt-get install -y binutils gpg openssl
+          gh release download "$CANDIDATE_TAG" --repo AndrewWestberg/pico2-kes-agent --dir candidate-assets
+          python3 tools/publish_release.py unpack --assets candidate-assets --output candidate
+          gh run download "$EVIDENCE_RUN" --repo AndrewWestberg/pico2-kes-agent \
+            --name p2kesup-promotion-evidence --dir evidence
+          python3 tools/publish_release.py check-promotion --candidate candidate \
+            --approval evidence/approval.json --commit "$CANDIDATE_COMMIT"
+          mkdir promotion-stage
+          mv candidate evidence promotion-stage/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-promotion
+          path: promotion-stage/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-promotion:
+    needs: prepare-promotion
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-promotion
+          path: promotion-stage/
+      - name: Revalidate signed metadata and promote without executing payloads
+        env:
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          PICO2_RELEASE_OPENPGP_PRIVATE_KEY: ${{ secrets.PICO2_RELEASE_OPENPGP_PRIVATE_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          ulimit -c 0
+          umask 077
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
+          test -n "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY"
+          GNUPGHOME="$(mktemp -d /dev/shm/pico2-release-gpg.XXXXXXXX)"
+          export GNUPGHOME
+          trap 'gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME"' EXIT HUP INT TERM
+          printf '%s\n' "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY" | gpg --batch --import
+          unset PICO2_RELEASE_OPENPGP_PRIVATE_KEY
+          python3 tools/publish_release.py sign-promotion --candidate promotion-stage/candidate \
+            --approval promotion-stage/evidence/approval.json --commit "$CANDIDATE_COMMIT" --output qualified
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qualified-distribution
+          path: qualified/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-promotion:
+    needs: sign-promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-promotion
+          path: promotion-stage/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: qualified-distribution
+          path: qualified/
+      - name: Reverify and publish immutable promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          PUBLICATION_TAG: ${{ inputs.publication_tag }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y binutils gpg openssl
+          chmod 0755 qualified/tools/picotool
+          python3 tools/publish_release.py publish-distribution --bundle qualified \
+            --tag "$PUBLICATION_TAG" --commit "$CANDIDATE_COMMIT" --evidence promotion-stage/evidence

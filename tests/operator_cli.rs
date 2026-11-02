@@ -28,6 +28,57 @@ fn temporary(name: &str) -> PathBuf {
 }
 
 #[test]
+fn host_versions_are_standalone_and_share_build_identity() {
+    let mut identities = Vec::new();
+    for (binary, component, invalid_exit) in [
+        (
+            env!("CARGO_BIN_EXE_pico2-kes-agent-cli"),
+            "pico2-kes-agent-cli",
+            2,
+        ),
+        (
+            env!("CARGO_BIN_EXE_pico2-kes-agentd"),
+            "pico2-kes-agentd",
+            1,
+        ),
+    ] {
+        let human = Command::new(binary).arg("--version").output().unwrap();
+        assert!(human.status.success());
+        assert!(human.stderr.is_empty());
+        assert!(!human.stdout.is_empty());
+        let json = Command::new(binary)
+            .args(["--version", "--json"])
+            .env("HOME", "/nonexistent")
+            .output()
+            .unwrap();
+        assert!(json.status.success());
+        assert!(json.stderr.is_empty());
+        let value: Value = serde_json::from_slice(&json.stdout).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 5);
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["component"], component);
+        for field in ["version", "build_id", "source_commit"] {
+            assert!(!value[field].as_str().unwrap().is_empty());
+        }
+        identities.push(value);
+        for args in [
+            &["--help", "--version"][..],
+            &["--json", "--version"][..],
+            &["--version", "--json", "--json"][..],
+            &["--version", "--help"][..],
+            &["--version", "status"][..],
+        ] {
+            let output = Command::new(binary).args(args).output().unwrap();
+            assert_eq!(output.status.code(), Some(invalid_exit));
+        }
+    }
+    for field in ["version", "build_id", "source_commit"] {
+        assert_eq!(identities[0][field], identities[1][field]);
+    }
+}
+
+#[test]
 fn inventory_cli_accepts_full_response_and_rejects_overflow() {
     for count in [64, 65] {
         let path = temporary(&format!("inventory-{count}.sock"));
@@ -310,6 +361,59 @@ fn executable_json_paginates_rejects_and_preserves_uncertain_receipt() {
 }
 
 #[test]
+fn existing_receipt_is_never_replaced_or_sent() {
+    let directory = temporary("receipt-collision");
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir(&directory).unwrap();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let receipt = directory.join("receipt.json");
+    fs::write(&receipt, b"original receipt").unwrap();
+    let output = cli(&[
+        "--socket".into(),
+        directory.join("missing.sock").display().to_string(),
+        "--json".into(),
+        "key".into(),
+        "generate".into(),
+        "--pool".into(),
+        "11".repeat(28),
+        "--incarnation".into(),
+        "22".repeat(16),
+        "--expected-revision".into(),
+        "1".into(),
+        "--receipt".into(),
+        receipt.display().to_string(),
+    ]);
+    assert_ne!(output.status.code(), Some(0));
+    assert_eq!(fs::read(&receipt).unwrap(), b"original receipt");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn expected_peer_mismatch_sends_no_request_bytes() {
+    let path = temporary("cli-peer.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let output = cli(&[
+        "--socket".into(),
+        path.display().to_string(),
+        "--expected-peer-pid".into(),
+        std::process::id().saturating_add(1).to_string(),
+        "--expected-peer-uid".into(),
+        rustix::process::geteuid().as_raw().to_string(),
+        "--json".into(),
+        "status".into(),
+    ]);
+    assert_eq!(output.status.code(), Some(3));
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+}
+#[test]
 fn destructive_commands_name_target_and_require_confirmation_before_contact() {
     let receipt = temporary("unused-receipt.json");
     let output = cli(&[
@@ -341,7 +445,7 @@ fn destructive_commands_name_target_and_require_confirmation_before_contact() {
 #[test]
 fn security_command_reports_observed_state_and_disallows_mutation_flags() {
     for mut rig in [
-        TestRig::blank_commissioning("attended-board01"),
+        TestRig::blank_commissioning("00afd9003906a634"),
         TestRig::commissioned_pool(),
     ] {
         let socket = rig.management_socket().display().to_string();

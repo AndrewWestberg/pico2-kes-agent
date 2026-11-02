@@ -37,6 +37,8 @@ pub enum Kind {
     Commission,
     SecurityStatus,
     PoolInventory,
+    FirmwareInfo,
+    PoolObservation,
 }
 impl TryFrom<u16> for Kind {
     type Error = Error;
@@ -54,6 +56,8 @@ impl TryFrom<u16> for Kind {
             10 => Self::Commission,
             11 => Self::SecurityStatus,
             12 => Self::PoolInventory,
+            13 => Self::FirmwareInfo,
+            14 => Self::PoolObservation,
             _ => return Err(Error::Kind),
         })
     }
@@ -317,6 +321,10 @@ use kes_core::operation::{Action, GenerationTarget, Mutation, PoolTarget, UsbSer
 /// decoder below and are always emitted in increasing order on the wire.
 pub enum Request {
     PoolInventory,
+    FirmwareInfo,
+    PoolObservation {
+        target: PoolTarget,
+    },
     SecurityStatus,
     Hello {
         nonce: [u8; 32],
@@ -510,6 +518,28 @@ pub fn decode_request(kind: Kind, bytes: &[u8]) -> Result<Request, Error> {
     validate_cbor(bytes)?;
     let mut c = Cursor { bytes, pos: 0 };
     let request = match kind {
+        Kind::FirmwareInfo => {
+            c.map(1)?;
+            c.key(0)?;
+            if c.uint()? != 1 {
+                return Err(Error::Schema);
+            }
+            Request::FirmwareInfo
+        }
+        Kind::PoolObservation => {
+            c.map(3)?;
+            c.key(0)?;
+            if c.uint()? != 1 {
+                return Err(Error::Schema);
+            }
+            c.key(1)?;
+            let pool = PoolId::from_bytes(c.fixed()?);
+            c.key(2)?;
+            let incarnation = IncarnationId::from_bytes(c.fixed()?);
+            Request::PoolObservation {
+                target: PoolTarget { pool, incarnation },
+            }
+        }
         Kind::PoolInventory => {
             c.map(0)?;
             Request::PoolInventory
@@ -809,6 +839,22 @@ pub fn encode_request(request: &Request, out: &mut [u8]) -> Result<(Kind, usize)
     use kes_core::operation::Binding;
     let mut w = Writer { out, pos: 0 };
     let kind = match request {
+        Request::FirmwareInfo => {
+            w.map(1)?;
+            w.uint(0)?;
+            w.uint(1)?;
+            Kind::FirmwareInfo
+        }
+        Request::PoolObservation { target } => {
+            w.map(3)?;
+            w.uint(0)?;
+            w.uint(1)?;
+            w.uint(1)?;
+            w.bytes(target.pool.as_bytes())?;
+            w.uint(2)?;
+            w.bytes(target.incarnation.as_bytes())?;
+            Kind::PoolObservation
+        }
         Request::PoolInventory => {
             w.map(0)?;
             Kind::PoolInventory
@@ -1590,9 +1636,55 @@ pub struct ReceiptAckResponse {
     pub result: Result<(), u16>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FirmwareInfo<'a> {
+    pub device: Option<DeviceId>,
+    pub serial: UsbSerial,
+    pub version: &'a str,
+    pub build_id: [u8; 32],
+    pub source_commit: &'a str,
+    pub protocol_major: u16,
+    pub storage_version: u16,
+    pub capacity: u8,
+    pub security_profile: &'a str,
+    pub supported_observations: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationObservation {
+    pub generation: GenerationId,
+    pub revision: u64,
+    pub role: u8,
+    pub period: u64,
+    pub health: u8,
+    pub artifact_digest: Digest32,
+    pub certificate_start: Option<u64>,
+    pub certificate_lifetime: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolObservation {
+    pub device: DeviceId,
+    pub target: PoolTarget,
+    pub revision: u64,
+    pub health: u8,
+    pub active: Option<GenerationObservation>,
+    pub staged: Option<GenerationObservation>,
+    pub publication: Publication,
+    pub period_floor: Option<u64>,
+    pub failure: Option<u16>,
+}
+
 /// Secret-bearing variants do not expose diagnostic formatting.
 pub enum Response<'a> {
     PoolInventory(PoolInventoryResponse),
+    FirmwareInfo(FirmwareInfo<'a>),
+    PoolObservation(PoolObservation),
+    PoolObservationError {
+        device: DeviceId,
+        target: PoolTarget,
+        code: u16,
+    },
     SecurityStatus(crate::security::SecurityStatus),
     Hello(HelloResponse),
     Status(StatusResponse),
@@ -1607,6 +1699,38 @@ pub enum Response<'a> {
 }
 
 impl Writer<'_> {
+    fn text(&mut self, text: &str) -> Result<(), Error> {
+        self.head(3, text.len() as u64)?;
+        self.raw(text.as_bytes())
+    }
+    fn observation_generation(
+        &mut self,
+        value: Option<GenerationObservation>,
+    ) -> Result<(), Error> {
+        let Some(v) = value else {
+            return self.raw(&[0xf6]);
+        };
+        if v.certificate_start.is_some() != v.certificate_lifetime.is_some() {
+            return Err(Error::Schema);
+        }
+        self.map(8)?;
+        self.uint(0)?;
+        self.bytes(v.generation.as_bytes())?;
+        self.uint(1)?;
+        self.uint(v.revision)?;
+        self.uint(2)?;
+        self.uint(v.role.into())?;
+        self.uint(3)?;
+        self.uint(v.period)?;
+        self.uint(4)?;
+        self.uint(v.health.into())?;
+        self.uint(5)?;
+        self.bytes(v.artifact_digest.as_bytes())?;
+        self.uint(6)?;
+        self.optional_uint(v.certificate_start)?;
+        self.uint(7)?;
+        self.optional_uint(v.certificate_lifetime)
+    }
     fn boolean(&mut self, b: bool) -> Result<(), Error> {
         self.raw(&[if b { 0xf5 } else { 0xf4 }])
     }
@@ -1826,6 +1950,49 @@ impl Writer<'_> {
 }
 
 impl<'a> Cursor<'a> {
+    fn text(&mut self) -> Result<&'a str, Error> {
+        let (major, len) = self.head()?;
+        if major != 3 {
+            return Err(Error::Schema);
+        }
+        let len = usize::try_from(len).map_err(|_| Error::Schema)?;
+        core::str::from_utf8(self.take(len)?).map_err(|_| Error::Schema)
+    }
+    fn observation_generation(&mut self) -> Result<Option<GenerationObservation>, Error> {
+        if self.null() {
+            return Ok(None);
+        }
+        self.map(8)?;
+        self.key(0)?;
+        let generation = GenerationId::from_bytes(self.fixed()?);
+        self.key(1)?;
+        let revision = self.uint()?;
+        self.key(2)?;
+        let role = self.small()?;
+        self.key(3)?;
+        let period = self.uint()?;
+        self.key(4)?;
+        let health = self.small()?;
+        self.key(5)?;
+        let artifact_digest = Digest32::from_bytes(self.fixed()?);
+        self.key(6)?;
+        let certificate_start = self.optional_uint()?;
+        self.key(7)?;
+        let certificate_lifetime = self.optional_uint()?;
+        if certificate_start.is_some() != certificate_lifetime.is_some() {
+            return Err(Error::Schema);
+        }
+        Ok(Some(GenerationObservation {
+            generation,
+            revision,
+            role,
+            period,
+            health,
+            artifact_digest,
+            certificate_start,
+            certificate_lifetime,
+        }))
+    }
     fn null(&mut self) -> bool {
         if self.bytes.get(self.pos) == Some(&0xf6) {
             self.pos += 1;
@@ -2160,6 +2327,10 @@ pub fn encode_hello_signing(value: &HelloResponse, out: &mut [u8]) -> Result<usi
     Ok(w.pos)
 }
 
+fn valid_source(source: &str) -> bool {
+    (source.len() == 40 || source.len() == 64) && source.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 pub fn encode_response(value: &Response<'_>, out: &mut [u8]) -> Result<(Kind, usize), Error> {
     match value {
         Response::Current(v) => return Ok((Kind::Current, encode_current_response(v, out)?)),
@@ -2171,6 +2342,87 @@ pub fn encode_response(value: &Response<'_>, out: &mut [u8]) -> Result<(Kind, us
     }
     let mut w = Writer { out, pos: 0 };
     let kind = match value {
+        Response::FirmwareInfo(v) => {
+            if v.version.is_empty()
+                || v.version.len() > 64
+                || v.security_profile.is_empty()
+                || v.security_profile.len() > 64
+                || !valid_source(v.source_commit)
+                || v.serial.as_slice().is_empty()
+            {
+                return Err(Error::Schema);
+            }
+            w.map(11)?;
+            w.uint(0)?;
+            w.uint(1)?;
+            w.uint(1)?;
+            match v.device {
+                Some(id) => w.bytes(id.as_bytes())?,
+                None => w.raw(&[0xf6])?,
+            };
+            w.uint(2)?;
+            w.bytes(v.serial.as_slice())?;
+            w.uint(3)?;
+            w.text(v.version)?;
+            w.uint(4)?;
+            w.bytes(&v.build_id)?;
+            w.uint(5)?;
+            w.text(v.source_commit)?;
+            w.uint(6)?;
+            w.uint(v.protocol_major.into())?;
+            w.uint(7)?;
+            w.uint(v.storage_version.into())?;
+            w.uint(8)?;
+            w.uint(v.capacity.into())?;
+            w.uint(9)?;
+            w.text(v.security_profile)?;
+            w.uint(10)?;
+            w.uint(v.supported_observations)?;
+            Kind::FirmwareInfo
+        }
+        Response::PoolObservation(v) => {
+            if v.publication.revision > v.revision {
+                return Err(Error::Schema);
+            }
+            w.map(10)?;
+            w.uint(0)?;
+            w.uint(1)?;
+            w.uint(1)?;
+            w.bytes(v.device.as_bytes())?;
+            w.uint(2)?;
+            w.target(v.target)?;
+            w.uint(3)?;
+            w.uint(v.revision)?;
+            w.uint(4)?;
+            w.uint(v.health.into())?;
+            w.uint(5)?;
+            w.observation_generation(v.active)?;
+            w.uint(6)?;
+            w.observation_generation(v.staged)?;
+            w.uint(7)?;
+            w.publication(v.publication)?;
+            w.uint(8)?;
+            w.optional_uint(v.period_floor)?;
+            w.uint(9)?;
+            w.optional_uint(v.failure.map(u64::from))?;
+            Kind::PoolObservation
+        }
+        Response::PoolObservationError {
+            device,
+            target,
+            code,
+        } => {
+            w.map(4)?;
+            w.uint(0)?;
+            w.uint(1)?;
+            w.uint(1)?;
+            w.bytes(device.as_bytes())?;
+            w.uint(2)?;
+            w.target(*target)?;
+            w.uint(9)?;
+            w.uint((*code).into())?;
+            Kind::PoolObservation
+        }
         Response::PoolInventory(v) => {
             let entries = v
                 .inventory
@@ -2334,6 +2586,112 @@ pub fn decode_response(kind: Kind, bytes: &[u8]) -> Result<Response<'_>, Error> 
     validate_cbor(bytes)?;
     let mut c = Cursor { bytes, pos: 0 };
     let response = match kind {
+        Kind::FirmwareInfo => {
+            c.map(11)?;
+            c.key(0)?;
+            if c.uint()? != 1 {
+                return Err(Error::Schema);
+            }
+            c.key(1)?;
+            let device = if c.null() {
+                None
+            } else {
+                Some(DeviceId::from_bytes(c.fixed()?))
+            };
+            c.key(2)?;
+            let serial = c.serial()?;
+            c.key(3)?;
+            let version = c.text()?;
+            c.key(4)?;
+            let build_id = c.fixed()?;
+            c.key(5)?;
+            let source_commit = c.text()?;
+            c.key(6)?;
+            let protocol_major = c.code()?;
+            c.key(7)?;
+            let storage_version = c.code()?;
+            c.key(8)?;
+            let capacity = c.small()?;
+            c.key(9)?;
+            let security_profile = c.text()?;
+            c.key(10)?;
+            let supported_observations = c.uint()?;
+            if version.is_empty()
+                || version.len() > 64
+                || security_profile.is_empty()
+                || security_profile.len() > 64
+                || !valid_source(source_commit)
+            {
+                return Err(Error::Schema);
+            }
+            Response::FirmwareInfo(FirmwareInfo {
+                device,
+                serial,
+                version,
+                build_id,
+                source_commit,
+                protocol_major,
+                storage_version,
+                capacity,
+                security_profile,
+                supported_observations,
+            })
+        }
+        Kind::PoolObservation => {
+            let fields = c.head()?;
+            if fields != (5, 10) && fields != (5, 4) {
+                return Err(Error::Schema);
+            }
+            c.key(0)?;
+            if c.uint()? != 1 {
+                return Err(Error::Schema);
+            }
+            c.key(1)?;
+            let device = DeviceId::from_bytes(c.fixed()?);
+            c.key(2)?;
+            let target = c.target()?;
+            if fields == (5, 4) {
+                c.key(9)?;
+                let code = c.code()?;
+                Response::PoolObservationError {
+                    device,
+                    target,
+                    code,
+                }
+            } else {
+                c.key(3)?;
+                let revision = c.uint()?;
+                c.key(4)?;
+                let health = c.small()?;
+                c.key(5)?;
+                let active = c.observation_generation()?;
+                c.key(6)?;
+                let staged = c.observation_generation()?;
+                c.key(7)?;
+                let publication = c.publication()?;
+                if publication.revision > revision {
+                    return Err(Error::Schema);
+                }
+                c.key(8)?;
+                let period_floor = c.optional_uint()?;
+                c.key(9)?;
+                let failure = c
+                    .optional_uint()?
+                    .map(|n| u16::try_from(n).map_err(|_| Error::Schema))
+                    .transpose()?;
+                Response::PoolObservation(PoolObservation {
+                    device,
+                    target,
+                    revision,
+                    health,
+                    active,
+                    staged,
+                    publication,
+                    period_floor,
+                    failure,
+                })
+            }
+        }
         Kind::PoolInventory => {
             c.map(3)?;
             c.key(1)?;
@@ -2602,4 +2960,113 @@ pub fn decode_response(kind: Kind, bytes: &[u8]) -> Result<Response<'_>, Error> 
         return Err(Error::Schema);
     }
     Ok(response)
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn observation_requests_are_exact_and_bounded() {
+        let mut out = [0; MAX_PAYLOAD];
+        let (kind, n) = encode_request(&Request::FirmwareInfo, &mut out).unwrap();
+        assert_eq!(kind, Kind::FirmwareInfo);
+        assert_eq!(&out[..n], &[0xa1, 0, 1]);
+        assert!(decode_request(kind, &out[..n]).is_ok());
+        assert!(decode_request(kind, &[0xa0]).is_err());
+        assert!(decode_request(kind, &[0xa2, 0, 1, 0, 1]).is_err());
+        assert!(decode_request(kind, &[0xa2, 0, 1, 1, 1]).is_err());
+        assert!(decode_request(kind, &[0; MAX_PAYLOAD + 1]).is_err());
+    }
+
+    #[test]
+    fn maximum_observations_and_certificate_pairs() {
+        let info = FirmwareInfo {
+            device: Some(DeviceId::from_bytes([1; 16])),
+            serial: UsbSerial::new(&[b'A'; 64]).unwrap(),
+            version: "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+            build_id: [2; 32],
+            source_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            protocol_major: u16::MAX,
+            storage_version: u16::MAX,
+            capacity: u8::MAX,
+            security_profile: "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+            supported_observations: u64::MAX,
+        };
+        let mut out = [0; MAX_PAYLOAD];
+        let (kind, n) = encode_response(&Response::FirmwareInfo(info), &mut out).unwrap();
+        assert!(n <= MAX_PAYLOAD);
+        assert!(decode_response(kind, &out[..n]).is_ok());
+        let mut bad = info;
+        bad.version = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        assert!(encode_response(&Response::FirmwareInfo(bad), &mut out).is_err());
+        bad = info;
+        bad.serial = UsbSerial::new(&[b'A'; MAX_PAYLOAD]).unwrap();
+        assert!(encode_response(&Response::FirmwareInfo(bad), &mut out).is_err());
+        let generation = GenerationObservation {
+            generation: GenerationId::from_bytes([3; 16]),
+            revision: u64::MAX,
+            role: u8::MAX,
+            period: u64::MAX,
+            health: u8::MAX,
+            artifact_digest: Digest32::from_bytes([4; 32]),
+            certificate_start: Some(u64::MAX),
+            certificate_lifetime: Some(u64::MAX),
+        };
+        let mut pool = PoolObservation {
+            device: DeviceId::from_bytes([1; 16]),
+            target: PoolTarget {
+                pool: PoolId::from_bytes([2; 28]),
+                incarnation: IncarnationId::from_bytes([3; 16]),
+            },
+            revision: u64::MAX,
+            health: u8::MAX,
+            active: Some(generation),
+            staged: Some(generation),
+            publication: Publication {
+                revision: u64::MAX,
+                timestamp_us: u64::MAX,
+                high_water_us: u64::MAX,
+                kind: PublicationKind::Key {
+                    generation: generation.generation,
+                    period: u64::MAX,
+                    certificate_digest: generation.artifact_digest,
+                },
+            },
+            period_floor: Some(u64::MAX),
+            failure: Some(u16::MAX),
+        };
+        let (kind, n) = encode_response(&Response::PoolObservation(pool), &mut out).unwrap();
+        assert!(n <= MAX_PAYLOAD);
+        assert!(decode_response(kind, &out[..n]).is_ok());
+        pool.active.as_mut().unwrap().certificate_lifetime = None;
+        assert!(encode_response(&Response::PoolObservation(pool), &mut out).is_err());
+        let mut w = Writer {
+            out: &mut out,
+            pos: 0,
+        };
+        w.map(8).unwrap();
+        w.uint(0).unwrap();
+        w.bytes(generation.generation.as_bytes()).unwrap();
+        w.uint(1).unwrap();
+        w.uint(1).unwrap();
+        w.uint(2).unwrap();
+        w.uint(1).unwrap();
+        w.uint(3).unwrap();
+        w.uint(1).unwrap();
+        w.uint(4).unwrap();
+        w.uint(1).unwrap();
+        w.uint(5).unwrap();
+        w.bytes(generation.artifact_digest.as_bytes()).unwrap();
+        w.uint(6).unwrap();
+        w.uint(1).unwrap();
+        w.uint(7).unwrap();
+        w.raw(&[0xf6]).unwrap();
+        let n = w.pos;
+        let mut c = Cursor {
+            bytes: &out[..n],
+            pos: 0,
+        };
+        assert!(c.observation_generation().is_err());
+    }
 }

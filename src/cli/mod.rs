@@ -28,8 +28,9 @@ pico2-kes-agent-cli [--socket PATH] [--json] COMMAND
 
 Commands:
   status
-  device commission|security|inventory
-  pool list|status|enroll|delete
+  host observe
+  device commission|security|inventory|info
+  pool list|status|observe|enroll|delete
   key generate|verification-key|export|discard
   certificate install
   recipient create|set
@@ -121,6 +122,8 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
     let mut index = 0;
     let mut socket = PathBuf::from("/run/pico2-kes-agent/management.sock");
     let mut machine = false;
+    let mut expected_pid = None;
+    let mut expected_uid = None;
     while index < args.len() {
         match args[index].as_str() {
             "--socket" => {
@@ -135,16 +138,43 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
                 machine = true;
                 index += 1;
             }
+            "--expected-peer-pid" | "--expected-peer-uid" => {
+                let option = &args[index];
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| CliError::invocation("peer option requires an integer"))?
+                    .parse::<u32>()
+                    .map_err(|_| CliError::invocation("invalid peer identity"))?;
+                let slot = if option == "--expected-peer-pid" {
+                    &mut expected_pid
+                } else {
+                    &mut expected_uid
+                };
+                if slot.replace(value).is_some() {
+                    return Err(CliError::invocation("duplicate peer identity"));
+                }
+                index += 1;
+            }
             _ => break,
         }
     }
+    let peer = match (expected_pid, expected_uid) {
+        (None, None) => None,
+        (Some(pid), Some(uid)) if pid != 0 => Some((pid, uid)),
+        _ => {
+            return Err(CliError::invocation(
+                "both valid peer PID and UID are required",
+            ));
+        }
+    };
     let command = args
         .get(index)
         .ok_or_else(|| CliError::invocation("missing command"))?;
     index += 1;
     let subcommand = match command.as_str() {
         "status" | "restore" => None,
-        "device" | "pool" | "key" | "certificate" | "recipient" | "operation" => {
+        "host" | "device" | "pool" | "key" | "certificate" | "recipient" | "operation" => {
             let sub = args
                 .get(index)
                 .ok_or_else(|| CliError::invocation("missing subcommand"))?;
@@ -170,7 +200,14 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
             .and_then(find_request_digest)
             .is_none()
         {
-            return retry_saved_request(&socket, machine, &options, &receipt_path, saved.request);
+            return retry_saved_request(
+                &socket,
+                machine,
+                &options,
+                &receipt_path,
+                saved.request,
+                peer,
+            );
         }
     }
     let specification = command_spec(command, subcommand, &options)?;
@@ -204,7 +241,7 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
 
     let bytes =
         serde_json::to_vec(&request).map_err(|error| CliError::invocation(error.to_string()))?;
-    let response_bytes = match client::request(&socket, &bytes) {
+    let response_bytes = match management_request(&socket, &bytes, peer) {
         Ok(response) => response,
         Err(error) => {
             if let Some(path) = &receipt_path
@@ -224,7 +261,10 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
             return Err(CliError::io(error.into_io()));
         }
     };
-    if matches!(specification.action, "device.security" | "device.inventory") {
+    if matches!(
+        specification.action,
+        "device.security" | "device.inventory" | "host.observe" | "device.info" | "pool.observe"
+    ) {
         let message = kes_protocol::management::Message::decode(&response_bytes)
             .map_err(|_| CliError::failure("daemon returned an invalid device response"))?;
         if !matches!(
@@ -247,6 +287,15 @@ fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
         && let Some(status) = status::human(&response)
     {
         human = status;
+    }
+    if exit == EXIT_SUCCESS
+        && matches!(
+            specification.action,
+            "host.observe" | "device.info" | "pool.observe"
+        )
+    {
+        human = serde_json::to_string_pretty(&response["result"])
+            .map_err(|error| CliError::failure(error.to_string()))?;
     }
     if exit == EXIT_SUCCESS {
         write_requested_output(&specification, &options, &response)?;
@@ -365,17 +414,38 @@ fn restore_backup(
     })
 }
 
+fn management_request(
+    socket: &Path,
+    bytes: &[u8],
+    peer: Option<(u32, u32)>,
+) -> Result<Vec<u8>, client::RequestError> {
+    match peer {
+        Some((pid, uid)) => client::request_until_peer(
+            socket,
+            bytes,
+            std::time::Instant::now() + client::IO_TIMEOUT,
+            pid,
+            uid,
+        ),
+        None => client::request(socket, bytes),
+    }
+}
+
 fn retry_saved_request(
     socket: &Path,
     machine: bool,
     options: &HashMap<String, String>,
     receipt_path: &Path,
     request: Value,
+    peer: Option<(u32, u32)>,
 ) -> Result<ResultOutput, CliError> {
     let bytes =
         serde_json::to_vec(&request).map_err(|error| CliError::invocation(error.to_string()))?;
-    let response_bytes = match client::request(socket, &bytes) {
+    let response_bytes = match management_request(socket, &bytes, peer) {
         Ok(response) => response,
+        Err(error) if !error.outcome_uncertain() && peer.is_some() => {
+            return Err(CliError::io(error.into_io()));
+        }
         Err(_) => {
             return Ok(ResultOutput {
                 exit: EXIT_UNCERTAIN,
@@ -459,6 +529,41 @@ fn command_spec(
         ("status", None) => CommandSpec {
             action: "device.status",
             arguments: json!({}),
+            mutation: false,
+            output: Output::None,
+        },
+        ("host", Some("observe")) => {
+            let mut arguments = json!({});
+            if let Some(size) = options.get("page-size") {
+                let size = size
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|size| (1..=16).contains(size))
+                    .ok_or_else(|| CliError::invocation("--page-size must be 1..=16"))?;
+                arguments["page_size"] = json!(size);
+            }
+            if let Some(cursor) = options.get("cursor") {
+                arguments["cursor"] = json!(cursor);
+            }
+            if let Some(snapshot) = options.get("snapshot-id") {
+                arguments["snapshot_id"] = json!(snapshot);
+            }
+            CommandSpec {
+                action: "host.observe",
+                arguments,
+                mutation: false,
+                output: Output::None,
+            }
+        }
+        ("device", Some("info")) => CommandSpec {
+            action: "device.info",
+            arguments: json!({}),
+            mutation: false,
+            output: Output::None,
+        },
+        ("pool", Some("observe")) => CommandSpec {
+            action: "pool.observe",
+            arguments: pool_target()?,
             mutation: false,
             output: Output::None,
         },
@@ -652,6 +757,9 @@ fn validate_options(
 ) -> Result<(), CliError> {
     let allowed: &[&str] = match (command, subcommand) {
         ("status", None) => &[],
+        ("host", Some("observe")) => &["cursor", "snapshot-id", "page-size"],
+        ("device", Some("info")) => &[],
+        ("pool", Some("observe")) => &["pool", "incarnation"],
         ("device", Some("security" | "inventory")) => &[],
         ("device", Some("commission")) => &[
             "usb-serial",
@@ -890,7 +998,7 @@ fn classify_response(response: &Value, receipt: Option<&Path>) -> (i32, String) 
                 .unwrap_or_default();
             let exit = match code {
                 "permission_denied" => EXIT_PERMISSION,
-                "busy" | "device_unavailable" | "socket_conflict" => EXIT_UNAVAILABLE,
+                "busy" | "device_unavailable" | "socket_conflict" | "unsupported" => EXIT_UNAVAILABLE,
                 _ => EXIT_REJECTED,
             };
             (exit, response.to_string())

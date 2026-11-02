@@ -52,7 +52,7 @@ use std::{
 };
 
 const CAPACITY: u32 = 0x400000;
-const SERIAL: &[u8] = b"attended-board01";
+const SERIAL: &[u8] = b"00afd9003906a634";
 static NEXT_RIG: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -194,6 +194,10 @@ struct Emulator {
     last_generation: Option<GenerationId>,
     security: Option<kes_protocol::security::SecurityStatus>,
     inventory_fault: u8,
+    refuse_observations: bool,
+    observation_probes: usize,
+    observation_cache: pico2_kes_agent::daemon::management::SnapshotCache,
+    context_observation: Option<(PoolTarget, u64, std::time::Instant)>,
 }
 
 struct ContextInput {
@@ -249,6 +253,10 @@ impl Emulator {
                 storage_blank_at_boot: true,
             }),
             inventory_fault: 0,
+            refuse_observations: false,
+            observation_probes: 0,
+            observation_cache: Default::default(),
+            context_observation: None,
         }
     }
 
@@ -904,6 +912,19 @@ impl Emulator {
 }
 
 impl DeviceTransport for Emulator {
+    fn observation_cache(
+        &mut self,
+    ) -> Option<&mut pico2_kes_agent::daemon::management::SnapshotCache> {
+        Some(&mut self.observation_cache)
+    }
+
+    fn observed_context(&self, target: PoolTarget) -> Option<(u64, u64)> {
+        let (observed_target, period, at) = self.context_observation?;
+        let age = at.elapsed();
+        (observed_target == target && age < std::time::Duration::from_secs(30))
+            .then_some((period, u64::try_from(age.as_micros()).ok()?))
+    }
+
     fn prepare_mutation(&mut self) -> Result<(), UsbError> {
         if self.disconnected {
             Err(UsbError::NotFound)
@@ -926,7 +947,82 @@ impl DeviceTransport for Emulator {
         if self.unavailable {
             return Err(UsbError::NotFound);
         }
+        if self.refuse_observations
+            && matches!(
+                request,
+                Request::FirmwareInfo | Request::PoolObservation { .. }
+            )
+        {
+            if self.observation_probes == 0 {
+                self.observation_probes += 1;
+            }
+            return Err(UsbError::Unsupported);
+        }
         match request {
+            Request::FirmwareInfo => {
+                let record = self
+                    .device()
+                    .identity()
+                    .map(|identity| *identity.enrollment_record().public());
+                self.encode(&Response::FirmwareInfo(wire::FirmwareInfo {
+                    device: record.map(|value| value.device()),
+                    serial: self.serial,
+                    version: "development-unqualified",
+                    build_id: [0; 32],
+                    source_commit: "0000000000000000000000000000000000000000",
+                    protocol_major: wire::MAJOR,
+                    storage_version: record.map_or(2, |value| value.storage_version()),
+                    capacity: 64,
+                    security_profile: "development",
+                    supported_observations: 3,
+                }))
+            }
+            Request::PoolObservation { target } => {
+                let device = self
+                    .device()
+                    .identity()
+                    .ok_or(UsbError::Protocol)?
+                    .enrollment_record()
+                    .public()
+                    .device();
+                let observed = match self.device_mut().pool_observation(*target) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return self.encode(&Response::PoolObservationError {
+                            device,
+                            target: *target,
+                            code: lifecycle_code(error),
+                        });
+                    }
+                };
+                let status = observed.status;
+                let active = observed
+                    .generations
+                    .active
+                    .map(|generation| generation_observation(generation, status, true));
+                let staged = observed
+                    .generations
+                    .staged
+                    .map(|generation| generation_observation(generation, status, false));
+                let health = if status.publication.kind == CorePublicationKind::Drop {
+                    2
+                } else if staged.is_some_and(|generation| generation.health == 3) {
+                    3
+                } else {
+                    active.map_or(4, |generation| generation.health)
+                };
+                self.encode(&Response::PoolObservation(wire::PoolObservation {
+                    device,
+                    target: *target,
+                    revision: status.revision,
+                    health,
+                    active,
+                    staged,
+                    publication: publication(status.publication),
+                    period_floor: status.period_floor,
+                    failure: None,
+                }))
+            }
             Request::Hello { nonce } => self.hello(*nonce),
             Request::Status { pool } => self.status(*pool),
             Request::PoolInventory => {
@@ -1162,6 +1258,14 @@ impl TestRig {
 
     pub fn set_inventory_fault(&self, fault: u8) {
         self.state.lock().unwrap().usb.inventory_fault = fault;
+    }
+
+    pub fn refuse_observations(&self) {
+        self.state.lock().unwrap().usb.refuse_observations = true;
+    }
+
+    pub fn observation_probes(&self) -> usize {
+        self.state.lock().unwrap().usb.observation_probes
     }
 
     pub fn inventory_cli(&self) -> CliResult {
@@ -1941,6 +2045,14 @@ impl TestRig {
         drop(state);
         self.publish_current()
     }
+
+    pub fn observe_accepted_context(&mut self) -> Result<(), RigError> {
+        self.publish_current()?;
+        // Model the runtime's public cache only after the device accepted the context.
+        self.state.lock().unwrap().usb.context_observation =
+            Some((self.target.unwrap(), self.period, std::time::Instant::now()));
+        Ok(())
+    }
     pub fn refresh_same_period(&mut self) -> Result<(), RigError> {
         self.refresh_context()
     }
@@ -2257,6 +2369,12 @@ fn management_error(
     uncommissioned: bool,
 ) -> Vec<u8> {
     let (outcome, code, digest) = match error {
+        pico2_kes_agent::daemon::management::Error::RevisionConflict => {
+            ("rejected", "revision_conflict", None)
+        }
+        pico2_kes_agent::daemon::management::Error::Usb(UsbError::Unsupported) => {
+            ("rejected", "unsupported", None)
+        }
         pico2_kes_agent::daemon::management::Error::ModeDenied => {
             ("rejected", "permission_denied", None)
         }
@@ -2456,6 +2574,26 @@ fn generation_status(
         period: generation.period,
         health,
         artifact_digest: generation.artifact_digest,
+    }
+}
+
+fn generation_observation(
+    generation: kes_core::lifecycle::GenerationStatus,
+    pool: kes_core::lifecycle::PoolStatus,
+    active: bool,
+) -> wire::GenerationObservation {
+    let status = generation_status(generation, pool, active);
+    wire::GenerationObservation {
+        generation: status.generation,
+        revision: status.revision,
+        role: status.role,
+        period: status.period,
+        health: status.health,
+        artifact_digest: status.artifact_digest,
+        certificate_start: generation.certificate_start,
+        certificate_lifetime: generation
+            .certificate_start
+            .map(|_| u64::from(pool.kes_lifetime)),
     }
 }
 

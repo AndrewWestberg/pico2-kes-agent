@@ -160,7 +160,7 @@ impl Journal {
         }
         sync(&parent)?;
 
-        let (records, valid_length, torn) = read_records(&mut file, metadata.len())?;
+        let (records, valid_length, torn) = read_records(&mut file, metadata.len(), None)?;
         if torn {
             file.set_len(valid_length)?;
             file.sync_all()?;
@@ -465,6 +465,116 @@ impl Journal {
     }
 }
 
+/// Inspect a stable, completed journal without creating, truncating, or repairing it.
+/// Only the privileged maintenance path uses this; all ancestors and the final
+/// descriptor must be controlled by root or the expected daemon account.
+pub fn inspect_completed(
+    path: &Path,
+    owner: u32,
+    deadline: std::time::Instant,
+) -> Result<Vec<CompletedMutation>, Error> {
+    use std::path::Component;
+    if rustix::process::geteuid().as_raw() != 0 || !path.is_absolute() {
+        return Err(Error::UnsafePath);
+    }
+    let mut dir = File::from(
+        fs::openat(
+            CWD,
+            "/",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?,
+    );
+    let mut parts = path.components().peekable();
+    if parts.next() != Some(Component::RootDir) {
+        return Err(Error::UnsafePath);
+    }
+    let mut file = None;
+    while let Some(part) = parts.next() {
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "journal inspection deadline",
+            )));
+        }
+        let Component::Normal(name) = part else {
+            return Err(Error::UnsafePath);
+        };
+        let last = parts.peek().is_none();
+        let flags = OFlags::RDONLY
+            | OFlags::NOFOLLOW
+            | OFlags::CLOEXEC
+            | OFlags::NONBLOCK
+            | if last {
+                OFlags::empty()
+            } else {
+                OFlags::DIRECTORY
+            };
+        let next =
+            File::from(fs::openat(&dir, name, flags, Mode::empty()).map_err(io::Error::from)?);
+        let meta = next.metadata()?;
+        if last {
+            if !meta.is_file()
+                || meta.uid() != owner
+                || meta.mode() & 0o077 != 0
+                || meta.nlink() != 1
+                || meta.len() > JOURNAL_LIMIT
+            {
+                return Err(Error::UnsafePath);
+            }
+            file = Some(next);
+        } else {
+            if !meta.is_dir()
+                || (meta.uid() != 0 && meta.uid() != owner)
+                || meta.mode() & 0o022 != 0
+            {
+                return Err(Error::UnsafePath);
+            }
+            dir = next;
+        }
+    }
+    let mut file = file.ok_or(Error::UnsafePath)?;
+    let before = file.metadata()?;
+    let (records, length, torn) = read_records(&mut file, before.len(), Some(deadline))?;
+    if torn {
+        return Err(Error::Corrupt {
+            offset: length,
+            reason: "incomplete journal during observation",
+        });
+    }
+    let mut journal = Journal {
+        file,
+        length,
+        next_sequence: 0,
+        pending: None,
+        completed: Vec::new(),
+        recovered_torn_tail: false,
+        failed: false,
+    };
+    for record in records {
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "journal inspection deadline",
+            )));
+        }
+        journal.apply(record, length)?;
+    }
+    let after = journal.file.metadata()?;
+    if journal.pending.is_some()
+        || before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.mtime() != after.mtime()
+        || before.mtime_nsec() != after.mtime_nsec()
+        || before.ctime() != after.ctime()
+        || before.ctime_nsec() != after.ctime_nsec()
+    {
+        return Err(Error::Busy);
+    }
+    Ok(journal.completed)
+}
 fn validate_parent(path: &Path) -> Result<File, Error> {
     let parent = path
         .parent()
@@ -514,11 +624,21 @@ fn encode_record(kind: Kind, key: MutationKey, payload: &[u8]) -> Result<Vec<u8>
     Ok(encoded)
 }
 
-fn read_records(file: &mut File, length: u64) -> Result<(Vec<Record>, u64, bool), Error> {
+fn read_records(
+    file: &mut File,
+    length: u64,
+    deadline: Option<std::time::Instant>,
+) -> Result<(Vec<Record>, u64, bool), Error> {
     file.seek(SeekFrom::Start(0))?;
     let mut records = Vec::new();
     let mut offset = 0u64;
     while offset < length {
+        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "journal inspection deadline",
+            )));
+        }
         let remaining = length - offset;
         if remaining < HEADER_LEN as u64 {
             return Ok((records, offset, true));
@@ -609,6 +729,21 @@ mod tests {
             operation_id: [sequence as u8; 16],
             request_digest: [sequence as u8 + 1; 32],
         }
+    }
+
+    #[test]
+    fn read_only_decoder_honors_deadline_without_repair() {
+        let dir = TestDir::new();
+        let path = dir.0.join("journal");
+        let mut journal = Journal::open(&path).unwrap();
+        journal.append_intent(key(0), b"intent").unwrap();
+        drop(journal);
+        let mut file = File::open(&path).unwrap();
+        let length = file.metadata().unwrap().len();
+        assert!(
+            matches!(read_records(&mut file, length, Some(std::time::Instant::now())), Err(Error::Io(e)) if e.kind() == io::ErrorKind::TimedOut)
+        );
+        assert_eq!(file.metadata().unwrap().len(), length);
     }
 
     #[test]

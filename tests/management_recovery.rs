@@ -106,6 +106,54 @@ fn lost_pending_response_reconciles_original_generation_instead_of_readmitting()
 }
 
 #[test]
+fn lost_output_reconciliation_preserves_the_original_receipt_identity() {
+    let mut rig = TestRig::commissioned_pool();
+    let original = success(rig.generate_cli(OPERATION));
+    let saved = receipt::load(rig.receipt_path()).unwrap();
+    let original_request = saved.request.clone();
+    lose_management_response(&rig);
+    rig.reopen_journal();
+    let recovered = success(rig.reconcile_cli());
+    let reopened = receipt::load(rig.receipt_path()).unwrap();
+    assert_eq!(reopened.request, original_request);
+    assert_eq!(recovered["result"], original["result"]);
+    assert_eq!(rig.generation_count(), 1);
+}
+
+#[test]
+fn digest_bearing_uncertain_receipt_reconciliation_returns_original_result() {
+    let mut rig = TestRig::commissioned_pool();
+    rig.timeout_next_usb_reply();
+    assert_eq!(rig.generate_cli(OPERATION).exit_code, 6);
+    let original = receipt::load(rig.receipt_path()).unwrap();
+    assert!(original.response.as_ref().unwrap()["error"]["request_digest"].is_string());
+    let recovered = success(rig.reconcile_cli());
+    assert_eq!(recovered["outcome"], "success");
+    assert_eq!(recovered["result"]["kind"], "generated");
+    assert_eq!(
+        receipt::load(rig.receipt_path()).unwrap().request,
+        original.request
+    );
+    assert_eq!(rig.generation_count(), 1);
+}
+
+#[test]
+fn export_never_overwrites_existing_artifact() {
+    let mut rig = TestRig::commissioned_pool();
+    let generation = rig.generate_with_cli().unwrap();
+    assert_eq!(
+        rig.export_cli(&generation, "retained-artifact").exit_code,
+        0
+    );
+    let original = rig.read_file("retained-artifact");
+    assert_ne!(
+        rig.export_cli(&generation, "retained-artifact").exit_code,
+        0
+    );
+    assert_eq!(rig.read_file("retained-artifact"), original);
+    assert_eq!(rig.generation_count(), 1);
+}
+#[test]
 fn admitted_generation_resumes_before_and_after_device_commit() {
     for after_commit in [false, true] {
         let mut rig = TestRig::commissioned_pool();
@@ -178,4 +226,28 @@ fn operation_id_cannot_be_reused_with_changed_revision_action_or_target() {
         let recovered = success(rig.reconcile_cli());
         assert_eq!(recovered["result"]["kind"], "generated");
     }
+}
+
+#[test]
+fn maintenance_observations_accept_forward_evolution_and_reject_regression_or_disconnect() {
+    use pico2_kes_agent::manager::maintenance;
+    use std::time::{Duration, Instant};
+    let mut rig = TestRig::certified_pool();
+    rig.observe_accepted_context().unwrap();
+    let snapshot = |rig: &TestRig| {
+        maintenance::snapshot(
+            rig.management_socket(),
+            std::process::id(),
+            rustix::process::geteuid().as_raw(),
+            Instant::now() + Duration::from_secs(5),
+        )
+    };
+    let before = snapshot(&rig).expect("complete authenticated management observations");
+    rig.advance_period(1, 10_000).unwrap();
+    rig.observe_accepted_context().unwrap();
+    let after = snapshot(&rig).expect("complete evolved management observations");
+    maintenance::compare(&before, &after).expect("legitimate forward period evolution");
+    assert!(maintenance::compare(&after, &before).is_err());
+    rig.disconnect_device();
+    assert!(snapshot(&rig).is_err());
 }

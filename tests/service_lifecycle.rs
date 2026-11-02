@@ -132,6 +132,20 @@ fn absent_device_mutation_does_not_leave_recovery_pending_across_restart() {
         )
         .unwrap();
         assert_eq!(status["result"]["health"], "disconnected");
+        let inventory: Value = serde_json::from_slice(
+            &client::request(
+                &fixture.socket(),
+                &serde_json::to_vec(&json!({
+                    "version": 1, "request_id": "44".repeat(16),
+                    "action": "device.inventory", "arguments": {}
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(inventory["outcome"], "success");
+        assert!(inventory["result"].is_null());
         // SAFETY: the PID belongs to the retained child.
         assert_eq!(
             unsafe { libc::kill(daemon.0.id() as i32, libc::SIGTERM) },

@@ -21,7 +21,13 @@ use kes_protocol::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::HashMap, fs::File, io::Read};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug)]
 pub enum Error {
@@ -29,6 +35,8 @@ pub enum Error {
     InvalidInput,
     OperationConflict,
     ModeDenied,
+    RevisionConflict,
+    DeviceTarget(u16),
     ArtifactRetired,
     GenerationUnknown,
     Journal(crate::daemon::journal::Error),
@@ -56,6 +64,20 @@ struct Envelope {
     operation_id: Option<String>,
     #[serde(default)]
     expected_revision: Option<u64>,
+}
+
+#[derive(Default)]
+pub struct SnapshotCache {
+    snapshot: Option<HostSnapshot>,
+}
+
+struct HostSnapshot {
+    id: String,
+    config_identity: String,
+    journal_position: u64,
+    last_result: Option<[u8; 32]>,
+    observed_at_unix_us: u64,
+    bindings: Vec<Value>,
 }
 
 pub struct Management<'a, T: DeviceTransport> {
@@ -97,6 +119,9 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             Action::DeviceStatus => self.status(None)?,
             Action::DeviceSecurity => self.query(Request::SecurityStatus)?,
             Action::DeviceInventory => self.inventory()?,
+            Action::HostObserve => self.host_observe(&envelope.arguments)?,
+            Action::DeviceInfo => self.device_info()?,
+            Action::PoolObserve => self.pool_observe(pool_target(&envelope.arguments)?)?,
             Action::PoolStatus => {
                 let pool =
                     parse_id::<28, PoolId>(&envelope.arguments, "pool_id", PoolId::from_bytes)?;
@@ -244,6 +269,246 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         }))
     }
 
+    fn host_observe(&mut self, arguments: &Value) -> Result<Value, Error> {
+        let mut networks: Vec<_> = self.config.networks.iter().collect();
+        networks.sort_by_key(|(name, _)| *name);
+        let config_identity = hex(&Sha256::digest(
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                self.config.mode,
+                self.config.pin,
+                self.config.selected_serial,
+                self.config.socket_directory,
+                self.config.socket_group,
+                self.config.management_socket,
+                self.config.state_directory,
+                networks,
+                self.config.pools,
+            )
+            .as_bytes(),
+        ));
+        let journal_position = self.journal.completed().len() as u64;
+        let last_result = self
+            .journal
+            .completed()
+            .last()
+            .map(|entry| entry.terminal.result_digest);
+        let cached_id = self
+            .usb
+            .observation_cache()
+            .and_then(|cache| cache.snapshot.as_ref())
+            .filter(|snapshot| {
+                snapshot.config_identity == config_identity
+                    && snapshot.journal_position == journal_position
+                    && snapshot.last_result == last_result
+            })
+            .map(|snapshot| snapshot.id.clone());
+        let id = cached_id.unwrap_or_else(|| {
+            let mut hash = Sha256::new();
+            hash.update(config_identity.as_bytes());
+            hash.update(journal_position.to_be_bytes());
+            for entry in self.journal.completed() {
+                hash.update(entry.key.sequence.to_be_bytes());
+                hash.update(entry.key.operation_id);
+                hash.update(entry.key.request_digest);
+                hash.update(entry.terminal.result_digest);
+                hash.update(Sha256::digest(&entry.intent));
+                hash.update(Sha256::digest(&entry.terminal.public_result));
+            }
+            hex(&hash.finalize())
+        });
+        if let Some(expected) = arguments.get("snapshot_id").and_then(Value::as_str)
+            && expected != id
+        {
+            return Err(Error::RevisionConflict);
+        }
+        let cursor = arguments
+            .get("cursor")
+            .and_then(Value::as_str)
+            .map(|value| value.parse::<usize>().map_err(|_| Error::InvalidInput))
+            .transpose()?
+            .unwrap_or(0);
+        if cursor != 0 && arguments.get("snapshot_id").is_none() {
+            return Err(Error::InvalidInput);
+        }
+        let page_size = arguments
+            .get("page_size")
+            .and_then(Value::as_u64)
+            .unwrap_or(16) as usize;
+        if !(1..=16).contains(&page_size) {
+            return Err(Error::InvalidInput);
+        }
+        let cached = self
+            .usb
+            .observation_cache()
+            .and_then(|cache| cache.snapshot.as_ref())
+            .is_some_and(|snapshot| snapshot.id == id);
+        if !cached {
+            let effective = self.reconstructed_registry_observe(true)?;
+            let mut bindings = Vec::new();
+            for configured in &self.config.pools {
+                let matching = effective.iter().find(|entry| entry.pool == configured.pool);
+                let same = matching.is_some_and(|entry| {
+                    entry.incarnation == configured.incarnation
+                        && entry.network == configured.network
+                });
+                let conflicting = matching.is_some() && !same
+                    || !self.config.networks.contains_key(&configured.network);
+                bindings.push(binding_value(
+                    configured,
+                    true,
+                    same && !conflicting,
+                    matching.is_none(),
+                    conflicting,
+                ));
+            }
+            for entry in &effective {
+                if !self.config.pools.iter().any(|configured| {
+                    configured.pool == entry.pool
+                        && configured.incarnation == entry.incarnation
+                        && configured.network == entry.network
+                }) {
+                    let conflicting = self
+                        .config
+                        .pools
+                        .iter()
+                        .any(|configured| configured.pool == entry.pool)
+                        || !self.config.networks.contains_key(&entry.network);
+                    bindings.push(binding_value(
+                        entry,
+                        false,
+                        self.config.networks.contains_key(&entry.network),
+                        false,
+                        conflicting,
+                    ));
+                }
+            }
+            let observed_at_unix_us = u64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| Error::Protocol)?
+                    .as_micros(),
+            )
+            .map_err(|_| Error::Protocol)?;
+            let snapshot = HostSnapshot {
+                id: id.clone(),
+                config_identity,
+                journal_position,
+                last_result,
+                observed_at_unix_us,
+                bindings,
+            };
+            if let Some(cache) = self.usb.observation_cache() {
+                cache.snapshot = Some(snapshot);
+            } else {
+                return host_page(&snapshot, cursor, page_size);
+            }
+        }
+        let snapshot = self
+            .usb
+            .observation_cache()
+            .and_then(|cache| cache.snapshot.as_ref())
+            .ok_or(Error::Protocol)?;
+        host_page(snapshot, cursor, page_size)
+    }
+
+    fn device_info(&mut self) -> Result<Value, Error> {
+        let reply = self.usb.request(&Request::FirmwareInfo)?;
+        let Response::FirmwareInfo(info) = reply.decode().map_err(|_| Error::Protocol)? else {
+            return Err(Error::Protocol);
+        };
+        if info.serial.as_slice() != self.config.selected_serial.as_bytes()
+            || (self.config.mode == RunMode::Normal
+                && self.config.pin.map(|pin| pin.device) != info.device)
+        {
+            return Err(Error::Usb(UsbError::IdentityMismatch));
+        }
+        let serial = std::str::from_utf8(info.serial.as_slice()).map_err(|_| Error::Protocol)?;
+        Ok(
+            json!({"schema_version":1,"device_id":info.device.map(|id| id.to_string()),
+            "usb_serial":serial,"version":info.version,"build_id":hex(&info.build_id),
+            "source_commit":info.source_commit,"protocol_major":info.protocol_major,
+            "storage_version":info.storage_version,"capacity":info.capacity,
+            "security_profile":info.security_profile,"supported_observations":info.supported_observations}),
+        )
+    }
+
+    fn pool_observe(&mut self, target: PoolTarget) -> Result<Value, Error> {
+        let reply = self.usb.request(&Request::PoolObservation { target })?;
+        let observed = match reply.decode().map_err(|_| Error::Protocol)? {
+            Response::PoolObservation(value) => value,
+            Response::PoolObservationError {
+                device,
+                target: returned,
+                code,
+            } => {
+                if returned != target || self.config.pin.map(|pin| pin.device) != Some(device) {
+                    return Err(Error::Usb(UsbError::IdentityMismatch));
+                }
+                return Err(Error::DeviceTarget(code));
+            }
+            _ => return Err(Error::Protocol),
+        };
+        if observed.target != target
+            || self.config.pin.map(|pin| pin.device) != Some(observed.device)
+        {
+            return Err(Error::Usb(UsbError::IdentityMismatch));
+        }
+        match self.host_observe(&json!({})) {
+            Ok(_) | Err(Error::InvalidInput) => {}
+            Err(error) => return Err(error),
+        }
+        let network = if let Some(snapshot) = self
+            .usb
+            .observation_cache()
+            .and_then(|cache| cache.snapshot.as_ref())
+        {
+            snapshot
+                .bindings
+                .iter()
+                .find(|entry| {
+                    entry["effective"] == true
+                        && entry["pool_id"] == target.pool.to_string()
+                        && entry["incarnation_id"] == target.incarnation.to_string()
+                })
+                .and_then(|entry| entry["network"].as_str())
+                .map(str::to_owned)
+        } else {
+            self.reconstructed_registry_observe(true)?
+                .iter()
+                .find(|entry| entry.pool == target.pool && entry.incarnation == target.incarnation)
+                .map(|entry| entry.network.clone())
+        };
+        let reason = if network.is_some() {
+            "context observation unavailable"
+        } else {
+            "no effective host binding"
+        };
+        let context = network.as_ref().and_then(|name| {
+            let (accepted_period, age) = self.usb.observed_context(target)?;
+            let config = self.config.networks.get(name)?;
+            let now = u64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()?
+                    .as_micros(),
+            )
+            .ok()?;
+            let period = config.timing.slot_at_time(now).ok()? / config.binding.slots_per_period();
+            (period >= accepted_period).then_some((period, age))
+        });
+        Ok(
+            json!({"schema_version":1,"device_id":observed.device.to_string(),
+            "pool_id":target.pool.to_string(),"incarnation_id":target.incarnation.to_string(),
+            "revision":observed.revision,"health":observed.health,
+            "active":observed.active.map(|value| generation_observation(value, context.map(|c| c.0))).transpose()?,
+            "staged":observed.staged.map(|value| generation_observation(value, context.map(|c| c.0))).transpose()?,
+            "publication":observation_publication(observed.publication),
+            "period_floor":observed.period_floor,"failure":observed.failure,
+            "context":{"valid":context.is_some(),"source":context.map(|_| "host_utc"),"age_us":context.map(|c| c.1),"reason":if context.is_none() {Some(reason)} else {None}}}),
+        )
+    }
+
     fn pool_list(&self, arguments: &Value) -> Result<Value, Error> {
         let page_size = arguments
             .get("page_size")
@@ -276,6 +541,10 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 
     pub(crate) fn reconstructed_registry(&self) -> Result<Vec<PoolBinding>, Error> {
+        self.reconstructed_registry_observe(false)
+    }
+
+    fn reconstructed_registry_observe(&self, observe: bool) -> Result<Vec<PoolBinding>, Error> {
         let mut registry: HashMap<PoolId, Option<PoolBinding>> = HashMap::new();
         for completed in self.journal.completed() {
             let response = decode_durable(&completed.terminal.public_result)?;
@@ -341,6 +610,9 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                 }
                 Some(Some(binding)) if binding.incarnation == configured.incarnation => {
                     if binding.network != configured.network {
+                        if observe {
+                            continue;
+                        }
                         return Err(Error::Protocol);
                     }
                     binding.socket_path.clone_from(&configured.socket_path);
@@ -349,9 +621,10 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             }
         }
         let mut registry: Vec<_> = registry.into_values().flatten().collect();
-        if registry
-            .iter()
-            .any(|binding| !self.config.networks.contains_key(&binding.network))
+        if !observe
+            && registry
+                .iter()
+                .any(|binding| !self.config.networks.contains_key(&binding.network))
         {
             return Err(Error::Protocol);
         }
@@ -763,12 +1036,116 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 }
 
+fn binding_value(
+    binding: &PoolBinding,
+    configured: bool,
+    effective: bool,
+    retired: bool,
+    conflicting: bool,
+) -> Value {
+    json!({"pool_id":binding.pool.to_string(),"incarnation_id":binding.incarnation.to_string(),
+        "network":binding.network,"socket_path":binding.socket_path,
+        "configured":configured,"effective":effective,"retired":retired,"conflicting":conflicting})
+}
+
+fn host_page(snapshot: &HostSnapshot, cursor: usize, size: usize) -> Result<Value, Error> {
+    if cursor > snapshot.bindings.len() {
+        return Err(Error::InvalidInput);
+    }
+    let mut daemon = serde_json::to_value(crate::build_info::identity("pico2-kes-agentd"))
+        .map_err(|_| Error::Protocol)?;
+    daemon["pid"] = json!(std::process::id());
+    let mut page = json!({"schema_version":1,"snapshot_id":snapshot.id,"bindings":[],
+        "next_cursor":null,"total":snapshot.bindings.len(),"observed_at_unix_us":snapshot.observed_at_unix_us,
+        "daemon":daemon,"config_identity":snapshot.config_identity,"journal_position":snapshot.journal_position});
+    for entry in snapshot.bindings.iter().skip(cursor).take(size) {
+        page["bindings"]
+            .as_array_mut()
+            .ok_or(Error::Protocol)?
+            .push(entry.clone());
+        let next = cursor + page["bindings"].as_array().ok_or(Error::Protocol)?.len();
+        page["next_cursor"] = if next < snapshot.bindings.len() {
+            json!(next.to_string())
+        } else {
+            Value::Null
+        };
+        if serde_json::to_vec(&page)
+            .map_err(|_| Error::Protocol)?
+            .len()
+            + 256
+            > kes_protocol::management::MAX_FRAME
+        {
+            page["bindings"]
+                .as_array_mut()
+                .ok_or(Error::Protocol)?
+                .pop();
+            if page["bindings"]
+                .as_array()
+                .ok_or(Error::Protocol)?
+                .is_empty()
+            {
+                return Err(Error::InvalidInput);
+            }
+            let next = cursor + page["bindings"].as_array().ok_or(Error::Protocol)?.len();
+            page["next_cursor"] = json!(next.to_string());
+            break;
+        }
+    }
+    Ok(page)
+}
+
+fn generation_observation(
+    value: wire::GenerationObservation,
+    current: Option<u64>,
+) -> Result<Value, Error> {
+    let expiry = match (value.certificate_start, value.certificate_lifetime) {
+        (Some(start), Some(lifetime)) => Some(start.checked_add(lifetime).ok_or(Error::Protocol)?),
+        (None, None) => None,
+        _ => return Err(Error::Protocol),
+    };
+    let relative = current
+        .zip(value.certificate_start)
+        .and_then(|(current, start)| current.checked_sub(start));
+    let remaining = current
+        .zip(expiry)
+        .map(|(current, expiry)| expiry.saturating_sub(current));
+    Ok(
+        json!({"generation_id":value.generation.to_string(),"revision":value.revision,"role":value.role,
+        "period":value.period,"health":value.health,"artifact_digest":value.artifact_digest.to_string(),
+        "certificate_present":value.certificate_start.is_some(),"certificate_start":value.certificate_start,
+        "certificate_lifetime":value.certificate_lifetime,"certificate_expiry":expiry,
+        "current_absolute_period":current,"relative_period":relative,"remaining_valid_periods":remaining,
+        "reason":if expiry.is_none() { Some("certificate absent") } else if current.is_none() { Some("context unavailable") } else if relative.is_none() { Some("before certificate start") } else { None }}),
+    )
+}
+
+fn observation_publication(value: wire::Publication) -> Value {
+    let (kind, generation, period, digest) = match value.kind {
+        wire::PublicationKind::None => ("none", None, None, None),
+        wire::PublicationKind::Drop => ("drop", None, None, None),
+        wire::PublicationKind::Key {
+            generation,
+            period,
+            certificate_digest,
+        } => (
+            "key",
+            Some(generation.to_string()),
+            Some(period),
+            Some(certificate_digest.to_string()),
+        ),
+    };
+    json!({"revision":value.revision,"timestamp_us":value.timestamp_us,"high_water_us":value.high_water_us,
+        "kind":kind,"generation_id":generation,"relative_period":period,"certificate_digest":digest})
+}
+
 fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
     if mode == RunMode::Commissioning
         && !matches!(
             action,
             Action::DeviceStatus
                 | Action::DeviceSecurity
+                | Action::DeviceInfo
+                | Action::HostObserve
                 | Action::DeviceCommission
                 | Action::OperationReconcile
         )
@@ -885,7 +1262,11 @@ fn security_value(report: kes_protocol::security::SecurityStatus) -> Result<Valu
 
 fn response_value(response: Response<'_>) -> Result<Value, Error> {
     Ok(match response {
-        Response::Hello(_) | Response::PoolInventory(_) => return Err(Error::Protocol),
+        Response::Hello(_)
+        | Response::PoolInventory(_)
+        | Response::FirmwareInfo(_)
+        | Response::PoolObservation(_)
+        | Response::PoolObservationError { .. } => return Err(Error::Protocol),
         Response::Status(response) => status::response(response, false),
         Response::SecurityStatus(response) => security_value(response)?,
         Response::Context(_) | Response::Current(_) => return Err(Error::Protocol),
@@ -1020,7 +1401,7 @@ fn normalize_result(value: Value) -> Result<(&'static str, Value, Value), Error>
     }
 }
 
-fn device_error_code(code: u16) -> &'static str {
+pub(crate) fn device_error_code(code: u16) -> &'static str {
     match code {
         10 => "uncommissioned",
         11 => "already_commissioned",
@@ -1179,6 +1560,9 @@ fn action_name(action: Action) -> &'static str {
         Action::DeviceCommission => "device.commission",
         Action::DeviceSecurity => "device.security",
         Action::DeviceInventory => "device.inventory",
+        Action::HostObserve => "host.observe",
+        Action::DeviceInfo => "device.info",
+        Action::PoolObserve => "pool.observe",
         Action::PoolList => "pool.list",
         Action::PoolStatus => "pool.status",
         Action::PoolEnroll => "pool.enroll",
@@ -1204,5 +1588,35 @@ impl IntoBytes<16> for OperationId {
 impl IntoBytes<32> for Digest32 {
     fn into_bytes(self) -> [u8; 32] {
         *self.as_bytes()
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn certificate_arithmetic_is_checked_and_context_is_not_invented() {
+        let mut generation = wire::GenerationObservation {
+            generation: GenerationId::from_bytes([1; 16]),
+            revision: 1,
+            role: 0,
+            period: 0,
+            health: 0,
+            artifact_digest: Digest32::from_bytes([2; 32]),
+            certificate_start: Some(10),
+            certificate_lifetime: Some(5),
+        };
+        let unknown = generation_observation(generation, None).unwrap();
+        assert_eq!(unknown["certificate_expiry"], 15);
+        assert!(unknown["remaining_valid_periods"].is_null());
+        let before = generation_observation(generation, Some(9)).unwrap();
+        assert!(before["relative_period"].is_null());
+        assert_eq!(before["remaining_valid_periods"], 6);
+        let expired = generation_observation(generation, Some(20)).unwrap();
+        assert_eq!(expired["relative_period"], 10);
+        assert_eq!(expired["remaining_valid_periods"], 0);
+        generation.certificate_start = Some(u64::MAX);
+        assert!(generation_observation(generation, Some(1)).is_err());
     }
 }

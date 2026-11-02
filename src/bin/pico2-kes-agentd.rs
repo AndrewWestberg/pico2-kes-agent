@@ -21,6 +21,22 @@ fn execute(arguments: impl Iterator<Item = String>) -> Result<(), String> {
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
+            "--version" => {
+                if config_path.is_some() || mode != RunMode::Normal || check {
+                    return Err("--version must be used alone or with --json".to_owned());
+                }
+                let json = match (arguments.next(), arguments.next()) {
+                    (None, None) => false,
+                    (Some(arg), None) if arg == "--json" => true,
+                    _ => return Err("--version must be used alone or with --json".to_owned()),
+                };
+                return pico2_kes_agent::build_info::write_version(
+                    std::io::stdout().lock(),
+                    "pico2-kes-agentd",
+                    json,
+                )
+                .map_err(|error| format!("failed to write command output: {error}"));
+            }
             "--config" => {
                 if config_path.is_some() {
                     return Err("--config specified more than once".to_owned());
@@ -42,6 +58,9 @@ fn execute(arguments: impl Iterator<Item = String>) -> Result<(), String> {
                 check = true;
             }
             "--help" => {
+                if arguments.any(|argument| argument == "--version") {
+                    return Err("--version must be used alone or with --json".to_owned());
+                }
                 println!(
                     "usage: pico2-kes-agentd --config FILE [--check-config] [--commission]\n\
                      --commission is attended blank-device initialization only; install the emitted identity pin in normal configuration before enrolling pools"
