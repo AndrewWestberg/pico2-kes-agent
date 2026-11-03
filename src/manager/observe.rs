@@ -24,12 +24,54 @@ const SCAN: Duration = Duration::from_secs(8);
 const REFRESH: Duration = Duration::from_secs(2);
 const FRESH: Duration = Duration::from_secs(10);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigAccess {
+    Readable,
+    Absent,
+    Denied,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceState {
+    pub load: String,
+    pub active: String,
+    pub main_pid: Option<u32>,
+}
+
+fn parse_service(text: &str) -> Result<ServiceState, String> {
+    let property = |name: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(name).filter(|value| !value.is_empty()))
+    };
+    let load = property("LoadState=").ok_or("missing LoadState")?;
+    let active = property("ActiveState=").ok_or("missing ActiveState")?;
+    let pid = property("MainPID=")
+        .ok_or("missing MainPID")?
+        .parse::<u32>()
+        .map_err(|_| "invalid MainPID")?;
+    Ok(ServiceState {
+        load: load.into(),
+        active: active.into(),
+        main_pid: (pid != 0).then_some(pid),
+    })
+}
+fn config_access(result: &std::io::Result<PathBuf>) -> Result<ConfigAccess, String> {
+    match result {
+        Ok(_) => Ok(ConfigAccess::Readable),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ConfigAccess::Absent),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(ConfigAccess::Denied),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalOverview {
     pub own_executable: Observation<PathBuf>,
     pub path_candidates: Observation<Vec<PathBuf>>,
     pub service: Observation<String>,
+    pub service_state: Observation<ServiceState>,
     pub config: Observation<PathBuf>,
+    pub config_access: Observation<ConfigAccess>,
     pub config_ownership: Observation<String>,
     pub support: String,
     pub registry: Observation<InstallationRegistry>,
@@ -266,25 +308,39 @@ fn local(config: Option<&Path>) -> LocalOverview {
             })
             .map_err(|e| e.to_string()),
     );
-    let config = local_item("config read access", {
-        let p = config_path;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(p)
-            .and_then(|file| {
-                if file.metadata()?.is_file() {
-                    Ok(p.to_owned())
-                } else {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "configuration is not a regular file",
-                    ))
-                }
-            })
-            .map_err(|e| e.to_string())
-    });
+    let config_result = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(config_path)
+        .and_then(|file| {
+            if file.metadata()?.is_file() {
+                Ok(config_path.to_owned())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "configuration is not a regular file",
+                ))
+            }
+        });
+    let config_access = local_item("config access", config_access(&config_result));
+    let config = local_item(
+        "config read access",
+        config_result.map_err(|e| e.to_string()),
+    );
     let service = local_item("systemd", service());
+    let service_state = local_item(
+        "systemd properties",
+        service
+            .value
+            .as_deref()
+            .ok_or_else(|| {
+                service
+                    .public_error
+                    .clone()
+                    .unwrap_or_else(|| "systemd unavailable".into())
+            })
+            .and_then(parse_service),
+    );
     let registry = registry();
     let components = components(&registry, &path_candidates);
     let support = public_text(Path::new("/etc/os-release"), 16 * 1024)
@@ -298,7 +354,9 @@ fn local(config: Option<&Path>) -> LocalOverview {
         own_executable,
         path_candidates,
         service,
+        service_state,
         config,
+        config_access,
         config_ownership,
         registry,
         components,
@@ -331,7 +389,10 @@ fn platform_support(release: &str, arch: &str) -> String {
     let id = field("ID=");
     let version = field("VERSION_ID=");
     let selected = arch == "x86_64"
-        && matches!((id, version), ("debian", "12") | ("ubuntu", "24.04") | ("ubuntu", "26.04"));
+        && matches!(
+            (id, version),
+            ("debian", "12") | ("ubuntu", "24.04") | ("ubuntu", "26.04")
+        );
     format!(
         "{id} {version} / {arch}: {}",
         if selected {
@@ -850,8 +911,10 @@ fn run(
                 retain_local(&mut local.own_executable, &old.own_executable, elapsed);
                 retain_local(&mut local.path_candidates, &old.path_candidates, elapsed);
                 retain_local(&mut local.config, &old.config, elapsed);
+                retain_local(&mut local.config_access, &old.config_access, elapsed);
                 retain_local(&mut local.config_ownership, &old.config_ownership, elapsed);
                 retain_local(&mut local.service, &old.service, elapsed);
+                retain_local(&mut local.service_state, &old.service_state, elapsed);
                 retain_local(&mut local.registry, &old.registry, elapsed);
                 retain_local(&mut local.usb_mode, &old.usb_mode, elapsed);
             }
@@ -1135,6 +1198,23 @@ impl Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structured_service_and_config_access() {
+        let service = parse_service("ActiveState=active\nMainPID=42\nLoadState=loaded\n").unwrap();
+        assert_eq!(service.load, "loaded");
+        assert_eq!(service.active, "active");
+        assert_eq!(service.main_pid, Some(42));
+        assert!(parse_service("LoadState=loaded\nActiveState=active\nMainPID=bad\n").is_err());
+        assert!(parse_service("ActiveState=active\nMainPID=0\n").is_err());
+        let absent = Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let denied = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(config_access(&absent), Ok(ConfigAccess::Absent));
+        assert_eq!(config_access(&denied), Ok(ConfigAccess::Denied));
+        assert_eq!(
+            config_access(&Ok(PathBuf::from("/config"))),
+            Ok(ConfigAccess::Readable)
+        );
+    }
     #[test]
     fn stale_after_observation_failure() {
         let t = Instant::now();
