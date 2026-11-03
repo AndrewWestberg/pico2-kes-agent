@@ -1846,14 +1846,16 @@ fn service_group() -> io::Result<Option<u32>> {
             &mut result,
         )
     };
-    if rc != 0 {
-        return Err(io::Error::from_raw_os_error(rc));
-    }
-    Ok(if result.is_null() {
-        None
+    group_lookup_result(rc, if result.is_null() { None } else { Some(entry.gr_gid) })
+}
+
+fn group_lookup_result(rc: i32, gid: Option<u32>) -> io::Result<Option<u32>> {
+    // NSS may report an absent group as ENOENT/ESRCH rather than success with NULL.
+    if rc == 0 || (gid.is_none() && matches!(rc, libc::ENOENT | libc::ESRCH)) {
+        Ok(gid)
     } else {
-        Some(entry.gr_gid)
-    })
+        Err(io::Error::from_raw_os_error(rc))
+    }
 }
 
 pub(super) fn fixed_command(program: &str, arguments: &[&str]) -> io::Result<()> {
@@ -7154,6 +7156,25 @@ fn privileged_confirmation_stops_at_a_bounded_line() {
     );
     assert_eq!(long.position(), 257);
     assert!(read_confirmation(io::Cursor::new([0xff, b'\n'])).is_err());
+}
+
+#[test]
+fn group_lookup_distinguishes_absence_from_failure() {
+    for rc in [0, libc::ENOENT, libc::ESRCH] {
+        assert_eq!(group_lookup_result(rc, None).unwrap(), None);
+    }
+    assert_eq!(group_lookup_result(0, Some(0)).unwrap(), Some(0));
+    assert_eq!(group_lookup_result(0, Some(989)).unwrap(), Some(989));
+    for rc in [
+        libc::EACCES, libc::EPERM, libc::EIO, libc::EMFILE,
+        libc::ENOMEM, libc::ERANGE, libc::EAGAIN,
+    ] {
+        assert_eq!(group_lookup_result(rc, None).unwrap_err().raw_os_error(), Some(rc));
+    }
+    assert_eq!(
+        group_lookup_result(libc::ENOENT, Some(989)).unwrap_err().raw_os_error(),
+        Some(libc::ENOENT),
+    );
 }
 
 fn resolved_restart_invocation(before: Option<&str>, after: Option<&str>) -> Option<&'static str> {

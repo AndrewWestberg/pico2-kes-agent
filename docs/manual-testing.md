@@ -558,12 +558,15 @@ Manual testing is complete only for the paths actually exercised. Release accept
 | Signature/hash/inventory mismatch | Preserve assets/error; obtain a newly authenticated complete candidate; never run the disputed code |
 | Candidate absent from discovery | Expected: select its exact `--version TAG`, or an optional offline `--bundle`, with deliberate candidate admission |
 | Existing external files/account/group | Use a clean disposable managed host or an explicitly reviewed owner migration; no blind deletion/adoption |
+| RC.15 fresh install reports `No such file or directory` after plan approval, with the service group absent | RC.15 incorrectly treats NSS `ENOENT` for an absent group as fatal. Use a newly signed release containing the group-lookup fix; do not pre-create the group, alter NSS configuration or patch authenticated release files |
 | Socket permission denied after group change | New login/session, verify ownership/membership; no chmod 777 |
 | Config valid but pool lacks context | Add the exact live binding to startup config, validate/restart; verify trusted genesis/time |
 | Active swap / MemoryProtection | Correct the actual dedicated-host policy before secret interaction; never disable the check |
 | Missing output after mutation | Inspect/reconcile the original receipt; do not submit another mutation |
 | Unsupported compatible tuple | Obtain explicit signed authorization and actual source artifacts; version similarity is not compatibility |
 | Physical/OTP qualification missing | Record blocked and retain uncertainty; no erase/retry/record rewrite |
+
+For that RC.15 group-lookup failure, retain the original plan and bundle. Confirm that no service account, installation registry, account-intent file or maintenance record was created before starting a new installation with the fixed release. In the observed failure, `/var/lib/p2kesup` contained only the authenticated bootstrap manager: staging and account creation had not begun, so no further legacy cleanup was needed. The old plan remains bound to RC.15 and cannot authorize a replacement manager; use the new release's own reviewed plan. Other missing-path errors require their own diagnosis rather than this workaround.
 
 ### Documentation verification boundary
 
