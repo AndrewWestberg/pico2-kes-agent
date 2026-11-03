@@ -322,6 +322,32 @@ class PublishTests(unittest.TestCase):
                                                compatible_tuples=[mixed], trust=trust)
                 prepared_metadata = prepared / "prepared.json"
                 prepared_bytes = prepared_metadata.read_bytes()
+                declared = json.loads(prepared_bytes)
+                expected_os = {("debian", "12"), ("ubuntu", "24.04"), ("ubuntu", "26.04")}
+                self.assertEqual({(item["id"], item["version"]) for item in declared["platform"]["os"]},
+                                 expected_os)
+                for prerequisite in declared["prerequisites"]:
+                    self.assertEqual({(item["id"], item["version"]) for item in prerequisite["packages"]},
+                                     expected_os)
+                install = [item for item in declared["prerequisites"] if item["operation"] == "install"]
+                self.assertIn("sudo", {item["tool"] for item in install})
+                for prerequisite in install:
+                    for package in prerequisite["packages"]:
+                        self.assertIn("sudo", package["names"])
+                        self.assertNotIn("pkexec", package["names"])
+                        self.assertNotIn("polkit", package["names"])
+                publisher.validate_distribution_manifest(declared)
+                historical = json.loads(prepared_bytes)
+                historical["platform"]["os"] = historical["platform"]["os"][:2]
+                publisher.validate_distribution_manifest(historical)
+                self.assertNotIn({"id": "ubuntu", "version": "26.04"}, historical["platform"]["os"])
+                for invalid in ([*historical["platform"]["os"], historical["platform"]["os"][1]],
+                                [*historical["platform"]["os"], {"id": "ubuntu", "version": "25.04"}],
+                                [{"id": "ubuntu", "version": "24.04"},
+                                 {"id": "ubuntu", "version": "26.04"}]):
+                    declared["platform"]["os"] = invalid
+                    with self.subTest(os=invalid), self.assertRaises(ValueError):
+                        publisher.validate_distribution_manifest(declared)
                 altered = json.loads(prepared_bytes)
                 altered["components"][0]["digest"] = "0" * 64
                 prepared_metadata.write_text(json.dumps(altered), encoding="utf-8")

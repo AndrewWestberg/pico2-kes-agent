@@ -258,8 +258,8 @@ pub(super) fn resume_upgrade_direct(
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
-        let mut command = Command::new("/usr/bin/pkexec");
-        command.arg(executable);
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("--").arg(executable);
         command
     };
     command.arg("host-apply").arg("--plan").arg(&path);
@@ -343,8 +343,8 @@ pub(super) fn upgrade_direct(
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
-        let mut command = Command::new("/usr/bin/pkexec");
-        command.arg(executable);
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("--").arg(executable);
         command
     };
     command.arg("host-apply").arg("--plan").arg(&plan_path);
@@ -744,8 +744,8 @@ fn capture_firmware_review(
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
-        let mut command = Command::new("/usr/bin/pkexec");
-        command.arg(executable);
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("--").arg(executable);
         command
     };
     command.args(["host-firmware-preview", "--id", &id]);
