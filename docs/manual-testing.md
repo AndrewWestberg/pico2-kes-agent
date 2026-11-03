@@ -40,12 +40,13 @@ Inspect **Settings → Environments → release-signing** and the applicable tag
 
 | Secret | Used for |
 |---|---|
-| `PICO2_FIRMWARE_SIGNING_KEY_PEM` | Delegated secp256k1 firmware authority, in `seal-firmware` |
-| `PICO2_RELEASE_OPENPGP_PRIVATE_KEY` | Pinned OpenPGP signing subkey, in `sign-distribution` and later promotion |
+| `PICO2_FIRMWARE_SIGNING_KEY_PEM` | Existing secp256k1 key, in firmware sealing, distribution signing and later metadata promotion |
 
-The metadata job uses noninteractive `gpg --batch --detach-sign` and has no passphrase-input configuration. Its supplied signing capability must work with that exact job. Do not paste private keys into commands, logs or issue reports, upload the general cold/pool key, rotate the firmware authority, or remove its protection just to make a job green. If capability is missing, use the maintainer's approved existing-authority procedure in the [security guide](maintainer-security.md#maintainer-boot-authority). Secret-list output proves only that a named secret exists, not that its contents match the authority.
+No PGP private-key secret belongs in GitHub. Before tagging, ensure the separately authorized public `security/distribution-authority.json` and its `.asc` signature are committed; see [local distribution authorization](maintainer-security.md#authorize-distribution-signing-locally). Routine releases reuse that authorization. The signing jobs validate it and use the existing protected PEM; human qualification approval remains separately locally PGP-signed. Do not paste private keys into logs, upload a personal/cold key, rotate the firmware authority or weaken verification to make a job green. Secret-list output proves only that a named secret exists.
 
 The workflow source does not prove GitHub environment/ruleset settings. Publication jobs need `contents: write`; build jobs do not need production secrets. Keep both approval boundaries intact.
+
+The original `v0.1.0-rc.12` workflow required a missing PGP secret and cannot gain this source-level signing change by rerunning. Commit the authorization and verifier/workflow cutover, then use a new immutable RC tag (for example `v0.1.0-rc.13` if unused); do not move `v0.1.0-rc.12`. Substitute that actual new tag in the examples below.
 
 ## 2. Commit the intended source and create a new immutable RC tag
 
@@ -98,7 +99,7 @@ Approve the `release-signing` environment when its reviewed job waits for you. E
 2. `build`: firmware/host checks, native tool checks and unsigned firmware.
 3. `seal-firmware`: firmware signing with the existing delegated authority.
 4. `prepare-distribution`: combine authenticated firmware, host binaries, tools and deployment assets.
-5. `sign-distribution`: sign exact metadata and bootstrap with OpenPGP.
+5. `sign-distribution`: verify the public delegation and sign exact metadata and bootstrap with the existing secp256k1 key.
 6. `publish-candidate`: verify, publish and download/compare the immutable assets.
 
 A green firmware build alone is insufficient. Require successful `publish-candidate`, correct source identity and a published, non-draft RC. If a run fails, inspect its actual error, preserve its URL and stop. A failed upload may leave a draft that requires explicit maintainer handling; do not delete/recreate it or repeatedly rerun signing as a generic repair.
@@ -107,7 +108,7 @@ A green firmware build alone is insufficient. Require successful `publish-candid
 
 **Maintainer workstation.** Confirm the intended immutable RC and source commit in the release and workflow; the candidate is a GitHub prerelease and not latest. Do not use it on production hosts. Normal installation downloads the required assets itself; independent verification and offline preparation remain optional maintainer procedures in the [security guide](maintainer-security.md).
 
-The launcher is trusted from the project's HTTPS-hosted default branch. This is an explicit trust decision for that initial script, separate from the pinned OpenPGP verification of downloaded distribution payloads. A signed candidate is not release qualification.
+The launcher is trusted from the project's HTTPS-hosted default branch. This initial trust is separate from the pinned OpenPGP distribution delegation and domain-separated secp256k1 signatures on downloaded payloads. A signed candidate is not release qualification.
 
 ## 5. Run the authenticated installer on the disposable primary
 
@@ -564,6 +565,6 @@ Manual testing is complete only for the paths actually exercised. Release accept
 
 ### Documentation verification boundary
 
-This guide was traced against the current release, bootstrap, CLI and manager implementations. Verification of the installer/upgrade rework: 91 Python tests, 107 Rust library tests and 15 operator CLI tests passed. The host-security suite passed 12 tests; its passphrase-prompt test failed because this workstation's active `/swap.img` triggers `MemoryProtection`, which was not bypassed. The actual installer was streamed from a local HTTP fixture through `curl | sh`: help worked and an attended PTY run refused the unsupported host with exit 4 before privileged changes. The actual manager exercised help, missing-attendance and malformed upgrade selection rejection. All 28 runbook shell blocks passed syntax checks, and 97 local links across the installation/maintenance documentation resolved. These checks do not prove successful signed-release installation or a hardware upgrade.
+Delegated-signing verification: 94 Python tests, 109 Rust library tests, 15 operator CLI tests and the bootstrap subprocess-bound regression passed. The new public distribution authorization was signed locally and verified against the pinned signer and existing firmware public key; the unchanged firmware authorization also verified. The unmodified installer helper accepted that real authorization. A disposable-key publisher-to-installer smoke accepted the correct ECDSA context and rejected cross-purpose replay; the actual manager under a PTY rejected a signature from the wrong delegated key before creating an install plan. The local authorization CLI refused to overwrite existing public files. Workflow YAML, all 17 workflow shell steps, documented maintainer/runbook shell blocks and 101 local documentation links passed checks.
 
-No RC tag, GitHub release, installed service, private-key operation or hardware mutation was executed for this rework. The supported-host positive install/upgrade/recovery scenarios and cold-host Cardano CLI/physical procedures still require their actual environments and authorized signed releases. Instructions and source checks are not passing release acceptance evidence.
+No tag, release, GitHub secret/environment, installed service or hardware was changed. The sole production-key operation was local PGP signing of the public distribution delegation; the private key was not exported. Supported-host positive installation, physical upgrade/recovery and cloud publication still require their actual environments and a new signed RC. The full host-security suite was not repeated: its earlier passphrase-prompt failure came from this workstation's active swap, and that protection remains intact. Source checks and instructions are not release qualification.

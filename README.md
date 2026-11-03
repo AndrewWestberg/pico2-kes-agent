@@ -96,7 +96,7 @@ For a complete ordered RC tag/build, authenticated installation, setup, lifecycl
 
 ### Install p2kesup
 
-The launcher itself is trusted from the project's HTTPS-hosted default branch; this initial HTTPS trust is distinct from the pinned OpenPGP authentication of every downloaded distribution payload. If you require independent verification of the launcher before execution, use the separately signed release bootstrap and independently trusted project authority as described in the [maintainer security guide](docs/maintainer-security.md).
+The launcher itself is trusted from the project's HTTPS-hosted default branch. Downloaded payloads use a separate trust chain: the pinned OpenPGP authority authorizes a distribution-signing secp256k1 key once; that delegated key signs each manifest and bootstrap in distinct signing contexts. No private PGP key is needed by GitHub or the installer. For independent launcher verification before execution, use the separately signed release bootstrap as described in the [maintainer security guide](docs/maintainer-security.md).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh

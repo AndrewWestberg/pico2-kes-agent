@@ -112,6 +112,136 @@ class ReleaseTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
+    def test_distribution_authority_real_signature_and_scope(self):
+        with tempfile.TemporaryDirectory(prefix="distribution-authority-") as directory:
+            root = Path(directory)
+            statement = root / "distribution-authority.json"
+            signature = root / "distribution-authority.json.asc"
+            certificate = self.authority / "release-authority.asc"
+            public = (self.authority / firmware.PUBLIC_FILES[0]).read_bytes()
+            authorization = {
+                "schema_version": 1,
+                "purpose": "pico2-kes-agent-distribution-authority-v1",
+                "project": "https://github.com/AndrewWestberg/pico2-kes-agent",
+                "algorithm": "secp256k1",
+                "public_key_pem": public.decode("ascii"),
+            }
+
+            def sign(data):
+                statement.write_bytes(data)
+                subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign",
+                                "--local-user", self.trust[1] + "!", "--output", str(signature),
+                                str(statement)], check=True, env=self.env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            def verify(trust=None):
+                kwargs = {} if trust is None else {"trust": trust}
+                return firmware.verify_distribution_authority(statement, signature, certificate, **kwargs)
+
+            original = (json.dumps(authorization) + "\n").encode()
+            sign(original)
+            self.assertEqual(verify(self.trust), public)
+            for trust in (None, ("0" * 40, self.trust[1]), (self.trust[0], "0" * 40)):
+                with self.subTest(trust=trust), self.assertRaises(ValueError):
+                    verify(trust)
+            statement.write_bytes(original + b" ")
+            with self.assertRaises(ValueError):
+                verify(self.trust)
+            statement.write_bytes(original)
+            damaged = subprocess.run(["gpg", "--batch", "--dearmor"], input=signature.read_bytes(),
+                                     capture_output=True, check=True).stdout
+            signature.write_bytes(damaged[:-1] + bytes([damaged[-1] ^ 1]))
+            with self.assertRaises(ValueError):
+                verify(self.trust)
+
+            wrong_curve_key = root / "wrong-curve.pem"
+            wrong_curve_public = root / "wrong-curve-public.pem"
+            subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout",
+                            "-out", str(wrong_curve_key)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["openssl", "pkey", "-in", str(wrong_curve_key), "-pubout",
+                            "-out", str(wrong_curve_public)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            invalid = [
+                b"{",
+                original.rstrip()[:-1] + b', "purpose": "pico2-kes-agent-distribution-authority-v1"}',
+                json.dumps({**authorization, "schema_version": True}).encode(),
+                json.dumps({**authorization, "purpose": "pico2-kes-firmware-boot-authority-v1"}).encode(),
+                json.dumps({**authorization, "project": "https://example.invalid"}).encode(),
+                json.dumps({**authorization, "algorithm": "secp256r1"}).encode(),
+                json.dumps({**authorization, "public_key_pem": wrong_curve_public.read_text()}).encode(),
+                json.dumps({**authorization, "public_key_pem": "not a key"}).encode(),
+                json.dumps({**authorization, "extra": 1}).encode(),
+                json.dumps({key: value for key, value in authorization.items()
+                            if key != "public_key_pem"}).encode(),
+                (self.authority / "firmware-key.json").read_bytes(),
+            ]
+            for data in invalid:
+                with self.subTest(data=data[:100]):
+                    sign(data)
+                    with self.assertRaises(ValueError):
+                        verify(self.trust)
+
+    def test_distribution_signature_real_crypto_and_purpose_separation(self):
+        with tempfile.TemporaryDirectory(prefix="distribution-signature-") as directory:
+            root = Path(directory)
+            data = root / "data"
+            signature = root / "data.sig"
+            signed = root / "signed"
+            other_key = root / "other.pem"
+            other_public = root / "other-public.pem"
+            public = (self.authority / firmware.PUBLIC_FILES[0]).read_bytes()
+            subprocess.run(["openssl", "ecparam", "-name", "secp256k1", "-genkey", "-noout",
+                            "-out", str(other_key)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["openssl", "pkey", "-in", str(other_key), "-pubout",
+                            "-out", str(other_public)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            purposes = ("pico2-kes-agent-distribution-v1", "pico2-kes-agent-bootstrap-v1")
+            payload = b"exact distribution bytes\n\x00"
+            data.write_bytes(payload)
+            for purpose, other_purpose in (purposes, purposes[::-1]):
+                with self.subTest(purpose=purpose):
+                    signed.write_bytes(purpose.encode("ascii") + b"\n" + payload)
+                    subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(self.key),
+                                    "-out", str(signature), str(signed)], check=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    firmware.verify_distribution_signature(data, signature, public, purpose=purpose)
+                    with self.assertRaises(firmware.ToolError):
+                        firmware.verify_distribution_signature(data, signature, public, purpose=other_purpose)
+                    with self.assertRaises(firmware.ToolError):
+                        firmware.verify_distribution_signature(data, signature, other_public.read_bytes(),
+                                                               purpose=purpose)
+                    with self.assertRaises(firmware.ToolError):
+                        firmware.verify_distribution_signature(data, signature, public, purpose="wrong-purpose")
+                    data.write_bytes(payload + b"changed")
+                    with self.assertRaises(firmware.ToolError):
+                        firmware.verify_distribution_signature(data, signature, public, purpose=purpose)
+                    data.write_bytes(payload)
+                    raw_signature = signature.read_bytes()
+                    signature.write_bytes(raw_signature[:-1] + bytes([raw_signature[-1] ^ 1]))
+                    with self.assertRaises(firmware.ToolError):
+                        firmware.verify_distribution_signature(data, signature, public, purpose=purpose)
+
+            subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(self.key),
+                            "-out", str(signature), str(data)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            with self.assertRaises(firmware.ToolError):
+                firmware.verify_distribution_signature(data, signature, public, purpose=purposes[0])
+            subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout",
+                            "-out", str(other_key)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["openssl", "pkey", "-in", str(other_key), "-pubout",
+                            "-out", str(other_public)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            signed.write_bytes(purposes[0].encode("ascii") + b"\n" + payload)
+            subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(other_key),
+                            "-out", str(signature), str(signed)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            with self.assertRaises(firmware.ToolError):
+                firmware.verify_distribution_signature(data, signature, other_public.read_bytes(),
+                                                       purpose=purposes[0])
+
     def test_authority_injection_does_not_change_production_pin(self):
         firmware.verify_authority(self.authority, trust=self.trust)
         with self.assertRaises(ValueError):

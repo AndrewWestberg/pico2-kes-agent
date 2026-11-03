@@ -138,7 +138,8 @@ RUNTIME_PACKAGES = {
     "runtime/libgcc_s.so.1": "libgcc-s1",
 }
 REQUIRED_ASSETS = set(COMPONENT_PATHS.values()) | {
-    "install.sh", "tools/firmware.py", "deploy/uninstall.sh",
+    "install.sh", "distribution-authority.json", "distribution-authority.json.asc",
+    "tools/firmware.py", "deploy/uninstall.sh",
     "deploy/pico2-kes-agentd.service", "deploy/70-pico2-kes-agent.rules",
     "deploy/pico2-kes-agent-host-check", "deploy/cardano-node-memory-hardening.conf",
     "licenses/picotool.txt", "licenses/mbedtls.txt", "licenses/libusb-1.0-0.txt",
@@ -298,6 +299,63 @@ def sign_detached(path, certificate, *, trust=(firmware.PRIMARY, firmware.SIGNER
     signature.chmod(0o644)
 
 
+def authorize_distribution(authority_dir, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
+    authority_dir = Path(authority_dir)
+    firmware.verify_authority(authority_dir, trust=trust)
+    names = ("distribution-authority.json", "distribution-authority.json.asc")
+    firmware.require(all(not os.path.lexists(authority_dir / name) for name in names),
+                     "distribution authority already exists")
+    published = []
+    try:
+        with tempfile.TemporaryDirectory(prefix=".distribution-authority-", dir=authority_dir) as temporary:
+            temporary = Path(temporary)
+            statement = {"schema_version": 1, "purpose": firmware.DISTRIBUTION_AUTHORITY_PURPOSE,
+                         "project": firmware.PROJECT, "algorithm": "secp256k1",
+                         "public_key_pem": firmware.bounded_file(authority_dir / firmware.PUBLIC_FILES[0]).decode("ascii")}
+            (temporary / names[0]).write_text(json.dumps(statement, indent=2) + "\n", encoding="utf-8")
+            firmware.run(["gpg", "--armor", "--detach-sign", "--local-user", trust[1] + "!",
+                          "--output", temporary / names[1], temporary / names[0]], timeout=300)
+            firmware.verify_distribution_authority(temporary / names[0], temporary / names[1],
+                                                   authority_dir / "release-authority.asc", trust=trust)
+            for name in names:
+                (temporary / name).chmod(0o644)
+                os.link(temporary / name, authority_dir / name)
+                published.append(authority_dir / name)
+    except BaseException:
+        for path in published:
+            path.unlink()
+        raise
+
+
+def distribution_public_key(bundle, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
+    bundle = Path(bundle)
+    public_key = firmware.verify_distribution_authority(bundle / "distribution-authority.json",
+                                                        bundle / "distribution-authority.json.asc",
+                                                        bundle / "firmware/release-authority.asc", trust=trust)
+    firmware.require(public_key == firmware.bounded_file(bundle / "firmware/firmware-signing-public.pem"),
+                     "distribution and firmware public keys differ")
+    return public_key
+
+
+def sign_distribution(path, key_file, public_key, *, purpose):
+    path, key_file = Path(path), Path(key_file)
+    key_stat = key_file.lstat()
+    firmware.require(stat.S_ISREG(key_stat.st_mode) and key_stat.st_nlink == 1
+                     and stat.S_IMODE(key_stat.st_mode) & 0o077 == 0, "unsafe signing key file")
+    firmware.require(purpose in (firmware.DISTRIBUTION_PURPOSE, firmware.BOOTSTRAP_PURPOSE),
+                     "invalid distribution signature purpose")
+    signature = path.with_name(path.name + ".sig")
+    firmware.require(not os.path.lexists(signature), "signature already exists")
+    data = firmware.bounded_file(path, 256 * 1024 * 1024)
+    clean_loader = {key: None for key in os.environ if key.startswith("LD_")}
+    signed, _ = firmware.run(["/usr/bin/openssl", "dgst", "-sha256", "-sign", key_file],
+                             input=purpose.encode("ascii") + b"\n" + data, extra_env=clean_loader)
+    with signature.open("xb") as output:
+        output.write(signed)
+    signature.chmod(0o644)
+    firmware.verify_distribution_signature(path, signature, public_key, purpose=purpose)
+
+
 def require_promotion_identity(candidate, approved):
     firmware.require(candidate["qualification"] == "candidate", "only a candidate may be promoted")
     payloads = {entry["path"]: entry["sha256"] for entry in candidate["artifacts"]}
@@ -317,10 +375,12 @@ def prepare_distribution(payload, output, tag, commit, build_id, *, compatible_t
     payload, output = Path(payload), Path(output)
     files = payload_files(payload)
     firmware.require({name for name, _, _ in files} >= REQUIRED_ASSETS, "missing distribution payload")
-    firmware.require(not any(name in ("distribution.json", "distribution.json.asc", "install.sh.asc")
+    firmware.require(not any(name in ("distribution.json", "distribution.json.sig", "install.sh.sig",
+                                      "distribution.json.asc", "install.sh.asc")
                              for name, _, _ in files), "payload already contains signed metadata")
     firmware.require(not os.path.lexists(output), "output already exists")
     inner = firmware.verify_bundle(payload / "firmware", trust=trust)
+    distribution_public_key(payload, trust=trust)
     firmware.require(inner["tag"] == tag and inner["commit"] == commit, "firmware source identity differs")
     firmware.require(tag.startswith("v") and 0 < len(tag) <= 64 and
                      len(commit) in (40, 64) and all(c in "0123456789abcdef" for c in commit) and
@@ -332,7 +392,8 @@ def prepare_distribution(payload, output, tag, commit, build_id, *, compatible_t
             target = output / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target, follow_symlinks=False)
-            target.chmod(0o755 if metadata.st_mode & 0o111 else 0o644)
+            target.chmod(0o755 if metadata.st_mode & 0o111 and name not in
+                         ("distribution-authority.json", "distribution-authority.json.asc") else 0o644)
         require_host_builds(output, tag, commit, build_id)
         # This phase runs only in the no-signing-secret build environment.
         artifacts = [{"path": name, "size_bytes": meta.st_size, "sha256": digest_file(path),
@@ -512,6 +573,9 @@ def validate_inventory(bundle, manifest, metadata_names, required_names):
                          type(entry["class"]) is str and entry["class"] == artifact_class(name) and
                          type(entry["sha256"]) is str and entry["sha256"] == digest_file(path),
                          "altered artifact")
+        firmware.require(name not in ("distribution-authority.json", "distribution-authority.json.asc",
+                                      "install.sh.sig") or entry["mode"] == 0o644,
+                         "invalid public authorization or signature mode")
     firmware.require(names == expected and required_names <= names,
                      "incomplete distribution")
     by_path = {entry["path"]: entry for entry in artifacts}
@@ -558,24 +622,25 @@ def validate_prepared(bundle, tag, commit, build_id):
     return manifest
 
 
-def sign_prepared(prepared, output, tag, commit, build_id, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
+def sign_prepared(prepared, output, tag, commit, build_id, key_file, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
     prepared, output = Path(prepared), Path(output)
     validate_prepared(prepared, tag, commit, build_id)
     firmware.require(not os.path.lexists(output), "signing output already exists")
     shutil.copytree(prepared, output, symlinks=False)
     try:
         manifest = validate_prepared(output, tag, commit, build_id)
-        certificate = output / "firmware/release-authority.asc"
-        sign_detached(output / "install.sh", certificate, trust=trust)
-        signature = output / "install.sh.asc"
-        manifest["artifacts"].append({"path": "install.sh.asc", "size_bytes": signature.stat().st_size,
+        public_key = distribution_public_key(output, trust=trust)
+        sign_distribution(output / "install.sh", key_file, public_key, purpose=firmware.BOOTSTRAP_PURPOSE)
+        signature = output / "install.sh.sig"
+        manifest["artifacts"].append({"path": "install.sh.sig", "size_bytes": signature.stat().st_size,
                                       "sha256": digest_file(signature), "class": "bootstrap", "mode": 0o644})
         (output / "prepared.json").unlink()
         metadata = output / "distribution.json"
         data = (json.dumps(manifest, indent=2, ensure_ascii=True) + "\n").encode()
         firmware.require(len(data) <= 1024 * 1024, "manifest too large")
         metadata.write_bytes(data)
-        sign_detached(metadata, certificate, trust=trust)
+        metadata.chmod(0o644)
+        sign_distribution(metadata, key_file, public_key, purpose=firmware.DISTRIBUTION_PURPOSE)
         verified = verify_signed_metadata(output, trust=trust)
         firmware.require(verified == manifest, "signed metadata changed")
     except BaseException:
@@ -588,13 +653,15 @@ def sign_prepared(prepared, output, tag, commit, build_id, *, trust=(firmware.PR
 
 def verify_signed_metadata(bundle, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
     bundle = Path(bundle)
-    certificate = bundle / "firmware/release-authority.asc"
-    verify_detached(bundle / "distribution.json", bundle / "distribution.json.asc", certificate, trust=trust)
+    public_key = distribution_public_key(bundle, trust=trust)
+    firmware.verify_distribution_signature(bundle / "distribution.json", bundle / "distribution.json.sig",
+                                           public_key, purpose=firmware.DISTRIBUTION_PURPOSE)
     manifest = json.loads(firmware.bounded_file(bundle / "distribution.json", 1024 * 1024),
                           object_pairs_hook=firmware.unique_object)
-    validate_inventory(bundle, manifest, {"distribution.json", "distribution.json.asc"},
-                       REQUIRED_ASSETS | {"install.sh.asc"})
-    verify_detached(bundle / "install.sh", bundle / "install.sh.asc", certificate, trust=trust)
+    validate_inventory(bundle, manifest, {"distribution.json", "distribution.json.sig"},
+                       REQUIRED_ASSETS | {"install.sh.sig"})
+    firmware.verify_distribution_signature(bundle / "install.sh", bundle / "install.sh.sig",
+                                           public_key, purpose=firmware.BOOTSTRAP_PURPOSE)
     return manifest
 
 
@@ -650,7 +717,7 @@ def check_promotion(candidate, approval, commit, *, trust=(firmware.PRIMARY, fir
     return manifest
 
 
-def sign_promotion(candidate, output, approval, commit, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
+def sign_promotion(candidate, output, approval, commit, key_file, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
     candidate, output, approval = Path(candidate), Path(output), Path(approval)
     manifest = verify_signed_metadata(candidate, trust=trust)
     evidence = read_promotion_approval(approval, candidate / "firmware/release-authority.asc", trust=trust)
@@ -660,13 +727,14 @@ def sign_promotion(candidate, output, approval, commit, *, trust=(firmware.PRIMA
     firmware.require(not os.path.lexists(output), "promotion output already exists")
     shutil.copytree(candidate, output, symlinks=False)
     try:
-        (output / "distribution.json.asc").unlink()
+        (output / "distribution.json.sig").unlink()
         manifest["qualification"] = "qualified"
         manifest["promotion"] = {"candidate_sha256": evidence["candidate_sha256"],
                                  "approval_sha256": digest_file(approval)}
         metadata = output / "distribution.json"
         metadata.write_text(json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-        sign_detached(metadata, output / "firmware/release-authority.asc", trust=trust)
+        sign_distribution(metadata, key_file, distribution_public_key(output, trust=trust),
+                          purpose=firmware.DISTRIBUTION_PURPOSE)
         promoted = verify_signed_metadata(output, trust=trust)
         firmware.require(promoted == manifest, "promotion changed authorized metadata")
     except BaseException:
@@ -691,9 +759,12 @@ def require_archive_member(member, entries, seen):
 def unpack_distribution_assets(assets, output, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
     assets, output = Path(assets), Path(output)
     metadata = assets / "distribution.json"
-    signature = assets / "distribution.json.asc"
+    signature = assets / "distribution.json.sig"
     certificate = assets / "release-authority.asc"
-    verify_detached(metadata, signature, certificate, trust=trust)
+    public_key = firmware.verify_distribution_authority(assets / "distribution-authority.json",
+                                                        assets / "distribution-authority.json.asc",
+                                                        certificate, trust=trust)
+    firmware.verify_distribution_signature(metadata, signature, public_key, purpose=firmware.DISTRIBUTION_PURPOSE)
     manifest = json.loads(firmware.bounded_file(metadata, 1024 * 1024),
                           object_pairs_hook=firmware.unique_object)
     validate_distribution_manifest(manifest)
@@ -738,10 +809,13 @@ def unpack_distribution_assets(assets, output, *, trust=(firmware.PRIMARY, firmw
                 target.chmod(entries[member.name]["mode"])
         firmware.require(seen == set(entries), "missing archive member")
         shutil.copyfile(metadata, output / "distribution.json")
-        shutil.copyfile(signature, output / "distribution.json.asc")
+        shutil.copyfile(signature, output / "distribution.json.sig")
+        (output / "distribution.json").chmod(0o644)
+        (output / "distribution.json.sig").chmod(0o644)
         firmware.require(digest_file(certificate) == digest_file(output / "firmware/release-authority.asc"),
                          "archive authority mismatch")
-        for name in ("install.sh", "install.sh.asc"):
+        for name in ("install.sh", "install.sh.sig", "distribution-authority.json",
+                     "distribution-authority.json.asc"):
             firmware.require(digest_file(assets / name) == digest_file(output / name),
                              "standalone bootstrap differs from signed bundle")
         verify_distribution(output, trust=trust)
@@ -763,9 +837,13 @@ def pack_distribution_assets(bundle, assets, evidence=None, *, trust=(firmware.P
                 info.size, info.mode, info.mtime = entry["size_bytes"], entry["mode"], 0
                 with (bundle / entry["path"]).open("rb") as source:
                     tar.addfile(info, source)
-        for name in ("distribution.json", "distribution.json.asc", "install.sh", "install.sh.asc"):
+        for name in ("distribution.json", "distribution.json.sig", "install.sh", "install.sh.sig",
+                     "distribution-authority.json", "distribution-authority.json.asc"):
             shutil.copyfile(bundle / name, assets / name)
         shutil.copyfile(bundle / "firmware/release-authority.asc", assets / "release-authority.asc")
+        for name in ("distribution.json", "distribution.json.sig", "install.sh.sig",
+                     "distribution-authority.json", "distribution-authority.json.asc", "release-authority.asc"):
+            (assets / name).chmod(0o644)
         if manifest["qualification"] == "qualified":
             firmware.require(evidence is not None, "qualified publication requires retained evidence")
             approval = Path(evidence) / "approval.json"
@@ -835,6 +913,12 @@ def publish_distribution(bundle, tag, commit, evidence=None):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "authorize-distribution":
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--authority-dir", required=True, type=Path)
+        args = parser.parse_args(sys.argv[2:])
+        authorize_distribution(args.authority_dir)
+        return
     if len(sys.argv) > 1 and sys.argv[1] in ("check-promotion", "sign-promotion"):
         command = sys.argv[1]
         parser = argparse.ArgumentParser(description=__doc__)
@@ -843,11 +927,12 @@ def main():
         parser.add_argument("--commit", required=True)
         if command == "sign-promotion":
             parser.add_argument("--output", required=True, type=Path)
+            parser.add_argument("--key-file", required=True, type=Path)
         args = parser.parse_args(sys.argv[2:])
         if command == "check-promotion":
             check_promotion(args.candidate, args.approval, args.commit)
         else:
-            sign_promotion(args.candidate, args.output, args.approval, args.commit)
+            sign_promotion(args.candidate, args.output, args.approval, args.commit, args.key_file)
         return
     if len(sys.argv) > 1 and sys.argv[1] in ("prepare", "sign-prepared"):
         command = sys.argv[1]
@@ -859,6 +944,8 @@ def main():
         parser.add_argument("--build-id", required=True)
         if command == "prepare":
             parser.add_argument("--compatible-tuples", type=Path)
+        else:
+            parser.add_argument("--key-file", required=True, type=Path)
         args = parser.parse_args(sys.argv[2:])
         if command == "prepare":
             compatible_tuples = None
@@ -868,7 +955,7 @@ def main():
             prepare_distribution(args.payload, args.output, args.tag, args.commit, args.build_id,
                                  compatible_tuples=compatible_tuples)
         else:
-            sign_prepared(args.prepared, args.output, args.tag, args.commit, args.build_id)
+            sign_prepared(args.prepared, args.output, args.tag, args.commit, args.build_id, args.key_file)
         return
     if len(sys.argv) > 1 and sys.argv[1] == "unpack":
         parser = argparse.ArgumentParser(description=__doc__)

@@ -602,8 +602,8 @@ fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only:
         false,
     )?;
     fetch(
-        asset("distribution.json.asc")?,
-        &bundle.join("distribution.json.asc"),
+        asset("distribution.json.sig")?,
+        &bundle.join("distribution.json.sig"),
         MAX_MANIFEST_BYTES,
         false,
     )?;
@@ -613,6 +613,11 @@ fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only:
         MAX_MANIFEST_BYTES,
         false,
     )?;
+    for name in ["distribution-authority.json", "distribution-authority.json.asc"] {
+        fetch(asset(name)?, &bundle.join(name), MAX_MANIFEST_BYTES, false)?;
+    }
+    let delegation = read_bounded(&bundle.join("distribution-authority.json"), MAX_MANIFEST_BYTES)?;
+    let delegation_signature = read_bounded(&bundle.join("distribution-authority.json.asc"), MAX_MANIFEST_BYTES)?;
     let authority = read_bounded(
         &bundle.join("firmware/release-authority.asc"),
         MAX_MANIFEST_BYTES,
@@ -664,11 +669,15 @@ fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only:
     )?;
     // The certificate is used for metadata authentication, then must be reproduced by the signed archive.
     fs::remove_file(bundle.join("firmware/release-authority.asc"))?;
+    fs::remove_file(bundle.join("distribution-authority.json"))?;
+    fs::remove_file(bundle.join("distribution-authority.json.asc"))?;
     extract(&archive, &bundle, &manifest)?;
     if read_bounded(
         &bundle.join("firmware/release-authority.asc"),
         MAX_MANIFEST_BYTES,
     )? != authority
+        || read_bounded(&bundle.join("distribution-authority.json"), MAX_MANIFEST_BYTES)? != delegation
+        || read_bounded(&bundle.join("distribution-authority.json.asc"), MAX_MANIFEST_BYTES)? != delegation_signature
     {
         return Err(invalid("archive authority mismatch"));
     }

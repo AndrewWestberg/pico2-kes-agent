@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "purpose": "pico2-kes-agent-distribution-authority-v1",
+  "project": "https://github.com/AndrewWestberg/pico2-kes-agent",
+  "algorithm": "secp256k1",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE/h0LjpI7I6is45OvqEzxSFpS01skeHVN\n1v832OwZ7ySqDTUp6KQHI/6HEylfVyU0IzIinv7NZmugwARQoWXUdQ==\n-----END PUBLIC KEY-----\n"
+}

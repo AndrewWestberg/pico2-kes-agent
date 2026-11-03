@@ -193,8 +193,12 @@ def run(command, *, input=None, timeout=60, failure_code=7, extra_env=None):
 
 def bounded_file(path, maximum=1024 * 1024):
     path = Path(path)
-    require(not path.is_symlink() and path.is_file(), f"not a regular payload: {path.name}")
-    with path.open("rb") as source:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        raise ValueError(f"not a regular payload: {path.name}") from error
+    with os.fdopen(fd, "rb") as source:
+        require(stat.S_ISREG(os.fstat(source.fileno()).st_mode), f"not a regular payload: {path.name}")
         data = source.read(maximum + 1)
     require(len(data) <= maximum, f"oversized payload: {path.name}")
     return data
@@ -248,6 +252,79 @@ def verify_authority(directory, *, trust=(PRIMARY, SIGNER)):
                     ("REVKEYSIG", "EXPKEYSIG", "EXPSIG", "BADSIG", "ERRSIG")),
             "revoked, expired or invalid GPG authorization")
     return expected
+
+
+DISTRIBUTION_PURPOSE = "pico2-kes-agent-distribution-v1"
+BOOTSTRAP_PURPOSE = "pico2-kes-agent-bootstrap-v1"
+DISTRIBUTION_AUTHORITY_PURPOSE = "pico2-kes-agent-distribution-authority-v1"
+
+
+def verify_distribution_authority(statement_path, signature_path, certificate_path, *, trust=(PRIMARY, SIGNER)):
+    data = bounded_file(statement_path)
+    signature = bounded_file(signature_path)
+    certificate = bounded_file(certificate_path)
+    actual = json.loads(data, object_pairs_hook=unique_object)
+    exact_keys(actual, ("schema_version", "purpose", "project", "algorithm", "public_key_pem"))
+    require(type(actual["schema_version"]) is int and actual["schema_version"] == 1
+            and actual["purpose"] == DISTRIBUTION_AUTHORITY_PURPOSE and actual["project"] == PROJECT
+            and actual["algorithm"] == "secp256k1" and type(actual["public_key_pem"]) is str,
+            "invalid distribution authority")
+    pem = actual["public_key_pem"].encode("utf-8")
+    clean_loader = {key: None for key in os.environ if key.startswith("LD_")}
+    with tempfile.TemporaryDirectory(prefix="pico2-distribution-authority-") as directory:
+        directory = Path(directory)
+        (directory / "statement").write_bytes(data)
+        (directory / "signature").write_bytes(signature)
+        (directory / "certificate").write_bytes(certificate)
+        (directory / "public.pem").write_bytes(pem)
+        run(["/usr/bin/openssl", "pkey", "-pubin", "-in", directory / "public.pem", "-pubcheck", "-noout"],
+            extra_env=clean_loader)
+        der, _ = run(["/usr/bin/openssl", "pkey", "-pubin", "-in", directory / "public.pem", "-outform", "DER"],
+                     extra_env=clean_loader)
+        require(len(der) == len(SPKI_PREFIX) + 64 and der.startswith(SPKI_PREFIX),
+                "authority must be an uncompressed secp256k1 public key")
+        keyring = directory / "authority.gpg"
+        run(["/usr/bin/gpg", "--batch", "--no-options", "--homedir", directory, "--dearmor",
+             "--output", keyring, directory / "certificate"], extra_env=clean_loader)
+        status, _ = run(["/usr/bin/gpgv", "--homedir", directory, "--keyring", keyring,
+                         "--status-fd", "1", directory / "signature", directory / "statement"],
+                        failure_code=5, extra_env=clean_loader)
+    text = status.decode("ascii")
+    valid = [line.split() for line in text.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")]
+    require(len(valid) == 1 and len(valid[0]) == 12 and valid[0][2] == trust[1] and valid[0][11] == trust[0]
+            and not any("[GNUPG:] " + bad in text for bad in
+                        ("REVKEYSIG", "EXPKEYSIG", "EXPSIG", "BADSIG", "ERRSIG")),
+            "unauthorized distribution authority")
+    return pem
+
+
+def verify_distribution_signature(data_path, signature_path, public_key_pem, *, purpose):
+    try:
+        return _verify_distribution_signature(data_path, signature_path, public_key_pem, purpose=purpose)
+    except ToolError:
+        raise
+    except (ValueError, OSError) as error:
+        raise ToolError("invalid distribution signature input", 5) from error
+
+
+def _verify_distribution_signature(data_path, signature_path, public_key_pem, *, purpose):
+    require(purpose in (DISTRIBUTION_PURPOSE, BOOTSTRAP_PURPOSE), "invalid distribution signature purpose")
+    data = bounded_file(data_path, 256 * 1024 * 1024)
+    signature = bounded_file(signature_path)
+    clean_loader = {key: None for key in os.environ if key.startswith("LD_")}
+    with tempfile.TemporaryDirectory(prefix="pico2-distribution-verify-") as directory:
+        directory = Path(directory)
+        (directory / "public.pem").write_bytes(public_key_pem)
+        (directory / "signature").write_bytes(signature)
+        run(["/usr/bin/openssl", "pkey", "-pubin", "-in", directory / "public.pem", "-pubcheck", "-noout"],
+            extra_env=clean_loader)
+        der, _ = run(["/usr/bin/openssl", "pkey", "-pubin", "-in", directory / "public.pem", "-outform", "DER"],
+                     extra_env=clean_loader)
+        require(len(der) == len(SPKI_PREFIX) + 64 and der.startswith(SPKI_PREFIX),
+                "authority must be an uncompressed secp256k1 public key")
+        run(["/usr/bin/openssl", "dgst", "-sha256", "-verify", directory / "public.pem",
+             "-signature", directory / "signature"], input=purpose.encode("ascii") + b"\n" + data,
+            failure_code=5, extra_env=clean_loader)
 
 
 def authorize(public_key, out_dir):
@@ -1188,30 +1265,26 @@ def msd_copy(serial, bundle, *, picoboot_available):
 def signed_distribution(bundle):
     root = Path(bundle).resolve().parent
     manifest_path = root / "distribution.json"
-    signature = root / "distribution.json.asc"
     certificate = Path(bundle) / "release-authority.asc"
-    bounded_file(manifest_path)
-    bounded_file(signature)
-    bounded_file(certificate)
-    with tempfile.TemporaryDirectory(prefix="pico2-distribution-gpgv-") as temporary:
-        keyring = Path(temporary) / "authority.gpg"
-        clean_loader = {key: None for key in os.environ if key.startswith("LD_")}
-        run(["/usr/bin/gpg", "--batch", "--no-options", "--homedir", temporary, "--dearmor", "--output", keyring, certificate],
-            extra_env=clean_loader)
-        status, _ = run(["/usr/bin/gpgv", "--homedir", temporary, "--keyring", keyring,
-                         "--status-fd", "1", signature, manifest_path], failure_code=5, extra_env=clean_loader)
-    text = status.decode("ascii")
-    signatures = [line.split() for line in text.splitlines() if line.startswith("[GNUPG:] VALIDSIG ")]
-    require(len(signatures) == 1 and len(signatures[0]) == 12
-            and signatures[0][2] == SIGNER and signatures[0][11] == PRIMARY
-            and not any(f"[GNUPG:] {bad}" in text for bad in
-                        ("REVKEYSIG", "EXPKEYSIG", "EXPSIG", "BADSIG", "ERRSIG")),
-            "distribution signature is not from the pinned authority")
+    public_key = verify_distribution_authority(root / "distribution-authority.json",
+                                               root / "distribution-authority.json.asc", certificate)
+    verify_distribution_signature(manifest_path, root / "distribution.json.sig", public_key,
+                                  purpose=DISTRIBUTION_PURPOSE)
     manifest = read_json(manifest_path)
     require(type(manifest) is dict and manifest.get("schema_version") == 1
             and manifest.get("purpose") == "pico2-kes-agent-distribution-v1"
             and manifest.get("qualification") in ("candidate", "qualified"),
             "unsupported distribution evidence")
+    require(public_key == bounded_file(Path(bundle) / "firmware-signing-public.pem"),
+            "distribution and firmware public keys differ")
+    artifacts = manifest.get("artifacts")
+    require(type(artifacts) is list, "distribution artifacts missing")
+    for name, path in (("distribution-authority.json", root / "distribution-authority.json"),
+                       ("distribution-authority.json.asc", root / "distribution-authority.json.asc"),
+                       ("firmware/release-authority.asc", certificate)):
+        matches = [entry for entry in artifacts if type(entry) is dict and entry.get("path") == name]
+        require(len(matches) == 1 and matches[0].get("sha256") == sha256(bounded_file(path)),
+                "distribution authority artifact mismatch")
     return manifest
 
 
