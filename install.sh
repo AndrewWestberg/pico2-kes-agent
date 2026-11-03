@@ -33,7 +33,7 @@ exec 3<>/dev/tty
 [ "$(uname -m)" = x86_64 ] && [ -d /run/systemd/system ] || { echo 'Unsupported host: x86-64 and systemd required.' >&2; exit 4; }
 [ -r /etc/os-release ] || { echo 'Unsupported operating system.' >&2; exit 4; }
 . /etc/os-release
-case "${ID:-}:${VERSION_ID:-}" in debian:12|ubuntu:24.04) ;; *) echo 'Unsupported operating system.' >&2; exit 4 ;; esac
+case "${ID:-}:${VERSION_ID:-}" in debian:12|ubuntu:24.04|ubuntu:26.04) ;; *) echo 'Unsupported operating system.' >&2; exit 4 ;; esac
 libc=$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null) || { echo 'Unsupported libc.' >&2; exit 4; }
 case "$libc" in glibc\ 2.*) minor=${libc#glibc 2.}; case "$minor" in *[!0-9]*|'') echo 'Unsupported libc.' >&2; exit 4 ;; esac; [ "$minor" -ge 36 ] || { echo 'glibc 2.36 or later required.' >&2; exit 4; } ;; *) echo 'Unsupported libc.' >&2; exit 4 ;; esac
 [ -x /usr/bin/apt-get ] && [ -x /usr/bin/dpkg-query ] || { echo 'Trusted apt is required.' >&2; exit 4; }
@@ -148,7 +148,7 @@ values={}
 for line in data.splitlines():
     if '=' in line:
         k,v=line.split('=',1); values[k]=v.strip('"')
-if (values.get('ID'),values.get('VERSION_ID')) not in (('debian','12'),('ubuntu','24.04')): raise SystemExit(1)
+if (values.get('ID'),values.get('VERSION_ID')) not in (('debian','12'),('ubuntu','24.04'),('ubuntu','26.04')): raise SystemExit(1)
 libc=ctypes.CDLL(None); libc.gnu_get_libc_version.restype=ctypes.c_char_p
 parts=libc.gnu_get_libc_version().decode('ascii').split('.')
 if len(parts)<2 or tuple(map(int,parts[:2]))<(2,36): raise SystemExit(1)
@@ -347,7 +347,7 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
         if '=' in line:
             k,v=line.split('=',1); os_release[k]=v.strip('"')
     identity=(os_release.get('ID'),os_release.get('VERSION_ID'))
-    if identity not in (('debian','12'),('ubuntu','24.04')): fail('unsupported operating system')
+    if identity not in (('debian','12'),('ubuntu','24.04'),('ubuntu','26.04')): fail('unsupported operating system')
     libc=ctypes.CDLL(None); libc.gnu_get_libc_version.restype=ctypes.c_char_p
     version=libc.gnu_get_libc_version().decode('ascii').split('.')
     if len(version)<2 or tuple(map(int,version[:2]))<(2,36): fail('glibc 2.36 or later required')

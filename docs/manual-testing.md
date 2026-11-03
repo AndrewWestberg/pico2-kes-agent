@@ -9,11 +9,11 @@ Use this in order, stopping at the first unexpected result. It covers publishing
 | Location | What belongs there |
 |---|---|
 | Maintainer workstation | Trusted source checkout and Git/GitHub CLI for tagging and release review |
-| Disposable primary | Debian 12 or Ubuntu 24.04 **x86-64**, systemd/udev, attended terminal, sole attached test device, public inputs, encrypted artifacts and receipts |
+| Disposable primary | Debian 12, Ubuntu 24.04 or Ubuntu 26.04 **x86-64**, systemd/udev, attended terminal, sole attached test device, public inputs, encrypted artifacts and receipts |
 | Isolated backup host | Same supported installation platform; no primary configuration/state, daemon or device; recipient private material and restored test key |
 | Offline cold-key host | Disposable pool cold signing key, authoritative issuance counter, matching Cardano CLI; never transfer those private inputs to primary |
 
-The maintainer workstation is not required to be the primary. **Ubuntu 26.04 is rejected by the installer.** Use a fresh supported host rather than trying to adopt this checkout's old manual installation. Existing unregistered files, service accounts/groups and state can intentionally block a managed install. Do not remove them blindly.
+The maintainer workstation is not required to be the primary. **Ubuntu 26.04 is an installation target for releases containing the Ubuntu 26.04 support change.** RC.13 and earlier retain their original installer and signed-manifest restrictions: publish a new RC containing this change, then use that tag instead of the older examples below. Updating only the launcher cannot authorize an old bundle for a new OS. Existing unregistered files, service accounts/groups and state can still intentionally block a managed install; use a clean disposable host or a separately reviewed migration, not blind deletion/adoption.
 
 Before beginning, obtain:
 
@@ -551,7 +551,7 @@ Manual testing is complete only for the paths actually exercised. Release accept
 
 | Symptom | Next action, without bypass |
 |---|---|
-| Unsupported OS/architecture | Move installation test to Debian 12/Ubuntu 24.04 x86-64; do not patch the support check |
+| Unsupported OS/architecture | Use Debian 12, Ubuntu 24.04 or Ubuntu 26.04 x86-64 with a release whose installer and signed manifest support that host; Ubuntu 26.04 requires a new release after RC.13. Do not patch downloaded assets or the support check |
 | Missing secret or signing failure | Review the exact job and existing authority capability; do not generate a replacement key |
 | Signature/hash/inventory mismatch | Preserve assets/error; obtain a newly authenticated complete candidate; never run the disputed code |
 | Candidate absent from discovery | Expected: select its exact `--version TAG`, or an optional offline `--bundle`, with deliberate candidate admission |

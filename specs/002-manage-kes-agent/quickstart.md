@@ -7,7 +7,7 @@ Start with the [manual RC-to-lifecycle runbook](../../docs/manual-testing.md) fo
 ## Prerequisites
 
 - Signed source-free candidate bundle or published RC tag, with a separately PGP-authorized secp256k1 distribution key and domain-separated release/bootstrap signatures. The manifest must authorize the exact compatible tuple and declare `qualification: candidate`; admit it only through explicit `--version TAG` or local `--bundle` acceptance on disposable targets. Have a second explicitly compatible signed bundle and incompatible/untrusted inputs. Final qualification follows acceptance, not merely signing.
-- Disposable Debian 12 and Ubuntu 24.04 x86-64 systemd/udev machines, plus an isolated backup host. Package installation and service changes require administrative approval. Ordinary TUI inspection runs unprivileged.
+- Disposable Debian 12, Ubuntu 24.04 and Ubuntu 26.04 x86-64 systemd/udev machines, plus an isolated backup host. Ubuntu 26.04 needs a newly published release containing its support change, not RC.13 or earlier. Package installation and service changes require administrative approval. Ordinary TUI inspection runs unprivileged.
 - An accepted Pico2 A2 with required hardware/tool/image evidence and disposable pool generations for maintenance scenarios; a factory/BOOTSEL-only board for first installation, a compatible running blank application for the alternate setup path, and an eligible sacrificial target with required qualification for OTP. Never erase a populated device to satisfy a scenario. First-install does not require a pre-existing application pin.
 - Operator-supplied public network/genesis/pool inputs, trusted device identity, public recipient records and disposable encrypted artifacts. Cold signing remains offline. Recipient private keys/passphrases exist only on the backup host.
 - Existing host-memory/security requirements from [README](../../README.md). The existing agent preflight still references `cardano-node.service`; this guide does not add node discovery, configuration or integration checks. Custom-unit drop-in installation does not change that constraint.
@@ -28,7 +28,7 @@ This approves the procedure, not any measurement or release.
 - Baseline: identify a comparable Q1/Q3 implementation, or freeze a separately identified
   initial comparable implementation before evaluating the candidate. Never use absent
   behavior, zero time or the candidate itself as the baseline.
-- Environment/tools: use the same otherwise idle supported Debian 12 or Ubuntu 24.04
+- Environment/tools: use the same otherwise idle supported Debian 12, Ubuntu 24.04 or Ubuntu 26.04
   x86-64 host, real service/device, 64 active/64 staged generations, terminal, power
   policy and starting state for both builds. Record exact identities and approve the
   monotonic instrument/version (resolution at least 0.1 seconds) before measurement.
@@ -137,12 +137,13 @@ not the complete packaged feature or an acceptance result.
   initial raw-stream text assertions were invalid harness checks, not UI failures.
   Nonterminal invocation refused with exit 4; standalone help/version succeeded.
 
-The inspected host is Ubuntu 26.04, not either supported installation target.
-The UI correctly labels it unsupported for installation, reports the sysfs USB
-candidate as application mode without claiming authentication, and keeps
-external installation ownership distinct from authenticated registry evidence.
-The installed daemon was inactive; no agent service, pin, device state, flash
-or OTP was changed. At this checkpoint host Clippy and authenticated installation
+At this historical checkpoint the inspected Ubuntu 26.04 host was excluded by the
+then-current installation allowlist. The UI reported that restriction, the sysfs USB
+candidate as application mode without claiming authentication, and external
+installation ownership separately from authenticated registry evidence.
+Ubuntu 26.04 is now a selected target; that change does not retroactively qualify
+this checkpoint. The installed daemon was inactive; no agent service, pin, device
+state, flash or OTP was changed. Host Clippy and authenticated installation
 integration were still pending; the US2 checkpoint below records later checks.
 
 T019 remains blocked for actual 64-active/64-staged Q3, supported packaged hosts,
@@ -170,8 +171,8 @@ or commissioning acceptance on packaged supported targets.
   not complete; `/swap.img` remained active, unused, priority -1. The protection was
   not weakened. The earlier US1 full-suite result is not a current full-suite pass.
 - Shell syntax checks passed for bootstrap and deployment scripts. Actual bootstrap
-  help succeeded; nonterminal and unsupported Ubuntu 26.04 invocations refused
-  before installation.
+  help succeeded; nonterminal and then-unsupported Ubuntu 26.04 invocations refused
+  before installation. This records the historical allowlist, not current support.
 - Actual primary/backup PTY runs exercised Setup, cancellation, invalid public
   configuration, minimum-size blocking, uninstall review and terminal restoration.
   Invalid configuration bytes and mode remained unchanged. Internal privileged

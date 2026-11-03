@@ -757,6 +757,17 @@ fn validate_runtime_provenance(
     }
     Ok(())
 }
+fn supported_platform(p: &Platform) -> bool {
+    p.target == "x86_64-unknown-linux-gnu"
+        && p.glibc_min == "2.36"
+        && p.systemd
+        && p.udev
+        && (p.os.len() == 2 || p.os.len() == 3)
+        && p.os.iter().any(|o| o.id == "debian" && o.version == "12")
+        && p.os.iter().any(|o| o.id == "ubuntu" && o.version == "24.04")
+        && (p.os.len() == 2 || p.os.iter().any(|o| o.id == "ubuntu" && o.version == "26.04"))
+}
+
 fn verify_snapshot(
     root: &Path,
     admission: Admission,
@@ -799,18 +810,7 @@ fn verify_snapshot(
     {
         return Err(invalid("invalid release identity"));
     }
-    let p = &manifest.platform;
-    if p.target != "x86_64-unknown-linux-gnu"
-        || p.glibc_min != "2.36"
-        || !p.systemd
-        || !p.udev
-        || p.os.len() != 2
-        || !p.os.iter().any(|o| o.id == "debian" && o.version == "12")
-        || !p
-            .os
-            .iter()
-            .any(|o| o.id == "ubuntu" && o.version == "24.04")
-    {
+    if !supported_platform(&manifest.platform) {
         return Err(invalid("unsupported platform declaration"));
     }
     let preservation = &manifest.preservation;
@@ -1054,7 +1054,7 @@ fn verify_snapshot(
         source_commit: r.source_commit.clone(),
         channel: r.channel.clone(),
         qualification: manifest.qualification,
-        platform: p.target.clone(),
+        platform: manifest.platform.target.clone(),
         components,
         manifest_digest,
     };
@@ -1064,6 +1064,24 @@ fn verify_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn platform_declarations_accept_only_exact_supported_sets() {
+        let mut platform: Platform = serde_json::from_value(serde_json::json!({
+            "target": "x86_64-unknown-linux-gnu", "glibc_min": "2.36",
+            "systemd": true, "udev": true,
+            "os": [{"id": "debian", "version": "12"}, {"id": "ubuntu", "version": "24.04"}]
+        })).unwrap();
+        assert!(supported_platform(&platform));
+        platform.os.push(Os { id: "ubuntu".into(), version: "26.04".into() });
+        assert!(supported_platform(&platform));
+        platform.os[2].version = "24.04".into();
+        assert!(!supported_platform(&platform));
+        platform.os[2].version = "25.04".into();
+        assert!(!supported_platform(&platform));
+        platform.os.remove(0);
+        assert!(!supported_platform(&platform));
+    }
+
     #[test]
     fn distribution_authority_scope_is_strict() {
         let valid = r#"{"schema_version":1,"purpose":"pico2-kes-agent-distribution-authority-v1","project":"https://github.com/AndrewWestberg/pico2-kes-agent","algorithm":"secp256k1","public_key_pem":"key"}"#;

@@ -7,8 +7,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, mock_open, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'install.sh'
@@ -35,6 +36,49 @@ class BootstrapTests(unittest.TestCase):
         result = self.shell([], script[:len(script) // 2])
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(b'controlling terminal', result.stderr)
+
+    def test_platform_admission(self):
+        script = SCRIPT.read_text()
+        shell_gate = script.split('case "${ID:-}:${VERSION_ID:-}"', 1)[1].split('\n', 1)[0]
+        shell_gate = 'case "${ID:-}:${VERSION_ID:-}"' + shell_gate + '\n'
+        early = script.split("/usr/bin/python3 -I - <<'PY' ||", 1)[1].split('\n', 1)[1].split('\nPY\n', 1)[0]
+        authenticated = textwrap.dedent(script.split('    os_release={}\n', 1)[1].split('    components=manifest.get', 1)[0])
+        authenticated = 'os_release={}\n' + authenticated
+
+        for os_id, version, libc, declared, supported, allowed in (
+            ('debian', '12', b'2.36', True, True, True),
+            ('ubuntu', '24.04', b'2.39', True, True, True),
+            ('ubuntu', '26.04', b'2.41', True, True, True),
+            ('ubuntu', '25.04', b'2.41', True, False, False),
+            ('ubuntu', '26.04', b'2.35', True, True, False),
+            ('ubuntu', '26.04', b'2.41', False, True, False),
+        ):
+            with self.subTest(os_id=os_id, version=version, libc=libc, declared=declared):
+                os_release = f'ID={os_id}\nVERSION_ID="{version}"\n'
+                result = subprocess.run(['/bin/sh', '-c', shell_gate],
+                                        env={'ID': os_id, 'VERSION_ID': version},
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode == 0, supported)
+                library = Mock()
+                library.gnu_get_libc_version.return_value = libc
+                with patch('ctypes.CDLL', return_value=library), \
+                        patch('builtins.open', mock_open(read_data=os_release)):
+                    if supported and libc != b'2.35':
+                        exec(early, {})
+                    else:
+                        with self.assertRaises(SystemExit):
+                            exec(early, {})
+                manifest = {'platform': {'target': 'x86_64-unknown-linux-gnu',
+                                         'os': [{'id': os_id, 'version': version}] if declared else []}}
+                namespace = {'read': lambda path, limit: os_release.encode(), 'Path': Path,
+                             'manifest': manifest, 'fail': lambda message: sys.exit(message)}
+                with patch('ctypes.CDLL', return_value=library):
+                    namespace['ctypes'] = __import__('ctypes')
+                    if allowed:
+                        exec(authenticated, namespace)
+                    else:
+                        with self.assertRaises(SystemExit):
+                            exec(authenticated, namespace)
 
     def download(self, publication, signed_tag, qualification='candidate', requested=None, payload=b'payload', symlink=False, standalone_tamper=False):
         source = SCRIPT.read_text().split("import hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, urllib.parse, urllib.request\n", 1)[1].split('\nPY\n)', 1)[0]

@@ -16,7 +16,7 @@ Installer interface: `sh install.sh [--version TAG | --bundle DIRECTORY] [--role
 
 Before installation: detect host, current components and ownership; display destinations, required packages, privilege use, selected components and proposed changes. Missing tools on supported hosts are offered through approved exact trusted-OS `apt-get` argument vectors, then availability is rechecked. Decline/failure blocks dependent operations. Initial HTTPS launcher trust is distinct from the pinned signature checks on downloaded payloads.
 
-Initial support targets: Debian 12 and Ubuntu 24.04 x86-64 with systemd/udev and glibc ≥2.36. Qualify both before publishing either as supported. Distro packages include required CA/download/archive/signature/runtime libraries and Python/OpenSSL for tool handoffs; actual manifest package lists are exact per distro and scoped per selected operation. No source toolchain or node/Cardano CLI installation. Patched picotool 2.3.1 is a signed project distribution artifact with its shared-library dependencies and license notices, not replaced by an incompatible OS version.
+Support targets: Debian 12, Ubuntu 24.04 and Ubuntu 26.04 x86-64 with systemd/udev and glibc ≥2.36. Qualify each image before claiming release qualification on it. Distro packages include required CA/download/archive/signature/runtime libraries and Python/OpenSSL for tool handoffs; actual manifest package lists are exact per distro and scoped per selected operation. No source toolchain or node/Cardano CLI installation. Patched picotool 2.3.1 is a signed project distribution artifact with its shared-library dependencies and license notices, not replaced by an incompatible OS version.
 
 ## Distribution manifest schema 1
 
@@ -38,6 +38,9 @@ Schema 1 uses the following exact nested keys (objects reject all other keys):
 
 - `release`: `tag`, `version`, `source_commit`, `build_id`, `channel` (`stable` or `prerelease`), `published_at` (UTC RFC 3339).
 - `platform`: `target`, `glibc_min`, `os` (array of `{id, version}`), `systemd`, `udev`.
+
+  New manifests declare all three OS ID/version pairs above. Readers also accept the exact historical Debian 12/Ubuntu 24.04 pair without widening its authorization: the actual host must appear in the authenticated manifest. Duplicate/unknown OS entries are rejected. Build provenance remains Debian 12. RC.13 and earlier cannot be made Ubuntu 26.04-compatible by substituting only the launcher; publish a new authenticated release containing the updated launcher, manager and manifest.
+
 - `components`: array of `{name, version, build_id, artifact, digest}`; `artifact` is a declared entrypoint and `digest` binds the complete component inventory described below.
 - `artifacts`: array of `{path, size_bytes, sha256, class, mode}`; `mode` is an integer permission mask.
 - `compatibility`: `tuples` (array of objects mapping every component name to its exact lowercase SHA-256), `readable_schemas` (`config`, `journal`, `receipt`, `installation`, each an array of integer versions), `management_actions`, `usb_profiles`, `storage_versions`, `security_profiles`, `hardware`.
@@ -64,7 +67,7 @@ The patched tool carries signed `runtime/libusb-1.0.so.0`, `runtime/libudev.so.1
 
 The outer manifest also authenticates `runtime/provenance.json`: exactly `schema_version: 1`, `os: {id: "debian", version: "12"}`, and `libraries`, an array of exactly four `{path, package, package_version, sha256}` entries, one for each runtime library above. Package names and versions come from the Debian build's package database; each digest must equal its separately signed artifact digest. Reject duplicates, unknown fields, missing libraries and mismatches. On the target, these are signed build provenance, not a claim that the copied library belongs to an installed host package. GNU `readelf` from the approved `binutils` package supplies the real tool build ID; no compiler or source build is required.
 
-Approved privileged host actions use `/usr/bin/pkexec` with the protected registry-authenticated manager and finite `host-apply --plan FILE`; the `pkexec` package and a functioning polkit authentication agent are installation prerequisites on both target distributions. Root invokes the same protected helper directly.
+Approved privileged host actions use `/usr/bin/pkexec` with the protected registry-authenticated manager and finite `host-apply --plan FILE`; the `pkexec` package and a functioning polkit authentication agent are installation prerequisites on all target OS versions. Root invokes the same protected helper directly.
 
 Published assets are `distribution.json`, `distribution.json.sig`, `distribution-authority.json`, `distribution-authority.json.asc`, `release-authority.asc`, `install.sh`, `install.sh.sig` and `distribution.tar`. The tar contains exactly manifest-declared artifacts. Before extraction, a trusted unpacker authenticates the delegation and manifest signature, then rejects undeclared, duplicate, linked, special, oversized or hash-mismatched archive members. Standalone and archived authorization/certificate bytes must agree. Publisher round-trip verification repeats the trust chain, both release signatures, exact outer hashes and independent inner firmware verification.
 

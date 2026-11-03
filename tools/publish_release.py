@@ -416,7 +416,7 @@ def prepare_distribution(payload, output, tag, commit, build_id, *, compatible_t
         validate_tuples(tuples)
         packages = [{"id": id_, "version": version,
                      "names": ["binutils", "ca-certificates", "curl", "gnupg", "openssl", "pkexec", "python3"]}
-                    for id_, version in (("debian", "12"), ("ubuntu", "24.04"))]
+                    for id_, version in (("debian", "12"), ("ubuntu", "24.04"), ("ubuntu", "26.04"))]
         manifest = {
             "schema_version": 1, "purpose": PURPOSE,
             "release": {"tag": tag, "version": tag, "source_commit": commit, "build_id": build_id,
@@ -484,11 +484,13 @@ def validate_distribution_manifest(manifest):
     firmware.exact_keys(platform, ("target", "glibc_min", "os", "systemd", "udev"))
     firmware.require(platform["target"] == "x86_64-unknown-linux-gnu" and platform["glibc_min"] == "2.36" and
                      platform["systemd"] is True and platform["udev"] is True and
-                     type(platform["os"]) is list and len(platform["os"]) == 2, "unsupported platform")
+                     type(platform["os"]) is list and len(platform["os"]) in (2, 3), "unsupported platform")
     for item in platform["os"]:
         firmware.exact_keys(item, ("id", "version"))
-    firmware.require({(item["id"], item["version"]) for item in platform["os"]} ==
-                     {("debian", "12"), ("ubuntu", "24.04")}, "unsupported OS")
+    os_versions = {(item["id"], item["version"]) for item in platform["os"]}
+    historical = {("debian", "12"), ("ubuntu", "24.04")}
+    firmware.require(len(os_versions) == len(platform["os"]) and
+                     os_versions in (historical, historical | {("ubuntu", "26.04")}), "unsupported OS")
     compatibility = manifest["compatibility"]
     firmware.exact_keys(compatibility, ("tuples", "readable_schemas", "management_actions", "usb_profiles",
                                         "storage_versions", "security_profiles", "hardware"))
