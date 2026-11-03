@@ -2,9 +2,11 @@
 
 This is a run/acceptance guide for the integrated development implementation, not a qualified release or a claim of packaged, physical or operator acceptance. Q1–Q11 remain to be executed against an authenticated candidate with the prerequisites below. Do not run destructive scenarios against production pools.
 
+Start with the [manual RC-to-lifecycle runbook](../../docs/manual-testing.md) for concrete publication, installation and command/UI steps. Return here for the full Q1–Q11 rejection, interruption, performance and operator-acceptance matrix; neither document supplies an unperformed result.
+
 ## Prerequisites
 
-- Signed source-free candidate bundle and authenticated bootstrap with independently trusted project OpenPGP keyring. The manifest must authorize the exact compatible tuple and declare `qualification: candidate`; admit it only through explicit local `--bundle` acceptance on disposable targets, not normal release discovery. Have a second explicitly compatible signed bundle, admitted under the same rules if unqualified, and incompatible/untrusted test inputs. Final qualification follows acceptance; it is not a prerequisite to testing the candidate.
+- Signed source-free candidate bundle or published RC tag, with pinned project OpenPGP authority for downloaded payload verification. The manifest must authorize the exact compatible tuple and declare `qualification: candidate`; admit it only through explicit `--version TAG` or local `--bundle` acceptance on disposable targets, not default release discovery. Have a second explicitly compatible signed bundle, admitted under the same rules if unqualified, and incompatible/untrusted test inputs. Final qualification follows acceptance; it is not a prerequisite to testing the candidate.
 - Disposable Debian 12 and Ubuntu 24.04 x86-64 systemd/udev machines, plus an isolated backup host. Package installation and service changes require administrative approval. Ordinary TUI inspection runs unprivileged.
 - An accepted Pico2 A2 with required hardware/tool/image evidence and disposable pool generations for maintenance scenarios; a factory/BOOTSEL-only board for first installation, a compatible running blank application for the alternate setup path, and an eligible sacrificial target with required qualification for OTP. Never erase a populated device to satisfy a scenario. First-install does not require a pre-existing application pin.
 - Operator-supplied public network/genesis/pool inputs, trusted device identity, public recipient records and disposable encrypted artifacts. Cold signing remains offline. Recipient private keys/passphrases exist only on the backup host.
@@ -13,7 +15,7 @@ This is a run/acceptance guide for the integrated development implementation, no
 - For performance acceptance, approve the baseline-selection procedure, actual comparable baseline/build identity, environment, measurement tool/version and bounded comparison rules in the [quality contract](contracts/quality.md#required-project-performance-gate) before candidate evaluation. Freeze a separate first comparable implementation if no earlier manager exists; missing behavior is not a zero baseline. Retain approval, sensitivity evidence, raw timings and verdicts in `evidence/p2kesup/<candidate>/performance.md`.
 - Before trusting behavioral readings, complete the [behavioral tool calibration](contracts/quality.md#behavioral-tool-calibration) approved in T001 and exercised in T067. Retain passing → known-defect failure → restored passing evidence in `evidence/p2kesup/<candidate>/behavioral-calibration.md`; missing or invalid calibration blocks acceptance independently of performance calibration.
 
-Set `INSTALLER`, `BUNDLE`, and `TRUSTED_KEYRING` to actual absolute local paths supplied by the release/acceptance setup. `INSTALLER.asc` is the corresponding detached signature. These paths must contain the candidate release, not a fabricated fixture advertised as published software. Keep acceptance reports public-only; do not record terminal passphrase sessions or secret outputs.
+Normal installation and upgrade require no manually supplied assets. Only for independent/offline acceptance scenarios, set `INSTALLER`, `BUNDLE`, and `TRUSTED_KEYRING` to actual absolute local paths; `INSTALLER.asc` is the corresponding detached signature. Never advertise fabricated fixtures as published software. Keep reports public-only; do not record passphrase sessions or secret outputs.
 
 ## T001 gate approval
 
@@ -233,26 +235,14 @@ Use Tab/Shift-Tab to change views and up/down to select actions, Enter to review
 
 ## Q1 — Bootstrap, reopen and absent/partial inventory
 
-Authenticate the script and check both [distribution trust pins](contracts/distribution.md) before running it. Use trusted OS `gpgv` and `awk`; obtain any missing verifier/key through an independently trusted channel first. Keep the installer, signature and keyring in a protected local directory that untrusted users cannot replace or modify during verification/execution. Run the complete block; the subshell stops before execution on any verification or pin failure:
+The standard pipeline explicitly trusts the HTTPS-hosted launcher; this is distinct from pinned OpenPGP verification of downloaded payloads. On an attended disposable host, exercise the default qualified-stable pipeline and explicit RC selection:
 
 ```sh
-(
-    signature_status=$(gpgv --status-fd 1 --keyring "$TRUSTED_KEYRING" "$INSTALLER.asc" "$INSTALLER") || exit 1
-    printf '%s\n' "$signature_status" | awk \
-        -v signer=78C0F32094CD02A4BAFA444C684E37A210480F82 \
-        -v primary=9FF957E79B5D853544805F4725491F18087931B6 '
-        $1 == "[GNUPG:]" && $2 == "VALIDSIG" {
-            signatures++
-            if ($3 == signer && $12 == primary) authorized++
-        }
-        END { exit !(signatures == 1 && authorized == 1) }
-    ' || { printf '%s\n' 'Installer signer/primary fingerprint verification failed' >&2; exit 1; }
-    sh "$INSTALLER" --bundle "$BUNDLE" || exit 1
-    p2kesup --version --json && p2kesup
-)
+curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh -s -- --version v0.1.0-rc.12
 ```
 
-The block requires a successful `gpgv` exit and exactly one `VALIDSIG` matching both independently trusted fingerprints; a “good signature” from another key is insufficient. Review the signed candidate status and explicitly confirm disposable-host acceptance; declining it must cause no installation. Candidate admission must not bypass any signature, compatibility, state or hardware prerequisite. Then decline package/host changes once and verify nothing was installed, approve manager installation without daemon/device, and reopen using the printed command. Overview must distinguish missing components, unavailable device and unknown versions; a candidate is never labelled qualified.
+Use separate clean hosts or runs as appropriate, and substitute the actual RC tag. Review the signed candidate status and explicitly confirm disposable-host acceptance; declining must cause no installation. Candidate admission must not bypass signature, compatibility, state or hardware prerequisites. Decline package/host changes once and verify nothing was installed; approve reviewed trusted-apt prerequisites and direct persistent installation, then reopen with `p2kesup` for later device setup. Exercise `--role backup` on an isolated backup host, `/dev/tty` prompts under the pipe and noninteractive refusal. Overview must distinguish missing components, unavailable device and unknown versions; a candidate is never labelled qualified.
 
 Repeat with partial state, denied service/socket/file permissions, multiple executable copies and an external/manual installation. The effective service executable, PATH candidates, installed/running/selected versions and provenance remain distinct. External files are not overwritten/adopted. Unsupported architecture/distribution is rejected before mutation; missing compatible tools block dependent steps, not status navigation. No source checkout/build is required.
 
@@ -321,16 +311,16 @@ Expected: every FR-016 lifecycle action completable via TUI or explicit offline 
 
 ## Q5 — Host release selection, offline mode and self-update
 
-Select versions separately for manager, daemon and CLI; inspect the signed authorized compatible tuple, qualification status, schemas, ownership, affected pools, interruption and recovery prerequisites before approval. Normal discovery remains qualified/stable-only; prerelease opt-in must not admit unqualified candidates. Use explicit local-bundle acceptance for candidate version-change exercises. Attempt tampered content, missing signature, incomplete bundle, unknown schema/qualification, incompatible tuple and unreadable-current-journal downgrade; all block before execution/installation. Test candidate refusal outside explicit acceptance. Promotion rejection and digest binding use T020's disposable-authority cases before acceptance; final production metadata promotion and qualified-status discovery checks occur only in T070 after required candidate evidence passes, without rebuilding payloads.
+Run `p2kesup upgrade` for default qualified-stable discovery, `p2kesup upgrade --version TAG` for explicit reviewed candidate acceptance on a disposable host, and `p2kesup upgrade --bundle DIRECTORY` for offline selection. Verify the installed role is inferred, the signed complete host/firmware tuple and service disruption are reviewed, and an identical tuple is a no-op. Attempt tampered content, missing signature, incomplete bundle, unknown schema/qualification, incompatible tuple and unreadable-current-journal downgrade; all block before execution/installation. Candidate acceptance does not establish qualification. Promotion rejection and digest binding use T020's disposable-authority cases before acceptance; production promotion occurs only in T070 after required evidence passes, without rebuilding payloads.
 
-Perform compatible host upgrade and downgrade. Compare preserved config/pin/journal/receipts, permissions and pool/generation identities allowing only independently explained forward transitions. Check installed versions separately from the daemon's running build using the Q3 commands and executable `--version --json`. A stopped service remains stopped unless explicitly approved temporary validation was selected; restore stopped state afterward.
+Perform compatible coordinated upgrade and downgrade with attended firmware actions. Compare preserved config/pin/journal/receipts, permissions and pool/generation identities allowing only independently explained forward transitions. Check installed versions separately from the daemon's running build using the Q3 commands and executable `--version --json`. A stopped service remains stopped unless explicitly approved temporary validation was selected; restore stopped state afterward.
 
-Interrupt staging, tuple switch and service restart in separate disposable runs. Reopening shows the last confirmed step and actual/uncertain state. Only state-compatible binary fallback is offered; no journal/flash snapshot rollback. Update the manager alone: old running manager remains identified until explicit re-exec, and the selected daemon/firmware do not change implicitly.
+Interrupt staging, tuple switch and service restart in separate disposable runs. Resume the original operation with `p2kesup upgrade --resume ORIGINAL_PLAN_PATH`, reviewing last confirmed and actual/uncertain state; recovery is forward-only and does not authorize an arbitrary mixed tuple or journal/flash snapshot rollback. The old running manager remains identified until explicit re-exec.
 
 Disconnect release networking, reopen the TUI, inspect local state and cached age, then select the obtained local bundle:
 
 ```sh
-p2kesup --bundle "$BUNDLE"
+p2kesup upgrade --bundle "$BUNDLE"
 ```
 
 Offline maintenance still verifies authority/integrity/compatibility; missing verification prerequisites block it. Cached metadata is not claimed fresh.

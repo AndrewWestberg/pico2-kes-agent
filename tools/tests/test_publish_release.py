@@ -34,6 +34,9 @@ class GithubBoundary:
         self.calls = []
         self.uploaded = False
         self.api_calls = 0
+        self.prerelease = False
+        self.published = False
+        self.latest = False
 
     def state(self, tag):
         if self.existing is not None:
@@ -41,7 +44,7 @@ class GithubBoundary:
         if not self.uploaded:
             return None
         return {
-            "tag_name": tag, "draft": True, "prerelease": "-" in tag,
+            "tag_name": tag, "draft": not self.published, "prerelease": self.prerelease,
             "assets": [{"name": p.name, "size": p.stat().st_size}
                        for p in self.bundle.iterdir()],
         }
@@ -56,6 +59,11 @@ class GithubBoundary:
             raise ValueError("fixture target changes workflows; contents-only token cannot target it")
         if operation == self.fail:
             raise ValueError("injected GitHub failure")
+        if operation == "create":
+            self.prerelease = "--prerelease" in args
+        if operation == "edit":
+            self.published = "--draft=false" in args
+            self.latest = "--latest=true" in args
         if operation == "upload":
             self.uploaded = True
         if operation == "download":
@@ -355,6 +363,48 @@ class PublishTests(unittest.TestCase):
                 (evidence_dir / "Q1.md").write_text("tampered", encoding="utf-8")
                 with self.assertRaises(ValueError):
                     publisher.sign_promotion(candidate, self.bundle / "bad", approval, self.commit, trust=trust)
+
+
+class DistributionPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bundle = Path(self.temp.name) / "assets"
+        self.bundle.mkdir()
+        for name in ("distribution.json", "distribution.json.asc", "distribution.tar",
+                     "release-authority.asc", "install.sh", "install.sh.asc"):
+            (self.bundle / name).write_bytes(name.encode())
+        self.commit = "a" * 40
+
+    def publish(self, qualification, channel, tag=None):
+        source_tag = "v1.2.3" if channel == "stable" else "v1.2.3-rc.1"
+        tag = tag or (("qualified-" if qualification == "qualified" else "") + source_tag)
+        manifest = {"qualification": qualification, "release": {
+            "tag": source_tag, "channel": channel, "source_commit": self.commit}}
+        boundary = GithubBoundary(self.bundle, tag, self.commit)
+        with mock.patch.object(publisher, "verify_distribution", return_value=manifest), \
+             mock.patch.object(publisher, "pack_distribution_assets",
+                               side_effect=lambda bundle, output, evidence: shutil.copytree(bundle, output)), \
+             mock.patch.object(publisher, "unpack_distribution_assets", return_value=manifest), \
+             mock.patch.object(publisher, "release_state", side_effect=boundary.state), \
+             mock.patch.object(publisher, "gh", side_effect=boundary.gh):
+            publisher.publish_distribution(self.bundle, tag, self.commit)
+        return boundary
+
+    def test_only_qualified_stable_distribution_is_visible_as_latest(self):
+        for qualification in ("candidate", "qualified"):
+            for channel in ("stable", "prerelease"):
+                with self.subTest(qualification=qualification, channel=channel):
+                    release = self.publish(qualification, channel)
+                    stable = qualification == "qualified" and channel == "stable"
+                    self.assertTrue(release.published)
+                    self.assertEqual(release.prerelease, not stable)
+                    self.assertEqual(release.latest, stable)
+                    self.assertFalse(release.state(release.tag)["draft"])
+
+    def test_promotion_cannot_impersonate_another_release_tag(self):
+        with self.assertRaisesRegex(ValueError, "publication tag"):
+            self.publish("qualified", "stable", tag="qualified-v2.0.0")
 
 
 class ReleaseInspectionTests(unittest.TestCase):

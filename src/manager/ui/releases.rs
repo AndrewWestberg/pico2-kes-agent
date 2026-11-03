@@ -1,7 +1,7 @@
 use super::{foreground, public_fields, review, setup};
 use crate::manager::{
     host::{self, HostAction},
-    model::{InstallationRole, Qualification},
+    model::{InstallationRegistry, InstallationRole, Qualification},
     observe::{Snapshot, Worker},
     release::{self, Admission, VerifiedBundle},
     release_discovery::{self, Offer},
@@ -238,6 +238,121 @@ fn verified(path: &Path, candidate: bool) -> io::Result<VerifiedBundle> {
             Admission::Qualified
         },
     )
+}
+
+pub(super) fn resume_upgrade_direct(
+    terminal: &mut TerminalOwner,
+    action: HostAction,
+    executable: PathBuf,
+    operation: &str,
+) -> io::Result<()> {
+    let plan = host::HostPlan::new(action)?;
+    let mut lines: Vec<String> = serde_json::to_string_pretty(&plan)
+        .map_err(io::Error::other)?.lines().map(str::to_owned).collect();
+    lines.push("Reconcile only the original operation, without reflashing or rolling back device state. A stopped service may be started temporarily for validation and will be restored to its original state.".into());
+    if !review(terminal, "Recover original upgrade", lines, Some(&format!("RECOVER {operation}")))? {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "recovery cancelled"));
+    }
+    let path = release_discovery::default_cache()?.join(format!("upgrade-recovery-plan-{}.json", plan.plan_id));
+    crate::files::publish_no_clobber(&path, &serde_json::to_vec(&plan).map_err(io::Error::other)?, 0o600)?;
+    let mut command = if rustix::process::geteuid().is_root() {
+        Command::new(executable)
+    } else {
+        let mut command = Command::new("/usr/bin/pkexec");
+        command.arg(executable);
+        command
+    };
+    command.arg("host-apply").arg("--plan").arg(&path);
+    let mut worker = None;
+    let status = foreground(terminal, &mut worker, Path::new("/run/pico2-kes-agent/management.sock"), &mut command, true)?;
+    if !status.success() {
+        return Err(io::Error::other(format!("recovery failed or remains uncertain ({status}); retain original operation {operation}")));
+    }
+    Ok(())
+}
+
+pub(super) fn upgrade_direct(
+    terminal: &mut TerminalOwner,
+    path: PathBuf,
+    bundle: VerifiedBundle,
+    registry_digest: String,
+    registry: InstallationRegistry,
+    service: Option<String>,
+) -> io::Result<()> {
+    let role = registry.role;
+    let candidate = bundle.selection().qualification == Qualification::Candidate;
+    if candidate && !review(
+        terminal,
+        "Explicit candidate admission",
+        vec!["This signed candidate is not qualified. Proceed only on a disposable host; all state and hardware checks remain mandatory.".into()],
+        Some("DISPOSABLE CANDIDATE"),
+    )? {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "candidate not accepted"));
+    }
+    let socket = Path::new("/run/pico2-kes-agent/management.sock");
+    let mut worker = None;
+    let preview = if role == InstallationRole::Primary {
+        Some(capture_firmware_review(
+            terminal, &mut worker, socket,
+            service.as_deref().ok_or_else(|| io::Error::other("service observation unavailable"))?,
+        )?.ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "pre-state review cancelled"))?)
+    } else {
+        None
+    };
+    let temporary_validation = preview.as_ref().is_some_and(|p| !p.service_state.starts_with("state=active;"));
+    let record = if preview.is_some() {
+        Some(Path::new("/var/lib/p2kesup/firmware").join(format!("{}.json", new_id()?)))
+    } else {
+        None
+    };
+    let action = HostAction::Upgrade {
+        bundle: path,
+        manifest_digest: bundle.selection().manifest_digest.to_string(),
+        candidate_accepted: candidate,
+        expected_registry_digest: registry_digest,
+        expected_service_state: preview.as_ref().map(|p| p.service_state.clone()).or(service),
+        pre_state: preview.as_ref().map(|p| p.evidence.clone()),
+        temporary_validation,
+        serial: preview.as_ref().map(|p| p.serial.clone()),
+        device_id: preview.as_ref().map(|p| p.device_id.clone()),
+        identity_public_key: preview.as_ref().map(|p| p.identity_public_key.clone()),
+        record,
+    };
+    let plan = host::HostPlan::new(action)?;
+    let cache = release_discovery::default_cache()?;
+    let plan_path = cache.join(format!("upgrade-plan-{}.json", plan.plan_id));
+    let current = registry.current.as_ref().ok_or_else(|| io::Error::other("installed selection unavailable"))?;
+    let mut lines = vec![
+        format!("Installed release: {}", current.tag),
+        format!("Selected release: {} ({:?}); source {}", bundle.selection().tag, bundle.selection().qualification, bundle.selection().source_commit),
+        format!("Installation role: {role:?}"),
+    ];
+    for next in &bundle.selection().components {
+        let previous = current.components.iter().find(|c| c.component == next.component)
+            .ok_or_else(|| io::Error::other("installed component missing"))?;
+        lines.push(format!("{}: {} -> {}", next.component, previous.version, next.version));
+    }
+    lines.extend(serde_json::to_string_pretty(&plan).map_err(io::Error::other)?.lines().map(str::to_owned));
+    lines.push("The complete signed tuple is installed together. Physical firmware transfer is attended; interrupted operations retain their original record. Device state is never rolled back.".into());
+    lines.push(format!("Original plan: {}. If interrupted, use p2kesup upgrade --resume with this path.", plan_path.display()));
+    if !review(terminal, "Review complete upgrade", lines, Some("UPGRADE"))? {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "upgrade cancelled"));
+    }
+    crate::files::publish_no_clobber(&plan_path, &serde_json::to_vec(&plan).map_err(io::Error::other)?, 0o600)?;
+    let executable = host::trusted_manager()?;
+    let mut command = if rustix::process::geteuid().is_root() {
+        Command::new(executable)
+    } else {
+        let mut command = Command::new("/usr/bin/pkexec");
+        command.arg(executable);
+        command
+    };
+    command.arg("host-apply").arg("--plan").arg(&plan_path);
+    let status = foreground(terminal, &mut worker, socket, &mut command, true)?;
+    if !status.success() {
+        return Err(io::Error::other(format!("upgrade failed or was interrupted ({status}); retain original plan {}", plan_path.display())));
+    }
+    Ok(())
 }
 
 pub(super) fn component_update(

@@ -11,6 +11,7 @@ One USB-owning daemon supports up to **64 pools**, each with one active and one 
 - [Purpose and security boundary](#purpose-and-security-boundary)
 - [Requirements and compatibility](#requirements-and-compatibility)
 - [Install and operate with p2kesup](#install-and-operate-with-p2kesup)
+- [Manual RC-to-lifecycle test runbook](docs/manual-testing.md)
 - [Developer build and firmware verification](#build-flash-and-install)
 - [Commission and configure](#commission-and-configure)
 - [Enroll and serve the first generation](#enroll-and-serve-the-first-generation)
@@ -78,7 +79,7 @@ The optional `rp2350-signed-msd-v1` profile uses native ROM secp256k1 signatures
 Requirements:
 
 - Operator installation targets Debian 12 or Ubuntu 24.04 x86-64 with systemd, udev and glibc 2.36 or newer. These are targets, not a claim of completed release qualification.
-- Before running the bootstrap, obtain Python 3, GPG, GPGV and `pkexec` through your trusted OS package channel, a functioning polkit authentication agent, and the independently trusted project keyring. The manager reviews operation-specific prerequisites and may offer exact package installation commands for approval; it does not install Cardano software. Source builds additionally need Git, a native C compiler/linker, rustup and the pinned tools below.
+- The attended bootstrap reviews missing dependencies and offers installation through the trusted OS apt channel; a functioning polkit authentication agent is needed for privileged changes. It does not install Cardano software. Source builds additionally need Git, a native C compiler/linker, rustup and the pinned tools below.
 - Firmware verification and attended provisioning require Python 3, OpenSSL, GPG/GPGV and patched picotool 2.3.1 with signing/verification and libusb support. The authenticated distribution supplies the patched tool and its runtime libraries; do not replace it with stock picotool. Locked-device updates use verified UF2 through physical mass-storage BOOTSEL, not PICOBOOT.
 - Pico 2 with the fitted 4-MiB flash profile checked by [firmware/src/flash.rs](firmware/src/flash.rs): JEDEC `ef4016`, SFDP `534644500a0100ff00080117800000ff`, density-minus-one `0x01ffffff`. The shared profile identifies A2/A4; A4 is expected-compatible and hardware-unverified. A2 secure-boot qualification is separate from the existing storage evidence. A3, RP2040, unknown revisions and other flash profiles are not admitted for this profile.
 - A `cardano-node` release supporting the standard `--shelley-kes-agent-socket` interface and a matching `cardano-cli`. Obtain these using the [Cardano node installation guide](https://developers.cardano.org/docs/get-started/infrastructure/node/installing-cardano-node/). Check your installed node's help before cutover.
@@ -89,31 +90,39 @@ Requirements:
 
 ## Install and operate with p2kesup
 
-`p2kesup` is the attended, source-free operator interface. This implementation is development-unqualified; neither these instructions nor an authenticated candidate establish release or hardware acceptance. Use a qualified release when one is actually published. Never run an unauthenticated download or `curl | sh`.
+`p2kesup` is the attended, source-free operator interface. This implementation is development-unqualified; neither these instructions nor an authenticated candidate establish release or hardware acceptance. Use a qualified release when one is actually published.
 
-### Authenticate bootstrap and open the manager
+For a complete ordered RC tag/build, authenticated installation, setup, lifecycle, recovery and whole-system test sequence, start with the [manual testing runbook](docs/manual-testing.md). It names the required host roles, exact commands and stop conditions; it does not claim release qualification.
 
-Obtain `install.sh` and its detached `install.sh.asc` from the intended [release](https://github.com/AndrewWestberg/pico2-kes-agent/releases), and a project authority keyring through an independently authenticated channel. Keep all three in a protected local directory that others cannot replace while verifying and executing. Install missing verification tools through the trusted OS package path **before** executing the script. Set `INSTALLER` and `TRUSTED_KEYRING` to their absolute paths. This complete block checks the exact signing subkey and primary fingerprint before running any downloaded code:
+### Install p2kesup
+
+The launcher itself is trusted from the project's HTTPS-hosted default branch; this initial HTTPS trust is distinct from the pinned OpenPGP authentication of every downloaded distribution payload. If you require independent verification of the launcher before execution, use the separately signed release bootstrap and independently trusted project authority as described in the [maintainer security guide](docs/maintainer-security.md).
 
 ```sh
-(
-    signature_status=$(gpgv --status-fd 1 --keyring "$TRUSTED_KEYRING" "$INSTALLER.asc" "$INSTALLER") || exit 1
-    printf '%s\n' "$signature_status" | awk \
-        -v signer=78C0F32094CD02A4BAFA444C684E37A210480F82 \
-        -v primary=9FF957E79B5D853544805F4725491F18087931B6 '
-        $1 == "[GNUPG:]" && $2 == "VALIDSIG" {
-            signatures++
-            if ($3 == signer && $12 == primary) authorized++
-        }
-        END { exit !(signatures == 1 && authorized == 1) }
-    ' || { echo 'Installer signer/primary verification failed' >&2; exit 1; }
-    sh "$INSTALLER"
-)
+curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh
 ```
 
-The default bootstrap asks before discovering the latest stable release. For an already obtained complete distribution directory, use `sh "$INSTALLER" --bundle "$BUNDLE"` in place of the last line; for an isolated backup host add `--role backup`. A signed candidate is admitted only with explicit `--bundle`, attended disposable-host acceptance and review; it is not a qualified release. A bundle still requires signature, inventory, inner firmware, compatibility and applicable hardware checks. Normal discovery offers only qualified releases, including prereleases only when explicitly opted in. Offline re-verification is limited to available trust and revocation evidence; it cannot establish current global revocation status or the latest release.
+This selects the latest qualified stable release. To select an explicit RC for reviewed acceptance on a disposable host:
 
-The bootstrap launches the manager for review; it is not itself blanket approval to install. Reopen with `p2kesup`, or `p2kesup --role backup` on the separate backup host. `--socket PATH` selects the primary management socket and `--bundle DIRECTORY` selects an offline bundle; standalone `p2kesup --help` and `p2kesup --version --json` need no service. Use an attended terminal at least 80×24: arrows or j/k select, Tab changes focus, Enter opens/reviews, Esc cancels, `r` refreshes, `?` opens help, and `q` quits when not applying. Labels remain meaningful with `NO_COLOR=1`.
+```sh
+curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh -s -- --version v0.1.0-rc.12
+```
+
+Use `--role backup` on an isolated backup host, or `--bundle /absolute/path` for an already obtained offline distribution. Explicit candidate tags or bundles require attended disposable-host acceptance and review; they are not qualified releases. The bootstrap reviews proposed dependencies, privileges and installation changes, and installs the persistent command directly after approval, rather than requiring a menu installation. It reads interactive confirmations from `/dev/tty` even when piped and refuses noninteractive mutation. Signature, inventory, inner firmware, compatibility and applicable hardware checks remain mandatory. Offline verification cannot establish current global revocation status or the latest release.
+
+Reopen with `p2kesup`, or `p2kesup --role backup` on the separate backup host, then perform device setup when ready. `--socket PATH` selects the primary management socket and `--bundle DIRECTORY` selects an offline bundle; standalone `p2kesup --help` and `p2kesup --version --json` need no service. Use an attended terminal at least 80×24: arrows or j/k select, Tab changes focus, Enter opens/reviews, Esc cancels, `r` refreshes, `?` opens help, and `q` quits when not applying. Labels remain meaningful with `NO_COLOR=1`.
+
+### Upgrade the installed system
+
+```sh
+p2kesup upgrade
+```
+
+The command detects the installed primary/backup role, downloads and verifies the latest qualified stable release, and reviews the complete change. For RC testing use `p2kesup upgrade --version v0.1.0-rc.12`; for offline use, `p2kesup upgrade --bundle /absolute/path`.
+
+On a commissioned primary, keep the pinned device connected and allow an attended maintenance window. Firmware changes guide the physical transfer; backup-host upgrades do not touch a device. The daemon is persistently inhibited during transfer and partial publication, including across reboot. Completion requires the selected host binaries, live firmware, retained identity/state and original service state—not just a successful copy.
+
+If interrupted, retain the displayed plan and run `p2kesup upgrade --resume /absolute/original-upgrade-plan.json`. Recovery never reflashes or restores older KES state. A proven cancellation before any transfer restores the old installation; ambiguous transfers remain blocked. Do not manually unmask the service to bypass a pending upgrade.
 
 ### Workflow and recovery
 
@@ -787,7 +796,7 @@ Preserve pin/config/public journal and use the installed service. After restart/
 
 ### Host software upgrade
 
-Use **Releases** to review and apply an authenticated compatible tuple in a maintenance window. Preserve `/etc/pico2-kes-agent`, `/var/lib/pico2-kes-agent`, operator receipts and public identity; make offline copies after clean shutdown, preserving permissions. Do not restore an older journal or flash image to force rollback. There is no daemon configuration hot reload; check the applied service and pool readiness separately.
+Use the [one-command upgrade procedure](#upgrade-the-installed-system). Preserve `/etc/pico2-kes-agent`, `/var/lib/pico2-kes-agent`, operator receipts and public identity; make offline copies after clean shutdown, preserving permissions. Do not restore an older journal or flash image to force rollback. There is no daemon configuration hot reload; check the applied service and pool readiness separately.
 
 ### Firmware upgrade
 

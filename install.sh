@@ -1,33 +1,77 @@
 #!/bin/sh
+main() {
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 usage() {
     cat <<'EOF'
-Usage: sh install.sh [--bundle DIRECTORY] [--role primary|backup] [--help]
-Before running this script, authenticate it independently with the project
-release authority and install.sh.asc. Never trust an unauthenticated download.
-A local candidate requires explicit disposable-host acceptance in the manager.
+Usage: sh install.sh [--version TAG | --bundle DIRECTORY] [--role primary|backup] [--help]
+Without --version or --bundle, install the latest qualified stable release.
+An explicit version or local bundle may contain a candidate requiring attended review.
 EOF
 }
 role=primary
 bundle=
+version=
+role_seen=no
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --help) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; usage; exit 0 ;;
-        --bundle) [ "$#" -ge 2 ] && [ -z "$bundle" ] || { usage >&2; exit 2; }; bundle=$2; shift 2 ;;
-        --role) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; role=$2; shift 2 ;;
+        --bundle) [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$bundle" ] && [ -z "$version" ] || { usage >&2; exit 2; }; bundle=$2; shift 2 ;;
+        --version) [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$version" ] && [ -z "$bundle" ] || { usage >&2; exit 2; }; version=$2; shift 2 ;;
+        --role) [ "$#" -ge 2 ] && [ "$role_seen" = no ] || { usage >&2; exit 2; }; role=$2; role_seen=yes; shift 2 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
 case "$role" in primary|backup) ;; *) usage >&2; exit 2 ;; esac
-[ -t 0 ] && [ -t 1 ] || { echo 'An attended terminal is required.' >&2; exit 3; }
-echo 'The bootstrap itself must have been independently authenticated before execution.' >&2
-for tool in /usr/bin/python3 /usr/bin/gpg /usr/bin/gpgv /usr/bin/pkexec; do
-    [ -x "$tool" ] || { echo "Missing $tool. Install trusted OS prerequisites and authenticate this script before executing it." >&2; exit 4; }
-done
+case "$version" in *[!a-zA-Z0-9._+-]*|[-.+]*) echo 'Invalid release tag.' >&2; exit 2 ;; esac
+if ! ( : </dev/tty ) 2>/dev/null; then
+    echo 'An attended controlling terminal is required.' >&2; exit 3
+fi
+exec 3<>/dev/tty
 [ "$(uname -m)" = x86_64 ] && [ -d /run/systemd/system ] || { echo 'Unsupported host: x86-64 and systemd required.' >&2; exit 4; }
+[ -r /etc/os-release ] || { echo 'Unsupported operating system.' >&2; exit 4; }
+. /etc/os-release
+case "${ID:-}:${VERSION_ID:-}" in debian:12|ubuntu:24.04) ;; *) echo 'Unsupported operating system.' >&2; exit 4 ;; esac
+libc=$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null) || { echo 'Unsupported libc.' >&2; exit 4; }
+case "$libc" in glibc\ 2.*) minor=${libc#glibc 2.}; case "$minor" in *[!0-9]*|'') echo 'Unsupported libc.' >&2; exit 4 ;; esac; [ "$minor" -ge 36 ] || { echo 'glibc 2.36 or later required.' >&2; exit 4; } ;; *) echo 'Unsupported libc.' >&2; exit 4 ;; esac
+[ -x /usr/bin/apt-get ] && [ -x /usr/bin/dpkg-query ] || { echo 'Trusted apt is required.' >&2; exit 4; }
+missing=
+for pair in python3:python3 gpg:gnupg gpgv:gpgv pkexec:pkexec readelf:binutils; do
+    tool=${pair%%:*}; package=${pair#*:}
+    [ -x "/usr/bin/$tool" ] || missing="$missing $package"
+done
+[ -n "$bundle" ] || [ -s /etc/ssl/certs/ca-certificates.crt ] || missing="$missing ca-certificates"
+if [ -n "$missing" ]; then
+    if [ "$(id -u)" -eq 0 ]; then elevate=none
+    elif [ -x /usr/bin/sudo ]; then elevate=sudo
+    elif [ -x /usr/bin/pkexec ]; then elevate=pkexec
+    else echo 'Root, sudo, or pkexec is required to install prerequisites.' >&2; exit 4
+    fi
+    printf 'Refresh trusted OS package indexes before resolving missing packages:%s\nType REFRESH to approve apt-get update: ' "$missing" >&3
+    IFS= read -r choice <&3 || exit 3
+    [ "$choice" = REFRESH ] || { echo 'Package-index refresh declined.' >&2; exit 3; }
+    case "$elevate" in
+        none) /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
+        sudo) /usr/bin/sudo /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
+        pkexec) /usr/bin/pkexec /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
+    esac || { echo 'Package-index refresh failed.' >&2; exit 4; }
+    proposal=$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing) || { echo 'Prerequisite simulation failed.' >&2; exit 4; }
+    printf 'Required bootstrap packages:%s\nExact apt simulation, including dependencies:\n%s\nType INSTALL to approve: ' "$missing" "$proposal" >&3
+    IFS= read -r choice <&3 || exit 3
+    [ "$choice" = INSTALL ] || { echo 'Prerequisites declined.' >&2; exit 3; }
+    [ "$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing)" = "$proposal" ] || { echo 'Apt proposal changed; review again.' >&2; exit 4; }
+    case "$elevate" in
+        none) /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
+        sudo) /usr/bin/sudo /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
+        pkexec) /usr/bin/pkexec /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
+    esac || { echo 'Prerequisite installation failed.' >&2; exit 4; }
+    for tool in python3 gpg gpgv pkexec readelf; do
+        [ -x "/usr/bin/$tool" ] || { echo "Prerequisite $tool unavailable." >&2; exit 4; }
+    done
+    [ -n "$bundle" ] || [ -s /etc/ssl/certs/ca-certificates.crt ] || { echo 'TLS certificates unavailable.' >&2; exit 4; }
+fi
 verifier_code=$(cat <<'PY'
 import os, selectors, signal, subprocess, time
 def bounded_command(command, timeout=30, limit=65536, env=None):
@@ -74,9 +118,21 @@ parts=libc.gnu_get_libc_version().decode('ascii').split('.')
 if len(parts)<2 or tuple(map(int,parts[:2]))<(2,36): raise SystemExit(1)
 PY
 if [ -z "$bundle" ]; then
-    echo 'Discover the latest published stable release from the project? Type DOWNLOAD to continue:' >&2
-    IFS= read -r choice
+    if [ -n "$version" ]; then
+        printf 'Download explicit release %s, which may be a candidate? Type DOWNLOAD to continue: ' "$version" >&3
+        explicit=yes
+    else
+        printf 'Discover the latest qualified stable release? Type DOWNLOAD to continue: ' >&3
+        explicit=no
+    fi
+    IFS= read -r choice <&3 || exit 3
     [ "$choice" = DOWNLOAD ] || exit 3
+    work=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/p2kesup-release-XXXXXXXX") || exit 4
+    keep_bundle=no
+    trap 'if [ "$keep_bundle" = yes ]; then printf "Retained recovery bundle: %s\n" "$bundle" >&2; else rm -rf -- "$work"; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     bundle=$(/usr/bin/python3 -I -c "$verifier_code
 $(cat <<'PY'
 import hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, urllib.parse, urllib.request
@@ -108,11 +164,14 @@ def unique(pairs):
         if k in result: raise ValueError('duplicate manifest key')
         result[k]=v
     return result
-work=Path(tempfile.mkdtemp(prefix='p2kesup-release-'))
+work=Path(sys.argv[1]); requested=sys.argv[2]
 try:
-    fetch('https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/latest',1048576,work/'release.json')
+    endpoint='https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/'
+    endpoint += 'tags/'+urllib.parse.quote(requested,safe='') if requested else 'latest'
+    fetch(endpoint,1048576,work/'release.json')
     release=json.loads((work/'release.json').read_bytes(),object_pairs_hook=unique)
-    if release.get('draft') is not False or release.get('prerelease') is not False: raise ValueError('latest release is not stable')
+    tag=release.get('tag_name')
+    if not isinstance(tag,str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]{0,254}',tag) or (requested and tag!=requested) or release.get('draft') is not False or (not requested and release.get('prerelease') is not False): raise ValueError('release identity or state mismatch')
     assets={}
     for a in release.get('assets',[]):
         name=a.get('name'); url=a.get('browser_download_url')
@@ -120,7 +179,7 @@ try:
         if isinstance(name,str) and isinstance(url,str): assets[name]=url
     for name in ('distribution.json','distribution.json.asc','release-authority.asc'):
         url=assets[name]; p=urllib.parse.urlsplit(url)
-        if p.hostname!='github.com' or not p.path.startswith('/AndrewWestberg/pico2-kes-agent/releases/download/'): raise ValueError('untrusted release asset')
+        if p.hostname!='github.com' or p.path!='/AndrewWestberg/pico2-kes-agent/releases/download/'+urllib.parse.quote(tag,safe='')+'/'+name: raise ValueError('untrusted release asset')
         fetch(url,1048576,work/name)
     keyring=work/'authority.gpg'
     bounded_command(['/usr/bin/gpg','--homedir',str(work),'--batch','--no-options','--dearmor','--output',str(keyring),str(work/'release-authority.asc')])
@@ -128,7 +187,9 @@ try:
     text=output.decode('ascii'); signatures=[x.split() for x in text.splitlines() if x.startswith('[GNUPG:] VALIDSIG ')]
     if len(signatures)!=1 or len(signatures[0])!=12 or signatures[0][2]!='78C0F32094CD02A4BAFA444C684E37A210480F82' or signatures[0][11]!='9FF957E79B5D853544805F4725491F18087931B6' or any('[GNUPG:] '+x in text for x in ('REVKEYSIG','EXPKEYSIG','EXPSIG','BADSIG','ERRSIG')): raise ValueError('unauthorized manifest')
     manifest=json.loads((work/'distribution.json').read_bytes(),object_pairs_hook=unique)
-    if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification')!='qualified' or manifest.get('release',{}).get('channel')!='stable': raise ValueError('no qualified stable release')
+    identity=manifest.get('release',{})
+    signed_tag=identity.get('tag')
+    if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('qualified','candidate') or not isinstance(signed_tag,str) or identity.get('version')!=signed_tag or tag!=(('qualified-' if manifest['qualification']=='qualified' else '')+signed_tag) or (not requested and (manifest.get('qualification')!='qualified' or identity.get('channel')!='stable')): raise ValueError('signed release identity or qualification mismatch')
     entries={}
     for item in manifest.get('artifacts',[]):
         name=item.get('path'); size=item.get('size_bytes'); digest=item.get('sha256')
@@ -137,7 +198,7 @@ try:
     total=sum(x['size_bytes'] for x in entries.values())
     if not entries or len(entries)>256 or total>1073741824 or shutil.disk_usage(work).free < 2*total+2097152: raise ValueError('release bounds or free space')
     archive=assets['distribution.tar']; p=urllib.parse.urlsplit(archive)
-    if p.hostname!='github.com' or not p.path.startswith('/AndrewWestberg/pico2-kes-agent/releases/download/'): raise ValueError('untrusted archive origin')
+    if p.hostname!='github.com' or p.path!='/AndrewWestberg/pico2-kes-agent/releases/download/'+urllib.parse.quote(tag,safe='')+'/distribution.tar': raise ValueError('untrusted archive origin')
     fetch(archive,1074790400,work/'distribution.tar')
     output=work/'bundle'; output.mkdir(mode=0o700); seen=set()
     with tarfile.open(work/'distribution.tar',mode='r:') as tar:
@@ -165,20 +226,18 @@ except BaseException:
     shutil.rmtree(work,ignore_errors=True)
     raise
 PY
-)"
-    ) || { echo 'Stable release discovery or verification failed.' >&2; exit 4; }
-    explicit=no
+)" "$work" "$version"
+    ) || { echo 'Release discovery or verification failed.' >&2; exit 4; }
 else
     explicit=yes
 fi
 bundle=$(realpath -- "$bundle")
-script=$(realpath -- "$0")
 [ -d "$bundle" ] || { echo 'Bundle directory not found.' >&2; exit 4; }
 /usr/bin/python3 -I -c "$verifier_code
 $(cat <<'PY'
 import hashlib, json, os, stat, subprocess, sys, tempfile
 from pathlib import Path
-bundle=Path(sys.argv[1]); script=Path(sys.argv[2]); explicit=sys.argv[3]=='yes'
+bundle=Path(sys.argv[1]); explicit=sys.argv[2]=='yes'
 def read(path,limit):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
     with os.fdopen(fd,'rb') as f:
@@ -203,7 +262,6 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-preverify-') as temp:
         output=bounded_command(['/usr/bin/gpgv','--homedir',str(temp),'--keyring',str(keyring),'--status-fd','1',str(temp/(name+'.asc')),str(temp/name)])
         text=output.decode('ascii'); valid=[line.split() for line in text.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
         if len(valid)!=1 or len(valid[0])!=12 or valid[0][2]!='78C0F32094CD02A4BAFA444C684E37A210480F82' or valid[0][11]!='9FF957E79B5D853544805F4725491F18087931B6' or any('[GNUPG:] '+x in text for x in ('REVKEYSIG','EXPKEYSIG','EXPSIG','BADSIG','ERRSIG')): raise ValueError('unauthorized signature')
-    if read(script,1048576)!=(temp/'install.sh').read_bytes(): raise ValueError('running bootstrap differs from signed script')
     manifest=json.loads((temp/'distribution.json').read_bytes(),object_pairs_hook=unique)
     if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('candidate','qualified') or (not explicit and manifest.get('qualification')!='qualified'): raise ValueError('release admission denied')
     entries=[x for x in manifest.get('artifacts',[]) if isinstance(x,dict) and x.get('path')=='bin/p2kesup']
@@ -211,14 +269,14 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-preverify-') as temp:
     binary=read(bundle/'bin/p2kesup',268435456)
     if len(binary)!=entries[0].get('size_bytes') or hashlib.sha256(binary).hexdigest()!=entries[0].get('sha256'): raise ValueError('manager digest mismatch')
 PY
-)" "$bundle" "$script" "$explicit" || { echo 'Bootstrap authentication failed before privilege handoff.' >&2; exit 4; }
+)" "$bundle" "$explicit" || { echo 'Bootstrap authentication failed before privilege handoff.' >&2; exit 4; }
 echo 'A polkit authentication agent is required. The privileged verifier will authenticate and protect the selected manager before it runs.' >&2
 root_code="$verifier_code
 $(cat <<'PY'
 import ctypes, hashlib, json, os, re, stat, subprocess, sys, tempfile
 from pathlib import Path
 
-bundle = Path(sys.argv[1]); script = Path(sys.argv[2]); explicit = sys.argv[3] == 'yes'
+bundle = Path(sys.argv[1]); explicit = sys.argv[2] == 'yes'; requested = sys.argv[3]
 primary = '9FF957E79B5D853544805F4725491F18087931B6'
 signer = '78C0F32094CD02A4BAFA444C684E37A210480F82'
 def fail(message):
@@ -251,8 +309,10 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
     signature('distribution.json'); signature('install.sh')
     manifest=json.loads((tmp/'distribution.json').read_bytes(), object_pairs_hook=unique)
     if manifest.get('schema_version') != 1 or manifest.get('purpose') != 'pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('candidate','qualified'): fail('unsupported signed distribution')
-    if not explicit and manifest['qualification'] != 'qualified': fail('candidate requires explicit --bundle')
-    if read(script,1048576) != (tmp/'install.sh').read_bytes(): fail('executing script differs from signed bootstrap')
+    if not explicit and manifest['qualification'] != 'qualified': fail('candidate requires explicit --version or --bundle')
+    release=manifest.get('release',{}); tag=release.get('tag')
+    if requested and (not isinstance(tag,str) or release.get('version')!=tag or requested != (('qualified-' if manifest['qualification']=='qualified' else '')+tag)): fail('selected release identity changed')
+    if not explicit and release.get('channel')!='stable': fail('default release is not stable')
     os_release={}
     for line in read(Path('/etc/os-release').resolve(strict=True),16384).decode().splitlines():
         if '=' in line:
@@ -289,6 +349,10 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
         if not installed: missing.append(package)
     if missing:
         apt_env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'}
+        with open('/dev/tty','r+') as tty:
+            tty.write('Missing signed prerequisites: '+' '.join(missing)+'\nType REFRESH to approve apt-get update from trusted OS repositories: '); tty.flush()
+            if tty.readline(257).strip()!='REFRESH': fail('package-index refresh declined')
+            subprocess.run(['/usr/bin/apt-get','update'],env=apt_env,stdin=tty,stdout=tty,stderr=tty,check=True)
         def simulate():
             return bounded_command(['/usr/bin/apt-get','--simulate','install','--',*missing],env=apt_env,limit=1048576)
         proposal=simulate()
@@ -319,11 +383,14 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
     print(path)
 PY
 )"
-manager=$(/usr/bin/pkexec /usr/bin/python3 -I -c "$root_code" "$bundle" "$script" "$explicit") || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
-echo 'Bootstrap authenticated. Install through the reviewed manager; no service is implied by the backup role.' >&2
-if [ "$role" = backup ]; then
-    echo 'After installation reopen with: p2kesup --role backup' >&2
+if [ "$(id -u)" -eq 0 ]; then
+    manager=$(/usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version") || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
 else
-    echo 'After installation reopen with: p2kesup' >&2
+    manager=$(/usr/bin/pkexec /usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version" <&3) || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
 fi
-exec "$manager" --bundle "$bundle" --role "$role"
+echo 'Bootstrap authenticated. Starting the reviewed installation.' >&2
+if [ -n "${work:-}" ]; then keep_bundle=yes; fi
+"$manager" install --bundle "$bundle" --role "$role" <&3 >&3 2>&3
+if [ -n "${work:-}" ]; then keep_bundle=no; fi
+}
+main "$@"

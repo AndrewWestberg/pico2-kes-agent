@@ -1320,6 +1320,24 @@ def protected_ancestry(path, owner):
                 "unsafe evidence directory ancestry")
 
 
+def upgrade_without_transfer(prior, path):
+    checkpoints = prior.get("checkpoints")
+    allowed = {"intent-durable", "staged-authenticated", "live-compatibility", "candidate-config",
+               "upgrade-ready", "service-quiesced", "upgrade-service-inhibit-starting",
+               "upgrade-transfer-starting", "upgrade-transfer-not-started", "upgrade-not-transferred"}
+    if type(checkpoints) is not list or not all(type(c) is dict and c.get("name") in allowed for c in checkpoints):
+        return False
+    starts = [i for i, c in enumerate(checkpoints) if c["name"] == "upgrade-transfer-starting"]
+    if not starts:
+        return True
+    not_started = [i for i, c in enumerate(checkpoints) if c["name"] == "upgrade-transfer-not-started"]
+    abandoned = [i for i, c in enumerate(checkpoints) if c["name"] == "upgrade-not-transferred"]
+    return (len(starts) == len(not_started) == len(abandoned) == 1
+            and starts[0] < not_started[0] < abandoned[0]
+            and checkpoints[starts[0]].get("evidence") == str(path)
+            and checkpoints[not_started[0]].get("evidence") == "child exited without creating its write-ahead transfer record")
+
+
 def first_install_history(record_path, bundle, *,
                           config=Path("/etc/pico2-kes-agent/config.json"),
                           journal=Path("/var/lib/pico2-kes-agent/operations.journal"),
@@ -1384,6 +1402,15 @@ def first_install_history(record_path, bundle, *,
                 "unknown maintenance evidence")
         if prior.get("outcome") == "completed" and prior.get("action") in (
                 "install", "config", "service", "commission_service"):
+            continue
+        if prior.get("outcome") == "completed" and prior.get("action") == "upgrade":
+            require(all(type(c) is dict and c.get("name") != "upgrade-transfer-starting"
+                        for c in prior["checkpoints"]),
+                    "existing maintenance evidence excludes first-install")
+            continue
+        if prior.get("action") == "upgrade" and prior.get("outcome") in ("cancelled", "failed-known"):
+            require(upgrade_without_transfer(prior, directory / entry.name),
+                    "existing maintenance evidence excludes first-install")
             continue
         scope = prior.get("approved_scope")
         require(type(scope) is list and len(scope) == 1 and type(scope[0]) is str,
@@ -1547,7 +1574,7 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
             and re.fullmatch(r"[0-9a-f]{32}\.json", record_path.name),
             "update requires the original protected firmware record")
     operation = record_path.stem
-    require(bundle == staging / operation / "firmware",
+    require(bundle in (staging / operation / "firmware", staging / operation / "authorization" / "firmware"),
             "update requires the original authenticated staging directory")
     for path in (directory, records, config.parent, bundle):
         protected_ancestry(path, owner)
@@ -1572,7 +1599,7 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
         maintenance[entry.name] = prior
     transfers = {}
     for name, prior in maintenance.items():
-        if name == record_path.name or prior.get("action") not in ("firmware-update", "firmware_transfer"):
+        if name == record_path.name or prior.get("action") not in ("firmware-update", "firmware_transfer", "upgrade"):
             continue
         if prior.get("action") == "firmware_transfer":
             scope = prior.get("approved_scope")
@@ -1587,12 +1614,20 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
                     "unresolved original firmware operation blocks new transfer")
         else:
             path = directory / name
+        if prior["action"] == "upgrade":
+            checkpoints = prior.get("checkpoints")
+            require(type(checkpoints) is list, "unresolved original firmware operation blocks new transfer")
+            started = [c for c in checkpoints if type(c) is dict and c.get("name") == "upgrade-transfer-starting"]
+            if not started and prior.get("outcome") == "completed":
+                require(not os.path.lexists(path), "unresolved original firmware operation blocks new transfer")
+                continue
         transfers.setdefault(path.name, []).append(prior)
         if prior.get("outcome") in ("cancelled", "failed-known"):
             checkpoints = prior.get("checkpoints")
-            require(not os.path.lexists(path) and type(checkpoints) is list
-                    and all(type(c) is dict and c.get("name") in ("intent-durable", "staged-authenticated")
-                            for c in checkpoints),
+            safe = (upgrade_without_transfer(prior, path) if prior["action"] == "upgrade"
+                    else type(checkpoints) is list and all(type(c) is dict and c.get("name") in
+                         ("intent-durable", "staged-authenticated") for c in checkpoints))
+            require(not os.path.lexists(path) and safe,
                     "unresolved original firmware operation blocks new transfer")
         else:
             require(prior.get("outcome") == "completed" and os.path.lexists(path),
@@ -1607,9 +1642,22 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
         require(type(prior) is dict and prior.get("schema_version") == 1
                 and prior.get("action") in ("first-install", "update")
                 and len(matches) == 1 and matches[0].get("outcome") == "completed"
-                and matches[0].get("action") == ("firmware_transfer" if prior["action"] == "first-install"
-                                                  else "firmware-update"),
+                and (matches[0].get("action") == "firmware_transfer" if prior["action"] == "first-install"
+                     else matches[0].get("action") in ("firmware-update", "upgrade")),
                 "unresolved original firmware operation blocks new transfer")
+        if matches[0].get("action") == "upgrade":
+            original = matches[0]
+            checkpoints = original["checkpoints"]
+            require(prior.get("operation_id") == original["operation_id"]
+                    and type(prior.get("checkpoints")) is list
+                    and all(c in prior["checkpoints"] for c in ("intent", "transfer-started",
+                                                                  "transfer-complete", "flush-complete"))
+                    and any(type(c) is dict and c.get("name") == "upgrade-transfer-starting"
+                            and c.get("evidence") == str(entry) for c in checkpoints)
+                    and any(type(c) is dict and c.get("name") == "upgrade-transfer-flushed"
+                            and c.get("evidence") == str(entry) for c in checkpoints)
+                    and prior.get("uf2_sha256") == original.get("image_digest"),
+                    "unresolved original firmware operation blocks new transfer")
         if prior["action"] == "first-install":
             original = matches[0]
             action = json.loads(original["approved_scope"][0], object_pairs_hook=unique_object)
@@ -1650,23 +1698,98 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
                     "unresolved original firmware operation blocks new transfer")
     original = protected_json(records / record_path.name, 0o640)
     require(type(original) is dict and original.get("schema_version") == 1
-            and original.get("operation_id") == operation and original.get("action") == "firmware-update"
-            and original.get("outcome") == "service-quiesced"
+            and original.get("operation_id") == operation
+            and ((original.get("action") == "firmware-update" and original.get("outcome") == "service-quiesced"
+                  and bundle == staging / operation / "firmware")
+                 or (original.get("action") == "upgrade" and original.get("outcome") == "intent-durable"
+                     and bundle == staging / operation / "authorization" / "firmware"))
             and type(original.get("approved_scope")) is list and len(original["approved_scope"]) == 1
             and type(original.get("pre_observations")) is list and len(original["pre_observations"]) == 1
             and type(original.get("checkpoints")) is list,
             "original approved firmware maintenance intent is unavailable")
     action = json.loads(original["approved_scope"][0], object_pairs_hook=unique_object)
-    evidence = json.loads(original["pre_observations"][0], object_pairs_hook=unique_object)
+    upgrade = original["action"] == "upgrade"
+    evidence = action.get("pre_state") if upgrade and type(action) is dict else json.loads(
+        original["pre_observations"][0], object_pairs_hook=unique_object)
     digest = sha256(bounded_file(bundle.parent / "distribution.json"))
-    require(type(action) is dict and action.get("action") == "firmware_update"
-            and action.get("apply") is True and action.get("serial") == serial
+    require(type(action) is dict and action.get("action") == ("upgrade" if upgrade else "firmware_update")
+            and (upgrade or action.get("apply") is True) and action.get("serial") == serial
             and action.get("record") == str(record_path) and action.get("manifest_digest") == digest
             and original.get("bundle_digest") == digest and original.get("image_digest") == image_digest
             and any(type(c) is dict and c.get("name") == "staged-authenticated" and c.get("evidence") == digest
                     for c in original["checkpoints"])
             and any(type(c) is dict and c.get("name") == "service-quiesced" for c in original["checkpoints"]),
             "firmware update differs from approved staged intent")
+    if upgrade:
+        stage = staging / operation
+        target_path = stage / "target-registry.json"
+        target = protected_json(target_path, 0o600)
+        target_digest = sha256(bounded_file(target_path))
+        prior_path = stage / "prior-registry.json"
+        prior_registry = protected_json(prior_path, 0o600)
+        previous = json.loads(original["pre_observations"][0], object_pairs_hook=unique_object)
+        manifest = read_json(bundle.parent / "distribution.json")
+        selected = original.get("selected")
+        require(type(target) is dict and type(selected) is dict and target.get("current") == selected
+                and target.get("role") == "primary" and selected.get("manifest_digest") == digest
+                and type(prior_registry) is dict and prior_registry.get("role") == "primary"
+                and type(previous) is list and len(previous) == 2
+                and previous[0] == prior_registry.get("current") and type(previous[1]) is str
+                and sha256(bounded_file(prior_path)) == action.get("expected_registry_digest")
+                and type(manifest) is dict and type(manifest.get("release")) is dict
+                and type(manifest.get("platform")) is dict and type(manifest.get("components")) is list
+                and type(manifest.get("artifacts")) is list
+                and all(selected.get(k) == manifest["release"].get(k)
+                        for k in ("tag", "version", "source_commit", "channel"))
+                and selected.get("platform") == manifest["platform"].get("target")
+                and selected.get("qualification") == manifest.get("qualification"),
+                "firmware update differs from approved staged intent")
+        components = selected.get("components")
+        expected_names = {"manager", "daemon", "cli", "firmware", "tool", "deployment"}
+        require(type(components) is list and len(components) == len(expected_names)
+                and all(type(c) is dict for c in components)
+                and {c.get("component") for c in components} == expected_names
+                and len(manifest["components"]) == len(expected_names),
+                "firmware update differs from approved staged intent")
+        for component in components:
+            matches = [c for c in manifest["components"] if type(c) is dict
+                       and c.get("name") == component["component"]]
+            require(len(matches) == 1, "firmware update differs from approved staged intent")
+            item = matches[0]
+            artifacts = [a for a in manifest["artifacts"] if type(a) is dict and a.get("path") == item.get("artifact")]
+            require(len(artifacts) == 1 and component.get("version") == item.get("version")
+                    and component.get("build_id") == item.get("build_id")
+                    and component.get("digest") == item.get("digest")
+                    and component.get("entrypoint_digest") == artifacts[0].get("sha256")
+                    and component.get("source_commit") == selected.get("source_commit")
+                    and component.get("manifest_digest") == digest,
+                    "firmware update differs from approved staged intent")
+        firmware_artifacts = [a for a in manifest["artifacts"] if type(a) is dict
+                              and a.get("path") == "firmware/" + ARTIFACTS[1]]
+        checkpoints = original["checkpoints"]
+        required = [("intent-durable", original.get("plan_digest")), ("staged-authenticated", digest),
+                    ("live-compatibility", "pinned device and current storage revalidated"),
+                    ("candidate-config", "selected daemon accepted current configuration as service identity"),
+                    ("upgrade-ready", target_digest), ("service-quiesced", None),
+                    ("upgrade-service-inhibit-starting", original.get("plan_digest")),
+                    ("upgrade-transfer-starting", str(record_path))]
+        positions = []
+        for name, value in required:
+            found = [i for i, c in enumerate(checkpoints) if type(c) is dict and c.get("name") == name]
+            require(len(found) == 1 and type(checkpoints[found[0]].get("evidence")) is str
+                    and (value is None or checkpoints[found[0]]["evidence"] == value),
+                    "firmware update differs from approved staged intent")
+            positions.append(found[0])
+        require(positions == sorted(positions) and len(firmware_artifacts) == 1
+                and firmware_artifacts[0].get("sha256") == image_digest
+                and next(c for c in components if c["component"] == "firmware")["entrypoint_digest"] == image_digest
+                and type(original.get("plan_digest")) is str
+                and re.fullmatch(r"[0-9a-f]{64}", original["plan_digest"])
+                and type(action.get("expected_registry_digest")) is str
+                and re.fullmatch(r"[0-9a-f]{64}", action["expected_registry_digest"])
+                and type(action.get("expected_service_state")) is str
+                and action["expected_service_state"] == original.get("previous_service_state"),
+                "firmware update differs from approved staged intent")
     meta = config.lstat()
     require(stat.S_ISREG(meta.st_mode) and meta.st_uid == owner and meta.st_nlink == 1
             and meta.st_mode & 0o022 == 0, "unsafe pinned configuration")
@@ -1689,6 +1812,12 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
     require(str(parent).startswith("/usr/lib/pico2-kes-agent/components/manager/")
             and parent.name == "p2kesup" and parent_meta.st_uid == 0
             and parent_meta.st_mode & 0o022 == 0, "original operation requires its manager")
+    if upgrade:
+        mask = Path("/etc/systemd/system/pico2-kes-agentd.service")
+        protected_ancestry(mask.parent, owner)
+        metadata = mask.lstat()
+        require(stat.S_ISLNK(metadata.st_mode) and metadata.st_uid == 0 and metadata.st_gid == 0
+                and os.readlink(mask) == "/dev/null", "upgrade service inhibition changed")
     state, _ = run(["/usr/bin/systemctl", "show", "--property=ActiveState", "--value",
                     "pico2-kes-agentd.service"], failure_code=4)
     require(state.strip() == b"inactive", "daemon is not quiesced")
