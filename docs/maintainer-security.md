@@ -109,7 +109,7 @@ Success ends at `raw_complete_awaiting_cold_boot`, not qualification. Cold boot 
 
 ### Maintainer boot authority
 
-GPG authorizes one dedicated secp256k1 firmware boot authority. The outer host distribution manifest and bootstrap are separately OpenPGP-signed by the pinned project authority; firmware release metadata is signed by the delegated boot key. The pinned primary is `9FF957E79B5D853544805F4725491F18087931B6`, signing subkey `78C0F32094CD02A4BAFA444C684E37A210480F82!`. Email-only selection and the revoked older identity are not acceptable. The ROM fingerprint is SHA-256 of 64-byte big-endian `X || Y`, not the PEM digest or GPG fingerprint.
+GPG authorizes the existing secp256k1 key for two explicitly separate purposes: the unchanged firmware boot authorization and `distribution-authority.json` for host distributions. The delegated key signs firmware metadata and, with distinct domain prefixes, distribution manifests and installers. The pinned primary is `9FF957E79B5D853544805F4725491F18087931B6`, signing subkey `78C0F32094CD02A4BAFA444C684E37A210480F82!`. Email-only selection and the revoked older identity are not acceptable. The ROM fingerprint is SHA-256 of 64-byte big-endian `X || Y`, not the PEM digest or GPG fingerprint.
 
 Before first creation, inspect both `gh secret list --repo AndrewWestberg/pico2-kes-agent` and `$HOME/.local/share/pico2-kes-signing`. An existing secret/backup is a recovery requirement, not permission to rotate. GitHub secrets cannot be read back as backups. Reuse only after recovering the same key and comparing its public identity with the authorized statement. The personal GPG private key stays local; devices receive only the public boot-key hash.
 
@@ -197,6 +197,24 @@ PY
 
 The personal GPG private key never leaves the local host. The signing workflow separately verifies that the uploaded boot key matches the authorization before publishing. Neither this upload nor a local bundle proves a cloud release ran.
 
+### Authorize distribution signing locally
+
+The public files `security/distribution-authority.json` and `security/distribution-authority.json.asc` separately authorize the existing key for distributions. Preserve the original firmware authorization unchanged. The distribution statement binds its exact project, schema, purpose, algorithm and embedded public PEM; an old firmware-only statement cannot substitute for it.
+
+Only when creating this authorization for the first time, on the trusted maintainer workstation:
+
+```bash
+export GPG_TTY="$(tty)"
+gpg-connect-agent updatestartuptty /bye
+python3 tools/publish_release.py authorize-distribution --authority-dir security
+```
+
+This verifies the existing firmware authority, uses the pinned local PGP signer, and refuses to overwrite either authorization file. Review and commit the two public files. No private key is generated, exported or uploaded. Existing authorization files are reused; routine RCs need no local PGP signing.
+
+CI reuses `PICO2_FIRMWARE_SIGNING_KEY_PEM` for both firmware and distribution signing. Candidate and promotion signers receive its protected temporary file through `--key-file`; no PGP private-key secret is required. Restrict the `release-signing` environment and tag/workflow access before relying on it: compromise of this shared key now authorizes malicious host software as well as firmware. A valid signature is authenticity, not proof of safe code or release qualification.
+
+The separately reviewed human promotion approval remains locally OpenPGP-signed `approval.json.asc`. CI only verifies that approval; it cannot replace it with a delegated release signature or sign its own qualification evidence.
+
 ### Build and sign a local manual-qualification bundle
 
 Use a trusted checkout containing the four public authorization files, the pinned tools above and the existing encrypted boot-key backup. Commit the intended firmware/tool/public-authority changes first: `release.json.commit` identifies an exact source commit, not an uncommitted worktree. No private key belongs in that commit. The following creates a **local tag label only**; it does not create/push a Git tag, contact a device or publish a Release.
@@ -243,11 +261,11 @@ Build the permission helper with the preceding pinned-SDK recipe before running 
 
 ### Release publication and provenance
 
-The [release workflow](../.github/workflows/release.yml) builds host and firmware artifacts without production secrets, seals firmware on a separate runner, prepares the complete distribution without signing secrets, then signs metadata and bootstrap on a separate `release-signing` runner without executing staged payloads. A separate publication job verifies the result. Candidate builds bind the triggering `github.sha`; explicit promotion checks out the supplied candidate commit and binds signed approval/evidence to identical payloads. The [publisher](../tools/publish_release.py) checks tag/commit and publication identities; job configuration is not evidence that any workflow or approval actually ran.
+The [release workflow](../.github/workflows/release.yml) builds host and firmware artifacts without production secrets, seals firmware on a separate runner, prepares the complete distribution and public delegation without signing secrets, then signs metadata and bootstrap with the delegated secp256k1 key on a separate `release-signing` runner without executing staged payloads. A separate publication job verifies the result. Candidate builds bind the triggering `github.sha`; explicit promotion checks out the supplied candidate commit and binds human-signed approval/evidence to identical payloads. The [publisher](../tools/publish_release.py) checks tag/commit and publication identities; job configuration is not evidence that any workflow or approval actually ran.
 
 The source-free payload includes `p2kesup`, host binaries, firmware, deployment files, patched picotool, its runtime libraries and provenance. The signed outer manifest authorizes exact component inventory digests and compatibility tuples; the independently verified inner firmware bundle retains its own authority and image-range checks. The standard pipeline explicitly trusts the HTTPS-hosted launcher, not a downloaded verifier or GitHub discovery as an OpenPGP trust root; payload verification remains pinned. Explicit candidate tag or offline bundle selection is only for reviewed attended acceptance on disposable hosts. Promotion requires the signed approval and retained Q1–Q11, developer-check, performance, security-review and acceptance evidence for the exact candidate, then publishes distinct qualified metadata over identical payloads. No current acceptance, signed candidate, supported-host result or hardware qualification follows from this workflow's presence.
 
-For independent launcher verification or offline preparation, obtain the release's `install.sh`, `install.sh.asc`, `distribution.json`, `distribution.json.asc`, `release-authority.asc` and `distribution.tar` in a protected directory. Independently obtain the trusted authority keyring; verify both signatures with trusted `gpgv` and require exactly the pinned primary and signing fingerprints above before executing the installer or processing payloads. A trusted checkout's `python3 -E -s tools/publish_release.py unpack --assets ASSET_DIR --output NEW_BUNDLE_DIR` verifies and unpacks the complete distribution; do not execute a downloaded verifier to authenticate itself. Preserve the bundle intact for `--bundle` offline use.
+For optional independent launcher verification or offline preparation, obtain the release's `install.sh`, `install.sh.sig`, `distribution.json`, `distribution.json.sig`, `distribution-authority.json`, `distribution-authority.json.asc`, `release-authority.asc` and `distribution.tar` in a protected directory. A trusted checkout's `python3 -E -s tools/publish_release.py unpack --assets ASSET_DIR --output NEW_BUNDLE_DIR` verifies the pinned OpenPGP delegation, domain-separated secp256k1 signatures and exact payload inventory before using the bundle. Direct `gpgv` verification of a `.sig` file is not valid: those are DER ECDSA signatures, not OpenPGP. Do not execute a downloaded verifier to authenticate itself. Preserve the complete verified bundle for `--bundle` offline use. Normal `curl | sh` installation obtains these assets automatically.
 
 Release creation uses the already-verified existing tag, not `--target`: GitHub's [release API](https://docs.github.com/en/rest/releases/releases#create-a-release) can require workflow-write permission for an explicit target commit that changes workflows relative to the default branch, even though the tag already exists. Omitting that redundant tag-creation argument preserves the before/after commit checks and avoids granting additional authority to the publishing token.
 

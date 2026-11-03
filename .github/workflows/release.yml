@@ -273,6 +273,8 @@ jobs:
           cp tools/firmware.py payload/tools/firmware.py
           cp -a signed-release payload/firmware
           cp install.sh payload/install.sh
+          cp security/distribution-authority.json security/distribution-authority.json.asc payload/
+          chmod 0644 payload/distribution-authority.json payload/distribution-authority.json.asc
           cp deploy/install.sh deploy/uninstall.sh deploy/pico2-kes-agentd.service \
             deploy/70-pico2-kes-agent.rules deploy/pico2-kes-agent-host-check \
             deploy/cardano-node-memory-hardening.conf payload/deploy/
@@ -306,9 +308,14 @@ jobs:
         with:
           name: prepared-distribution
           path: prepared/
+      - name: Disable swap before receiving signing key
+        run: |
+          set -euo pipefail
+          sudo swapoff -a
+          python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
       - name: Revalidate bytes and sign without executing payloads
         env:
-          PICO2_RELEASE_OPENPGP_PRIVATE_KEY: ${{ secrets.PICO2_RELEASE_OPENPGP_PRIVATE_KEY }}
+          PICO2_FIRMWARE_SIGNING_KEY_PEM: ${{ secrets.PICO2_FIRMWARE_SIGNING_KEY_PEM }}
           RELEASE_TAG: ${{ github.ref_name }}
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
@@ -316,15 +323,16 @@ jobs:
           set -euo pipefail
           ulimit -c 0
           umask 077
-          test -n "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY"
-          GNUPGHOME="$(mktemp -d /dev/shm/pico2-release-gpg.XXXXXXXX)"
-          export GNUPGHOME
-          trap 'gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME"' EXIT HUP INT TERM
-          printf '%s\n' "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY" | gpg --batch --import
-          unset PICO2_RELEASE_OPENPGP_PRIVATE_KEY
+          PRIVATE_DIR="$(mktemp -d /dev/shm/pico2-distribution-signing.XXXXXXXX)"
+          trap 'rm -rf -- "$PRIVATE_DIR"' EXIT HUP INT TERM
+          test -n "$PICO2_FIRMWARE_SIGNING_KEY_PEM"
+          printf '%s\n' "$PICO2_FIRMWARE_SIGNING_KEY_PEM" > "$PRIVATE_DIR/key.pem"
+          unset PICO2_FIRMWARE_SIGNING_KEY_PEM
+          chmod 0600 "$PRIVATE_DIR/key.pem"
           BUILD_ID="$(printf '%s' "$SOURCE_COMMIT" | sha256sum | cut -d' ' -f1)"
           python3 tools/publish_release.py sign-prepared --prepared prepared --output candidate \
-            --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT" --build-id "$BUILD_ID"
+            --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT" --build-id "$BUILD_ID" \
+            --key-file "$PRIVATE_DIR/key.pem"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: signed-distribution
@@ -414,24 +422,30 @@ jobs:
         with:
           name: verified-promotion
           path: promotion-stage/
+      - name: Disable swap before receiving signing key
+        run: |
+          set -euo pipefail
+          sudo swapoff -a
+          python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
       - name: Revalidate signed metadata and promote without executing payloads
         env:
           CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
-          PICO2_RELEASE_OPENPGP_PRIVATE_KEY: ${{ secrets.PICO2_RELEASE_OPENPGP_PRIVATE_KEY }}
+          PICO2_FIRMWARE_SIGNING_KEY_PEM: ${{ secrets.PICO2_FIRMWARE_SIGNING_KEY_PEM }}
         run: |
           set +x
           set -euo pipefail
           ulimit -c 0
           umask 077
           test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
-          test -n "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY"
-          GNUPGHOME="$(mktemp -d /dev/shm/pico2-release-gpg.XXXXXXXX)"
-          export GNUPGHOME
-          trap 'gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME"' EXIT HUP INT TERM
-          printf '%s\n' "$PICO2_RELEASE_OPENPGP_PRIVATE_KEY" | gpg --batch --import
-          unset PICO2_RELEASE_OPENPGP_PRIVATE_KEY
+          PRIVATE_DIR="$(mktemp -d /dev/shm/pico2-distribution-signing.XXXXXXXX)"
+          trap 'rm -rf -- "$PRIVATE_DIR"' EXIT HUP INT TERM
+          test -n "$PICO2_FIRMWARE_SIGNING_KEY_PEM"
+          printf '%s\n' "$PICO2_FIRMWARE_SIGNING_KEY_PEM" > "$PRIVATE_DIR/key.pem"
+          unset PICO2_FIRMWARE_SIGNING_KEY_PEM
+          chmod 0600 "$PRIVATE_DIR/key.pem"
           python3 tools/publish_release.py sign-promotion --candidate promotion-stage/candidate \
-            --approval promotion-stage/evidence/approval.json --commit "$CANDIDATE_COMMIT" --output qualified
+            --approval promotion-stage/evidence/approval.json --commit "$CANDIDATE_COMMIT" --output qualified \
+            --key-file "$PRIVATE_DIR/key.pem"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: qualified-distribution

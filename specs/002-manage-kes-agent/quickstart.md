@@ -6,7 +6,7 @@ Start with the [manual RC-to-lifecycle runbook](../../docs/manual-testing.md) fo
 
 ## Prerequisites
 
-- Signed source-free candidate bundle or published RC tag, with pinned project OpenPGP authority for downloaded payload verification. The manifest must authorize the exact compatible tuple and declare `qualification: candidate`; admit it only through explicit `--version TAG` or local `--bundle` acceptance on disposable targets, not default release discovery. Have a second explicitly compatible signed bundle, admitted under the same rules if unqualified, and incompatible/untrusted test inputs. Final qualification follows acceptance; it is not a prerequisite to testing the candidate.
+- Signed source-free candidate bundle or published RC tag, with a separately PGP-authorized secp256k1 distribution key and domain-separated release/bootstrap signatures. The manifest must authorize the exact compatible tuple and declare `qualification: candidate`; admit it only through explicit `--version TAG` or local `--bundle` acceptance on disposable targets. Have a second explicitly compatible signed bundle and incompatible/untrusted inputs. Final qualification follows acceptance, not merely signing.
 - Disposable Debian 12 and Ubuntu 24.04 x86-64 systemd/udev machines, plus an isolated backup host. Package installation and service changes require administrative approval. Ordinary TUI inspection runs unprivileged.
 - An accepted Pico2 A2 with required hardware/tool/image evidence and disposable pool generations for maintenance scenarios; a factory/BOOTSEL-only board for first installation, a compatible running blank application for the alternate setup path, and an eligible sacrificial target with required qualification for OTP. Never erase a populated device to satisfy a scenario. First-install does not require a pre-existing application pin.
 - Operator-supplied public network/genesis/pool inputs, trusted device identity, public recipient records and disposable encrypted artifacts. Cold signing remains offline. Recipient private keys/passphrases exist only on the backup host.
@@ -15,7 +15,7 @@ Start with the [manual RC-to-lifecycle runbook](../../docs/manual-testing.md) fo
 - For performance acceptance, approve the baseline-selection procedure, actual comparable baseline/build identity, environment, measurement tool/version and bounded comparison rules in the [quality contract](contracts/quality.md#required-project-performance-gate) before candidate evaluation. Freeze a separate first comparable implementation if no earlier manager exists; missing behavior is not a zero baseline. Retain approval, sensitivity evidence, raw timings and verdicts in `evidence/p2kesup/<candidate>/performance.md`.
 - Before trusting behavioral readings, complete the [behavioral tool calibration](contracts/quality.md#behavioral-tool-calibration) approved in T001 and exercised in T067. Retain passing → known-defect failure → restored passing evidence in `evidence/p2kesup/<candidate>/behavioral-calibration.md`; missing or invalid calibration blocks acceptance independently of performance calibration.
 
-Normal installation and upgrade require no manually supplied assets. Only for independent/offline acceptance scenarios, set `INSTALLER`, `BUNDLE`, and `TRUSTED_KEYRING` to actual absolute local paths; `INSTALLER.asc` is the corresponding detached signature. Never advertise fabricated fixtures as published software. Keep reports public-only; do not record passphrase sessions or secret outputs.
+Normal installation and upgrade require no manually supplied assets. For independent/offline acceptance, use the complete verified bundle and actual absolute local paths. The bootstrap's detached signature is `install.sh.sig`; the public distribution delegation is `distribution-authority.json` plus its PGP `.asc` signature. Verify through trusted local tools as described in the maintainer guide, not by treating the ECDSA `.sig` as OpenPGP. Keep reports public-only; never record passphrase sessions or secret outputs.
 
 ## T001 gate approval
 
@@ -235,7 +235,7 @@ Use Tab/Shift-Tab to change views and up/down to select actions, Enter to review
 
 ## Q1 — Bootstrap, reopen and absent/partial inventory
 
-The standard pipeline explicitly trusts the HTTPS-hosted launcher; this is distinct from pinned OpenPGP verification of downloaded payloads. On an attended disposable host, exercise the default qualified-stable pipeline and explicit RC selection:
+The standard pipeline explicitly trusts the HTTPS-hosted launcher; downloaded payloads instead require the pinned PGP delegation and purpose-separated secp256k1 signatures. On an attended disposable host, exercise the default qualified-stable pipeline and explicit RC selection:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh

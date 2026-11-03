@@ -2047,7 +2047,7 @@ fn install_bundle(
         .iter()
         .map(|a| a.path.as_str())
         .collect();
-    names.extend(["distribution.json", "distribution.json.asc"]);
+    names.extend(["distribution.json", "distribution.json.sig"]);
     for name in names {
         let destination = staged.join(name);
         fs::create_dir_all(destination.parent().unwrap())?;
@@ -2398,7 +2398,7 @@ fn run_first_install(
             .iter()
             .map(|a| a.path.as_str())
             .collect();
-        names.extend(["distribution.json", "distribution.json.asc"]);
+        names.extend(["distribution.json", "distribution.json.sig"]);
         for name in names {
             let destination = path.join(name);
             fs::create_dir_all(destination.parent().unwrap())?;
@@ -2519,7 +2519,7 @@ fn authenticate_protected_stage(
         .iter()
         .map(|a| a.path.as_str())
         .collect();
-    names.extend(["distribution.json", "distribution.json.asc"]);
+    names.extend(["distribution.json", "distribution.json.sig"]);
     for name in names {
         let target = path.join(name);
         fs::create_dir_all(target.parent().unwrap())?;
@@ -3954,7 +3954,7 @@ fn stage_source(
         .artifacts
         .iter()
         .map(|a| a.path.as_str())
-        .chain(["distribution.json", "distribution.json.asc"])
+        .chain(["distribution.json", "distribution.json.sig"])
     {
         let target = path.join(name);
         fs::create_dir_all(target.parent().unwrap())?;
@@ -3998,7 +3998,7 @@ fn retain_public_source(
         .map(|a| (a.path.as_str(), a.mode))
         .chain([
             ("distribution.json", 0o644),
-            ("distribution.json.asc", 0o644),
+            ("distribution.json.sig", 0o644),
         ])
     {
         let destination = temporary.join(name);

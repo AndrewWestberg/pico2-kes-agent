@@ -38,7 +38,7 @@ libc=$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null) || { echo 'Unsupported lib
 case "$libc" in glibc\ 2.*) minor=${libc#glibc 2.}; case "$minor" in *[!0-9]*|'') echo 'Unsupported libc.' >&2; exit 4 ;; esac; [ "$minor" -ge 36 ] || { echo 'glibc 2.36 or later required.' >&2; exit 4; } ;; *) echo 'Unsupported libc.' >&2; exit 4 ;; esac
 [ -x /usr/bin/apt-get ] && [ -x /usr/bin/dpkg-query ] || { echo 'Trusted apt is required.' >&2; exit 4; }
 missing=
-for pair in python3:python3 gpg:gnupg gpgv:gpgv pkexec:pkexec readelf:binutils; do
+for pair in python3:python3 gpg:gnupg gpgv:gpgv openssl:openssl pkexec:pkexec readelf:binutils; do
     tool=${pair%%:*}; package=${pair#*:}
     [ -x "/usr/bin/$tool" ] || missing="$missing $package"
 done
@@ -67,7 +67,7 @@ if [ -n "$missing" ]; then
         sudo) /usr/bin/sudo /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
         pkexec) /usr/bin/pkexec /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
     esac || { echo 'Prerequisite installation failed.' >&2; exit 4; }
-    for tool in python3 gpg gpgv pkexec readelf; do
+    for tool in python3 gpg gpgv openssl pkexec readelf; do
         [ -x "/usr/bin/$tool" ] || { echo "Prerequisite $tool unavailable." >&2; exit 4; }
     done
     [ -n "$bundle" ] || [ -s /etc/ssl/certs/ca-certificates.crt ] || { echo 'TLS certificates unavailable.' >&2; exit 4; }
@@ -102,6 +102,42 @@ def bounded_command(command, timeout=30, limit=65536, env=None):
         raise
     finally:
         process.stdout.close()
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result: raise ValueError('duplicate JSON key')
+        result[key] = value
+    return result
+def authenticate_authority(directory):
+    import json
+    keyring = directory/'authority.gpg'
+    bounded_command(['/usr/bin/gpg','--homedir',str(directory),'--batch','--no-options','--dearmor','--output',str(keyring),str(directory/'authority.asc')])
+    output = bounded_command(['/usr/bin/gpgv','--homedir',str(directory),'--keyring',str(keyring),'--status-fd','1',str(directory/'distribution-authority.json.asc'),str(directory/'distribution-authority.json')])
+    text = output.decode('ascii'); valid = [line.split() for line in text.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
+    if len(valid)!=1 or len(valid[0])!=12 or valid[0][2]!='78C0F32094CD02A4BAFA444C684E37A210480F82' or valid[0][11]!='9FF957E79B5D853544805F4725491F18087931B6' or any('[GNUPG:] '+bad in text for bad in ('REVKEYSIG','EXPKEYSIG','EXPSIG','BADSIG','ERRSIG')): raise ValueError('unauthorized distribution authority')
+    authority = json.loads((directory/'distribution-authority.json').read_bytes(), object_pairs_hook=unique_object)
+    if not isinstance(authority,dict) or set(authority)!={'schema_version','purpose','project','algorithm','public_key_pem'} or type(authority['schema_version']) is not int or authority['schema_version']!=1 or authority['purpose']!='pico2-kes-agent-distribution-authority-v1' or authority['project']!='https://github.com/AndrewWestberg/pico2-kes-agent' or authority['algorithm']!='secp256k1' or not isinstance(authority['public_key_pem'],str): raise ValueError('invalid distribution authority')
+    key = directory/'distribution-public.pem'
+    key.write_bytes(authority['public_key_pem'].encode('ascii'))
+    bounded_command(['/usr/bin/openssl','pkey','-pubin','-in',str(key),'-pubcheck','-noout'])
+    der = bounded_command(['/usr/bin/openssl','pkey','-pubin','-in',str(key),'-outform','DER'])
+    prefix = bytes.fromhex('3056301006072a8648ce3d020106052b8104000a03420004')
+    if len(der)!=len(prefix)+64 or not der.startswith(prefix): raise ValueError('invalid distribution public key')
+    return key
+def distribution_signature(directory, key, name, purpose):
+    if purpose not in ('pico2-kes-agent-distribution-v1','pico2-kes-agent-bootstrap-v1'): raise ValueError('invalid signature purpose')
+    signed = directory/'signed-input'
+    signed.write_bytes(purpose.encode('ascii')+b'\n'+(directory/name).read_bytes())
+    bounded_command(['/usr/bin/openssl','dgst','-sha256','-verify',str(key),'-signature',str(directory/(name+'.sig')),str(signed)])
+def bind_bootstrap(manifest, directory):
+    import hashlib
+    artifacts = manifest.get('artifacts')
+    if not isinstance(artifacts,list): raise ValueError('invalid artifact inventory')
+    for name, local in (('distribution-authority.json','distribution-authority.json'),('distribution-authority.json.asc','distribution-authority.json.asc'),('firmware/release-authority.asc','authority.asc'),('install.sh','install.sh'),('install.sh.sig','install.sh.sig')):
+        matches = [item for item in artifacts if isinstance(item,dict) and item.get('path')==name]
+        if len(matches)!=1: raise ValueError('missing or duplicate bootstrap artifact')
+        item = matches[0]; data = (directory/local).read_bytes()
+        if type(item.get('size_bytes')) is not int or item['size_bytes']!=len(data) or item.get('sha256')!=hashlib.sha256(data).hexdigest() or (item.get('mode') not in (420,493) if name=='install.sh' else item.get('mode')!=420) or (name in ('distribution-authority.json','distribution-authority.json.asc','install.sh.sig') and item.get('class')!='bootstrap'): raise ValueError('bootstrap artifact mismatch')
 PY
 )
 /usr/bin/python3 -I - <<'PY' || { echo 'Unsupported operating system or glibc.' >&2; exit 4; }
@@ -177,16 +213,16 @@ try:
         name=a.get('name'); url=a.get('browser_download_url')
         if name in assets: raise ValueError('duplicate release asset')
         if isinstance(name,str) and isinstance(url,str): assets[name]=url
-    for name in ('distribution.json','distribution.json.asc','release-authority.asc'):
+    for name in ('distribution-authority.json','distribution-authority.json.asc','release-authority.asc','distribution.json','distribution.json.sig','install.sh','install.sh.sig'):
         url=assets[name]; p=urllib.parse.urlsplit(url)
         if p.hostname!='github.com' or p.path!='/AndrewWestberg/pico2-kes-agent/releases/download/'+urllib.parse.quote(tag,safe='')+'/'+name: raise ValueError('untrusted release asset')
         fetch(url,1048576,work/name)
-    keyring=work/'authority.gpg'
-    bounded_command(['/usr/bin/gpg','--homedir',str(work),'--batch','--no-options','--dearmor','--output',str(keyring),str(work/'release-authority.asc')])
-    output=bounded_command(['/usr/bin/gpgv','--homedir',str(work),'--keyring',str(keyring),'--status-fd','1',str(work/'distribution.json.asc'),str(work/'distribution.json')])
-    text=output.decode('ascii'); signatures=[x.split() for x in text.splitlines() if x.startswith('[GNUPG:] VALIDSIG ')]
-    if len(signatures)!=1 or len(signatures[0])!=12 or signatures[0][2]!='78C0F32094CD02A4BAFA444C684E37A210480F82' or signatures[0][11]!='9FF957E79B5D853544805F4725491F18087931B6' or any('[GNUPG:] '+x in text for x in ('REVKEYSIG','EXPKEYSIG','EXPSIG','BADSIG','ERRSIG')): raise ValueError('unauthorized manifest')
+    shutil.copyfile(work/'release-authority.asc',work/'authority.asc')
+    key=authenticate_authority(work)
+    distribution_signature(work,key,'distribution.json','pico2-kes-agent-distribution-v1')
+    distribution_signature(work,key,'install.sh','pico2-kes-agent-bootstrap-v1')
     manifest=json.loads((work/'distribution.json').read_bytes(),object_pairs_hook=unique)
+    bind_bootstrap(manifest,work)
     identity=manifest.get('release',{})
     signed_tag=identity.get('tag')
     if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('qualified','candidate') or not isinstance(signed_tag,str) or identity.get('version')!=signed_tag or tag!=(('qualified-' if manifest['qualification']=='qualified' else '')+signed_tag) or (not requested and (manifest.get('qualification')!='qualified' or identity.get('channel')!='stable')): raise ValueError('signed release identity or qualification mismatch')
@@ -220,7 +256,7 @@ try:
             target.chmod(entries[name]['mode'])
     if seen!=set(entries): raise ValueError('incomplete archive')
     shutil.copyfile(work/'distribution.json',output/'distribution.json')
-    shutil.copyfile(work/'distribution.json.asc',output/'distribution.json.asc')
+    shutil.copyfile(work/'distribution.json.sig',output/'distribution.json.sig')
     print(output)
 except BaseException:
     shutil.rmtree(work,ignore_errors=True)
@@ -254,15 +290,13 @@ def unique(pairs):
     return result
 with tempfile.TemporaryDirectory(prefix='p2kesup-preverify-') as temp:
     temp=Path(temp)
-    for path,name in ((bundle/'distribution.json','distribution.json'),(bundle/'distribution.json.asc','distribution.json.asc'),(bundle/'firmware/release-authority.asc','authority.asc'),(bundle/'install.sh','install.sh'),(bundle/'install.sh.asc','install.sh.asc')):
+    for path,name in ((bundle/'distribution.json','distribution.json'),(bundle/'distribution.json.sig','distribution.json.sig'),(bundle/'distribution-authority.json','distribution-authority.json'),(bundle/'distribution-authority.json.asc','distribution-authority.json.asc'),(bundle/'firmware/release-authority.asc','authority.asc'),(bundle/'install.sh','install.sh'),(bundle/'install.sh.sig','install.sh.sig')):
         (temp/name).write_bytes(read(path,1048576))
-    keyring=temp/'authority.gpg'
-    bounded_command(['/usr/bin/gpg','--homedir',str(temp),'--batch','--no-options','--dearmor','--output',str(keyring),str(temp/'authority.asc')])
-    for name in ('distribution.json','install.sh'):
-        output=bounded_command(['/usr/bin/gpgv','--homedir',str(temp),'--keyring',str(keyring),'--status-fd','1',str(temp/(name+'.asc')),str(temp/name)])
-        text=output.decode('ascii'); valid=[line.split() for line in text.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
-        if len(valid)!=1 or len(valid[0])!=12 or valid[0][2]!='78C0F32094CD02A4BAFA444C684E37A210480F82' or valid[0][11]!='9FF957E79B5D853544805F4725491F18087931B6' or any('[GNUPG:] '+x in text for x in ('REVKEYSIG','EXPKEYSIG','EXPSIG','BADSIG','ERRSIG')): raise ValueError('unauthorized signature')
+    key=authenticate_authority(temp)
+    distribution_signature(temp,key,'distribution.json','pico2-kes-agent-distribution-v1')
+    distribution_signature(temp,key,'install.sh','pico2-kes-agent-bootstrap-v1')
     manifest=json.loads((temp/'distribution.json').read_bytes(),object_pairs_hook=unique)
+    bind_bootstrap(manifest,temp)
     if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('candidate','qualified') or (not explicit and manifest.get('qualification')!='qualified'): raise ValueError('release admission denied')
     entries=[x for x in manifest.get('artifacts',[]) if isinstance(x,dict) and x.get('path')=='bin/p2kesup']
     if len(entries)!=1: raise ValueError('ambiguous manager')
@@ -277,8 +311,6 @@ import ctypes, hashlib, json, os, re, stat, subprocess, sys, tempfile
 from pathlib import Path
 
 bundle = Path(sys.argv[1]); explicit = sys.argv[2] == 'yes'; requested = sys.argv[3]
-primary = '9FF957E79B5D853544805F4725491F18087931B6'
-signer = '78C0F32094CD02A4BAFA444C684E37A210480F82'
 def fail(message):
     raise SystemExit(message)
 def read(path, limit):
@@ -298,16 +330,13 @@ def unique(pairs):
     return result
 with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
     tmp = Path(tmp)
-    for source, name, limit in [(bundle/'distribution.json','distribution.json',1048576), (bundle/'distribution.json.asc','distribution.json.asc',1048576), (bundle/'firmware/release-authority.asc','authority.asc',1048576), (bundle/'install.sh','install.sh',1048576), (bundle/'install.sh.asc','install.sh.asc',1048576)]:
+    for source, name, limit in [(bundle/'distribution.json','distribution.json',1048576), (bundle/'distribution.json.sig','distribution.json.sig',1048576), (bundle/'distribution-authority.json','distribution-authority.json',1048576), (bundle/'distribution-authority.json.asc','distribution-authority.json.asc',1048576), (bundle/'firmware/release-authority.asc','authority.asc',1048576), (bundle/'install.sh','install.sh',1048576), (bundle/'install.sh.sig','install.sh.sig',1048576)]:
         (tmp/name).write_bytes(read(source, limit))
-    keyring = tmp/'authority.gpg'
-    bounded_command(['/usr/bin/gpg','--homedir',str(tmp),'--batch','--no-options','--dearmor','--output',str(keyring),str(tmp/'authority.asc')])
-    def signature(name):
-        output = bounded_command(['/usr/bin/gpgv','--homedir',str(tmp),'--keyring',str(keyring),'--status-fd','1',str(tmp/(name+'.asc')),str(tmp/name)])
-        text=output.decode('ascii'); valid=[line.split() for line in text.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
-        if len(valid)!=1 or len(valid[0])!=12 or valid[0][2]!=signer or valid[0][11]!=primary or any('[GNUPG:] '+bad in text for bad in ('REVKEYSIG','EXPKEYSIG','EXPSIG','BADSIG','ERRSIG')): fail('unauthorized signature')
-    signature('distribution.json'); signature('install.sh')
+    key=authenticate_authority(tmp)
+    distribution_signature(tmp,key,'distribution.json','pico2-kes-agent-distribution-v1')
+    distribution_signature(tmp,key,'install.sh','pico2-kes-agent-bootstrap-v1')
     manifest=json.loads((tmp/'distribution.json').read_bytes(), object_pairs_hook=unique)
+    bind_bootstrap(manifest,tmp)
     if manifest.get('schema_version') != 1 or manifest.get('purpose') != 'pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('candidate','qualified'): fail('unsupported signed distribution')
     if not explicit and manifest['qualification'] != 'qualified': fail('candidate requires explicit --version or --bundle')
     release=manifest.get('release',{}); tag=release.get('tag')
@@ -364,7 +393,7 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
             subprocess.run(['/usr/bin/apt-get','install','--',*missing],env=apt_env,stdin=tty,stdout=tty,stderr=tty,check=True)
         for package in missing:
             if bounded_command(['/usr/bin/dpkg-query','-W','-f=${Status}',package]) != b'install ok installed': fail('prerequisite recheck failed')
-    for tool in ('/usr/bin/gpg','/usr/bin/gpgv','/usr/bin/python3','/usr/bin/pkexec','/usr/bin/readelf'):
+    for tool in ('/usr/bin/gpg','/usr/bin/gpgv','/usr/bin/openssl','/usr/bin/python3','/usr/bin/pkexec','/usr/bin/readelf'):
         if not os.path.isfile(tool) or not os.access(tool,os.X_OK): fail('required tool unavailable after installation')
     os.umask(0o022)
     parent=Path('/var/lib/p2kesup')

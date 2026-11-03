@@ -198,7 +198,7 @@ class PublishTests(unittest.TestCase):
         entries = [
             {"path": "deploy/z", "size_bytes": 2, "sha256": "b" * 64, "mode": 0o755},
             {"path": "install.sh", "size_bytes": 1, "sha256": "a" * 64, "mode": 0o644},
-            {"path": "install.sh.asc", "size_bytes": 3, "sha256": "c" * 64, "mode": 0o644},
+            {"path": "install.sh.sig", "size_bytes": 3, "sha256": "c" * 64, "mode": 0o644},
         ]
         encoded = ("deploy/z\0" + "2\0" + "b" * 64 + "\0" + "493\n" +
                    "install.sh\0" + "1\0" + "a" * 64 + "\0" + "420\n").encode()
@@ -257,22 +257,52 @@ class PublishTests(unittest.TestCase):
             fingerprints = [line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:")]
             certificate = self.bundle / "authority.asc"
             certificate.write_bytes(gpg("--armor", "--export", primary))
-            data = self.bundle / "distribution.json"
+            data = self.bundle / "approval.json"
             data.write_bytes(b"authenticated bytes")
             trust = (primary, fingerprints[1])
             publisher.sign_detached(data, certificate, trust=trust)
-            publisher.verify_detached(data, self.bundle / "distribution.json.asc", certificate, trust=trust)
+            publisher.verify_detached(data, self.bundle / "approval.json.asc", certificate, trust=trust)
             with self.assertRaises(ValueError):
-                publisher.verify_detached(data, self.bundle / "distribution.json.asc", certificate)
+                publisher.verify_detached(data, self.bundle / "approval.json.asc", certificate)
             data.write_bytes(b"altered bytes")
             with self.assertRaises(ValueError):
-                publisher.verify_detached(data, self.bundle / "distribution.json.asc", certificate, trust=trust)
+                publisher.verify_detached(data, self.bundle / "approval.json.asc", certificate, trust=trust)
+            key_file = self.bundle / "distribution-key.pem"
+            subprocess.run(["openssl", "ecparam", "-name", "secp256k1", "-genkey", "-noout",
+                            "-out", str(key_file)], check=True)
+            key_file.chmod(0o600)
+            public_key = subprocess.check_output(["openssl", "pkey", "-in", str(key_file), "-pubout"])
+            wrong_key = self.bundle / "wrong-key.pem"
+            subprocess.run(["openssl", "ecparam", "-name", "secp256k1", "-genkey", "-noout",
+                            "-out", str(wrong_key)], check=True)
+            wrong_key.chmod(0o600)
+            authority_dir = self.bundle / "authority"
+            authority_dir.mkdir()
+            public_path = authority_dir / publisher.firmware.PUBLIC_FILES[0]
+            public_path.write_bytes(public_key)
+            (authority_dir / "release-authority.asc").write_bytes(certificate.read_bytes())
+            firmware_statement = authority_dir / "firmware-key.json"
+            firmware_statement.write_text(json.dumps(publisher.firmware.statement(public_path), indent=2) + "\n")
+            gpg("--armor", "--detach-sign", "--local-user", fingerprints[1] + "!",
+                "--output", str(authority_dir / "firmware-key.json.asc"), str(firmware_statement))
+            publisher.authorize_distribution(authority_dir, trust=trust)
+            auth_names = ("distribution-authority.json", "distribution-authority.json.asc")
+            authorization = [(authority_dir / name).read_bytes() for name in auth_names]
+            self.assertEqual(publisher.firmware.verify_distribution_authority(
+                authority_dir / auth_names[0], authority_dir / auth_names[1],
+                authority_dir / "release-authority.asc", trust=trust), public_key)
+            self.assertTrue(all((authority_dir / name).stat().st_mode & 0o777 == 0o644 for name in auth_names))
+            with self.assertRaises(ValueError):
+                publisher.authorize_distribution(authority_dir, trust=trust)
+            self.assertEqual([(authority_dir / name).read_bytes() for name in auth_names], authorization)
             payload = self.bundle / "payload"
             for name in publisher.REQUIRED_ASSETS:
                 path = payload / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"same verifier" if name in ("firmware/firmware.py", "tools/firmware.py")
                                  else certificate.read_bytes() if name == "firmware/release-authority.asc"
+                                 else public_key if name == "firmware/firmware-signing-public.pem"
+                                 else (authority_dir / name).read_bytes() if name in auth_names
                                  else name.encode())
                 if name in ("bin/p2kesup", "bin/pico2-kes-agentd", "bin/pico2-kes-agent-cli", "tools/picotool"):
                     path.chmod(0o755)
@@ -297,24 +327,39 @@ class PublishTests(unittest.TestCase):
                 prepared_metadata.write_text(json.dumps(altered), encoding="utf-8")
                 with self.assertRaises(ValueError):
                     publisher.sign_prepared(prepared, self.bundle / "bad-inventory", "vfixture",
-                                            self.commit, "f" * 64, trust=trust)
+                                            self.commit, "f" * 64, key_file, trust=trust)
                 prepared_metadata.write_bytes(prepared_bytes)
                 with mock.patch.object(publisher, "host_version", side_effect=AssertionError("signer ran host binary")), \
                      mock.patch.object(publisher.firmware, "verify_bundle", side_effect=AssertionError("signer ran firmware")):
                     with self.assertRaises(ValueError):
-                        publisher.sign_prepared(prepared, self.bundle / "bad-source", "vfixture", "b" * 40, "f" * 64, trust=trust)
+                        publisher.sign_prepared(prepared, self.bundle / "bad-source", "vfixture", "b" * 40, "f" * 64, key_file, trust=trust)
                     artifact = prepared / "bin/p2kesup"
                     original = artifact.read_bytes()
                     artifact.write_bytes(original + b"altered")
                     with self.assertRaises(ValueError):
-                        publisher.sign_prepared(prepared, self.bundle / "bad-payload", "vfixture", self.commit, "f" * 64, trust=trust)
+                        publisher.sign_prepared(prepared, self.bundle / "bad-payload", "vfixture", self.commit, "f" * 64, key_file, trust=trust)
                     artifact.write_bytes(original)
-                    manifest = publisher.sign_prepared(prepared, candidate, "vfixture", self.commit, "f" * 64, trust=trust)
+                    with self.assertRaises(ValueError):
+                        publisher.sign_prepared(prepared, self.bundle / "bad-key", "vfixture", self.commit, "f" * 64, wrong_key, trust=trust)
+                    manifest = publisher.sign_prepared(prepared, candidate, "vfixture", self.commit, "f" * 64, key_file, trust=trust)
                 self.assertIn("unlocked", manifest["compatibility"]["security_profiles"])
                 tuples = manifest["compatibility"]["tuples"]
                 self.assertEqual(len(tuples), 2)
                 self.assertEqual(tuples[1]["daemon"], "b" * 64)
                 self.assertEqual(tuples[1]["deployment"], tuples[0]["deployment"])
+                assets = self.bundle / "assets"
+                publisher.pack_distribution_assets(candidate, assets, trust=trust)
+                unpacked = self.bundle / "unpacked"
+                self.assertEqual(publisher.unpack_distribution_assets(assets, unpacked, trust=trust), manifest)
+                for name in ("distribution-authority.json", "distribution-authority.json.asc",
+                             "release-authority.asc", "install.sh", "install.sh.sig",
+                             "distribution.json", "distribution.json.sig"):
+                    path = assets / name
+                    original = path.read_bytes()
+                    path.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                    with self.subTest(asset=name), self.assertRaises(ValueError):
+                        publisher.unpack_distribution_assets(assets, self.bundle / ("bad-" + name), trust=trust)
+                    path.write_bytes(original)
                 self.assertEqual({c["name"]: c["digest"] for c in manifest["components"]}, tuples[0])
                 evidence_dir = self.bundle / "evidence"
                 evidence_dir.mkdir()
@@ -333,7 +378,9 @@ class PublishTests(unittest.TestCase):
                 publisher.check_promotion(candidate, approval, self.commit, trust=trust)
                 with mock.patch.object(publisher.firmware, "verify_bundle", side_effect=AssertionError("signer ran firmware")), \
                      mock.patch.object(publisher, "host_version", side_effect=AssertionError("signer ran host binary")):
-                    publisher.sign_promotion(candidate, qualified, approval, self.commit, trust=trust)
+                    with self.assertRaises(ValueError):
+                        publisher.sign_promotion(candidate, self.bundle / "bad-promotion-key", approval, self.commit, wrong_key, trust=trust)
+                    publisher.sign_promotion(candidate, qualified, approval, self.commit, key_file, trust=trust)
                 promoted = publisher.verify_distribution(qualified, trust=trust)
                 self.assertEqual(promoted["qualification"], "qualified")
                 self.assertEqual(promoted["artifacts"], manifest["artifacts"])
@@ -346,23 +393,29 @@ class PublishTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     publisher.verify_distribution(candidate, trust=trust)
                 artifact.write_bytes(original)
-                metadata, signature = candidate / "distribution.json", candidate / "distribution.json.asc"
+                metadata, signature = candidate / "distribution.json", candidate / "distribution.json.sig"
                 original_metadata, original_signature = metadata.read_bytes(), signature.read_bytes()
+                signature.unlink()
+                publisher.sign_distribution(metadata, key_file, public_key, purpose=publisher.firmware.BOOTSTRAP_PURPOSE)
+                with self.assertRaises(ValueError):
+                    publisher.verify_distribution(candidate, trust=trust)
+                signature.unlink()
                 for field, value in (("purpose", "wrong-purpose"), ("qualification", "unknown")):
                     altered = dict(manifest)
                     altered[field] = value
                     metadata.write_text(json.dumps(altered), encoding="utf-8")
-                    signature.unlink()
-                    publisher.sign_detached(metadata, certificate, trust=trust)
+                    if signature.exists():
+                        signature.unlink()
+                    publisher.sign_distribution(metadata, key_file, public_key, purpose=publisher.firmware.DISTRIBUTION_PURPOSE)
                     with self.subTest(field=field), self.assertRaises(ValueError):
                         publisher.verify_distribution(candidate, trust=trust)
                 metadata.write_bytes(original_metadata)
                 signature.write_bytes(original_signature)
                 with self.assertRaises(ValueError):
-                    publisher.sign_promotion(candidate, qualified, approval, self.commit, trust=trust)
+                    publisher.sign_promotion(candidate, qualified, approval, self.commit, key_file, trust=trust)
                 (evidence_dir / "Q1.md").write_text("tampered", encoding="utf-8")
                 with self.assertRaises(ValueError):
-                    publisher.sign_promotion(candidate, self.bundle / "bad", approval, self.commit, trust=trust)
+                    publisher.sign_promotion(candidate, self.bundle / "bad", approval, self.commit, key_file, trust=trust)
 
 
 class DistributionPublicationTests(unittest.TestCase):
@@ -371,8 +424,9 @@ class DistributionPublicationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bundle = Path(self.temp.name) / "assets"
         self.bundle.mkdir()
-        for name in ("distribution.json", "distribution.json.asc", "distribution.tar",
-                     "release-authority.asc", "install.sh", "install.sh.asc"):
+        for name in ("distribution.json", "distribution.json.sig", "distribution.tar",
+                     "distribution-authority.json", "distribution-authority.json.asc",
+                     "release-authority.asc", "install.sh", "install.sh.sig"):
             (self.bundle / name).write_bytes(name.encode())
         self.commit = "a" * 40
 
