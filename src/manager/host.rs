@@ -22,6 +22,9 @@ use std::{
     process::Command,
 };
 
+mod upgrade;
+pub use upgrade::{review_upgrade_recovery, trusted_upgrade_recovery_manager, verify_installed_ownership};
+
 pub(super) fn read_confirmation(input: impl io::BufRead) -> io::Result<String> {
     let mut line = String::new();
     io::BufRead::read_line(&mut input.take(257), &mut line)?;
@@ -50,6 +53,25 @@ pub enum HostAction {
         role: InstallationRole,
         manifest_digest: String,
         candidate_accepted: bool,
+    },
+    Upgrade {
+        bundle: PathBuf,
+        manifest_digest: String,
+        candidate_accepted: bool,
+        expected_registry_digest: String,
+        expected_service_state: Option<String>,
+        pre_state: Option<super::maintenance::Evidence>,
+        temporary_validation: bool,
+        serial: Option<String>,
+        device_id: Option<String>,
+        identity_public_key: Option<String>,
+        record: Option<PathBuf>,
+    },
+    UpgradeRecovery {
+        operation_id: String,
+        original_plan_digest: String,
+        expected_service_state: Option<String>,
+        temporary_validation: bool,
     },
     Update {
         authorizing_bundle: PathBuf,
@@ -212,6 +234,27 @@ impl HostPlan {
                 manifest_digest,
                 ..
             } => bundle.is_absolute() && digest_ok(manifest_digest),
+            HostAction::Upgrade {
+                bundle, manifest_digest, expected_registry_digest,
+                expected_service_state, pre_state, serial, device_id, identity_public_key,
+                record, ..
+            } => {
+                bundle.is_absolute() && digest_ok(manifest_digest) && digest_ok(expected_registry_digest)
+                    && match (expected_service_state, pre_state, serial, device_id, identity_public_key, record) {
+                        (None, None, None, None, None, None) => true,
+                        (Some(state), Some(_), Some(serial), Some(device), Some(key), Some(record)) => {
+                            !state.is_empty() && state.len() <= 512 && state.bytes().all(|b| (32..127).contains(&b))
+                                && serial_ok(serial) && id_ok(device) && digest_ok(key)
+                                && record.parent() == Some(Path::new("/var/lib/p2kesup/firmware"))
+                                && record.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")).is_some_and(id_ok)
+                        }
+                        _ => false,
+                    }
+            }
+            HostAction::UpgradeRecovery { operation_id, original_plan_digest, expected_service_state, .. } => {
+                id_ok(operation_id) && digest_ok(original_plan_digest)
+                    && expected_service_state.as_ref().is_none_or(|s| !s.is_empty() && s.len() <= 512 && s.bytes().all(|b| (32..127).contains(&b)))
+            }
             HostAction::Update {
                 authorizing_bundle,
                 sources,
@@ -872,7 +915,8 @@ pub(super) fn checkpoint(name: &str, evidence: String) -> MaintenanceCheckpoint 
 fn host_record(plan: &HostPlan, previous: Option<String>) -> io::Result<MaintenanceRecord> {
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
-    let operation_id = if let HostAction::FirmwareUpdate { record, .. } = &plan.action {
+    let operation_id = if let HostAction::FirmwareUpdate { record, .. }
+        | HostAction::Upgrade { record: Some(record), .. } = &plan.action {
         let name = record
             .file_stem()
             .and_then(|n| n.to_str())
@@ -887,6 +931,8 @@ fn host_record(plan: &HostPlan, previous: Option<String>) -> io::Result<Maintena
         operation_id,
         action: match &plan.action {
             HostAction::Install { .. } => "install",
+            HostAction::Upgrade { .. } => "upgrade",
+            HostAction::UpgradeRecovery { .. } => "upgrade-recovery",
             HostAction::FirmwareFirstInstall { .. } => "firmware_transfer",
             HostAction::Update { .. } => "update",
             HostAction::UpdateRecovery { .. } => "update-recovery",
@@ -1195,7 +1241,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             manifest_digest,
             candidate_accepted,
             ..
-        } => {
+        } | HostAction::Upgrade { bundle, manifest_digest, candidate_accepted, .. } => {
             let admission = if *candidate_accepted {
                 super::release::Admission::AttendedCandidate
             } else {
@@ -1240,6 +1286,8 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     let _lock = maintenance_lock()?;
     if !matches!(&plan.action, HostAction::Install { .. }) {
         let expected = match &plan.action {
+            HostAction::UpgradeRecovery { operation_id, original_plan_digest, .. } =>
+                trusted_upgrade_recovery_manager(operation_id, original_plan_digest)?,
             HostAction::UpdateRecovery {
                 operation_id,
                 original_plan_digest,
@@ -1300,6 +1348,10 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     if matches!(&plan.action, HostAction::UpdateRecovery { .. }) {
         return recover_update(&plan, &store);
     }
+    if matches!(&plan.action, HostAction::UpgradeRecovery { .. }) {
+        check_other_pending_records(&store, &plan.action)?;
+        return upgrade::recover(&plan, &store);
+    }
     if let HostAction::ProducerRecovery {
         operation_id,
         original_plan_digest,
@@ -1355,7 +1407,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         HostAction::Update {
             expected_service_state,
             ..
-        } => expected_service_state.clone(),
+        } | HostAction::Upgrade { expected_service_state, .. } => expected_service_state.clone(),
         HostAction::FirmwareUpdate {
             expected_service_state,
             ..
@@ -1437,6 +1489,15 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             .push(serde_json::to_string(&(previous, link)).map_err(io::Error::other)?);
         record.selected = Some(selection.clone());
         record.bundle_digest = Some(selection.manifest_digest.to_string());
+    }
+    if matches!(&plan.action, HostAction::Upgrade { .. }) {
+        let previous = installation_registry()?.current.ok_or_else(|| io::Error::other("installed tuple unavailable"))?;
+        let link = fs::read_link("/usr/lib/pico2-kes-agent/current")?;
+        record.pre_observations.push(serde_json::to_string(&(previous, link)).map_err(io::Error::other)?);
+        let image = verified.as_ref().unwrap().manifest().artifacts.iter()
+            .find(|a| a.path == "firmware/pico2-kes-firmware.signed.uf2")
+            .ok_or_else(|| io::Error::other("firmware image absent"))?;
+        record.image_digest = Some(image.sha256.clone());
     }
     if let HostAction::FirmwareUpdate {
         pre_state,
@@ -1524,7 +1585,8 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             &mut record,
             &mut effects,
         ),
-        HostAction::Update { .. } => update_bundle(&plan, &store, &mut record, &mut effects),
+        HostAction::Update { .. } => update_bundle(&plan, &store, &mut record, &mut effects, None),
+        HostAction::Upgrade { .. } => upgrade::apply(&plan, verified.as_ref().unwrap(), &store, &mut record, &mut effects),
         HostAction::FirmwareUpdate { .. } => firmware_update(
             &plan,
             verified.as_ref().unwrap(),
@@ -1578,6 +1640,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         ),
         HostAction::HostReconcile { .. }
         | HostAction::UninstallRecovery { .. }
+        | HostAction::UpgradeRecovery { .. }
         | HostAction::ProducerRecovery { .. } => {
             unreachable!("original host recovery returned before creating a record")
         }
@@ -2834,6 +2897,7 @@ fn report_matching_plan(plan: &HostPlan, store: &RecordStore) -> io::Result<bool
         HostAction::Config { .. } => configuration_recovery_observation(),
         HostAction::Service { .. } => observed_service_state(false),
         HostAction::UpdateRecovery { .. } => Ok(installation_recovery_observation()),
+        HostAction::UpgradeRecovery { .. } | HostAction::Upgrade { .. } => Ok(installation_recovery_observation()),
         HostAction::FirmwarePreview { .. } => observed_service_state(false),
         HostAction::FirmwareRecovery { operation_id, .. } => Ok(format!(
             "original firmware operation {operation_id}; {}",
@@ -3686,7 +3750,7 @@ fn admit_commissioning_target(
     Ok(())
 }
 
-fn same_selection(a: &super::model::ReleaseSelection, b: &super::model::ReleaseSelection) -> bool {
+pub(super) fn same_selection(a: &super::model::ReleaseSelection, b: &super::model::ReleaseSelection) -> bool {
     a.tag == b.tag
         && a.version == b.version
         && a.source_commit == b.source_commit
@@ -3992,6 +4056,7 @@ fn update_bundle(
     store: &RecordStore,
     record: &mut MaintenanceRecord,
     effects: &mut bool,
+    coordinated: Option<&HostPlan>,
 ) -> io::Result<String> {
     let HostAction::Update {
         authorizing_bundle,
@@ -4022,8 +4087,8 @@ fn update_bundle(
         .iter()
         .find(|c| c.component == "firmware")
         .ok_or_else(|| io::Error::other("reviewed firmware selection missing"))?;
-    if old_firmware.digest != next_firmware.digest
-        || old_firmware.manifest_digest != next_firmware.manifest_digest
+    if coordinated.is_none() && (old_firmware.digest != next_firmware.digest
+        || old_firmware.manifest_digest != next_firmware.manifest_digest)
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -4200,7 +4265,7 @@ fn update_bundle(
         Ok(a.digest != b.digest)
     };
     let deployment_changed = changed("deployment")?;
-    let disruptive = changed("daemon")? || deployment_changed;
+    let disruptive = changed("daemon")? || deployment_changed || coordinated.is_some();
     if !service_change_allowed(prior_active, disruptive, *stop_service) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -4392,6 +4457,9 @@ fn update_bundle(
             "selected daemon accepted current configuration as service identity".into(),
         ));
         store.update(record)?;
+    }
+    if let Some(original) = coordinated {
+        return upgrade::activate_prepared(original, &authorizing, registry, actual, additions, store, record, effects);
     }
     if prior_active && disruptive {
         run_service(
@@ -7017,6 +7085,10 @@ fn recover_provisioning(plan: &HostPlan, store: &RecordStore) -> io::Result<()> 
 
 fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) -> io::Result<bool> {
     Ok(match action {
+        HostAction::UpgradeRecovery { operation_id, original_plan_digest, .. } => {
+            record.action == "upgrade" && record.operation_id.to_string() == *operation_id
+                && record.plan_digest.to_string() == *original_plan_digest
+        }
         HostAction::HostReconcile {
             operation_id,
             original_plan_digest,

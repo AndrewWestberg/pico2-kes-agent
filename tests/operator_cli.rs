@@ -79,6 +79,63 @@ fn host_versions_are_standalone_and_share_build_identity() {
 }
 
 #[test]
+fn manager_install_requires_explicit_role_and_absolute_bundle() {
+    for args in [
+        &["install"][..],
+        &["install", "--bundle", "/tmp/bundle"][..],
+        &["install", "--bundle", "relative", "--role", "primary"][..],
+        &["install", "--bundle", "/tmp/bundle", "--role", "other"][..],
+        &["install", "--bundle", "/tmp/bundle", "--role", "backup", "--role", "primary"][..],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
+        .args(["install", "--bundle", "/tmp/bundle", "--role", "backup"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("attended terminal"));
+}
+
+#[test]
+fn manager_upgrade_rejects_conflicting_release_selectors() {
+    for args in [
+        &["upgrade", "--version"][..],
+        &["upgrade", "--bundle", "relative"][..],
+        &["upgrade", "--version", "v1", "--bundle", "/tmp/bundle"][..],
+        &["upgrade", "--version", "v1", "--version", "v2"][..],
+        &["upgrade", "--version", "--json"][..],
+        &["upgrade", "--version", "../v1"][..],
+        &["upgrade", "--resume", "relative"][..],
+        &["upgrade", "--resume", "/tmp/plan", "--bundle", "/tmp/bundle"][..],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
+
+#[test]
+fn upgrade_resume_rejects_invalid_original_plan() {
+    let path = temporary("invalid-upgrade-plan.json");
+    fs::write(&path, b"{}").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
+        .arg("upgrade")
+        .arg("--resume")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(!output.status.success());
+}
+
+#[test]
 fn inventory_cli_accepts_full_response_and_rejects_overflow() {
     for count in [64, 65] {
         let path = temporary(&format!("inventory-{count}.sock"));

@@ -790,9 +790,11 @@ def pack_distribution_assets(bundle, assets, evidence=None, *, trust=(firmware.P
 def publish_distribution(bundle, tag, commit, evidence=None):
     manifest = verify_distribution(bundle)
     firmware.require(manifest["release"]["source_commit"] == commit, "release commit mismatch")
-    firmware.require((manifest["qualification"] == "candidate" and tag == manifest["release"]["tag"]) or
-                     (manifest["qualification"] == "qualified" and tag.startswith("qualified-") and tag != manifest["release"]["tag"]),
-                     "candidate and promotion require distinct immutable publication tags")
+    publication_tag = ("qualified-" if manifest["qualification"] == "qualified" else "") + manifest["release"]["tag"]
+    firmware.require(tag == publication_tag,
+                     "publication tag must match the signed release, prefixed with qualified- only for promotion")
+    prerelease = manifest["qualification"] != "qualified" or manifest["release"]["channel"] != "stable"
+    classification = ("--prerelease", "--latest=false") if prerelease else ("--prerelease=false", "--latest=true")
     target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}", "--jq", "{sha: .sha}"))
     firmware.require(target.get("sha") == commit, "publication tag does not identify candidate source")
     with tempfile.TemporaryDirectory(prefix="p2kes-publish-") as temporary:
@@ -801,16 +803,20 @@ def publish_distribution(bundle, tag, commit, evidence=None):
         existing = release_state(tag)
         if existing is None:
             gh("release", "create", tag, "--repo", REPOSITORY, "--verify-tag", "--draft",
-               "--prerelease", "--latest=false", "--title", tag,
-               "--notes", "Authenticated distribution; qualification is recorded in signed metadata.")
+               *classification, "--title", tag,
+               "--notes", "Install: https://github.com/AndrewWestberg/pico2-kes-agent#install-p2kesup\n"
+               "Existing installations: p2kesup upgrade\n"
+               "Authenticated distribution; qualification is recorded in signed metadata.")
         else:
-            firmware.require(existing.get("draft") is False and existing.get("prerelease") is True,
+            firmware.require(existing.get("tag_name") == tag and existing.get("draft") is False and
+                             existing.get("prerelease") is prerelease,
                              "existing release state conflicts")
             require_asset_set(existing, assets)
         if existing is None:
             gh("release", "upload", tag, "--repo", REPOSITORY, *sorted(assets.iterdir()))
             uploaded = release_state(tag)
-            firmware.require(uploaded is not None and uploaded.get("draft") is True, "draft changed")
+            firmware.require(uploaded is not None and uploaded.get("draft") is True and
+                             uploaded.get("prerelease") is prerelease, "draft or classification changed")
             require_asset_set(uploaded, assets)
         downloaded = Path(temporary) / "downloaded"
         downloaded.mkdir()
@@ -825,7 +831,7 @@ def publish_distribution(bundle, tag, commit, evidence=None):
         firmware.require(target.get("sha") == commit, "publication tag changed")
         if existing is None:
             gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false",
-               "--prerelease", "--latest=false")
+               *classification)
 
 
 def main():

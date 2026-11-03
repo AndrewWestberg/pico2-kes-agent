@@ -365,6 +365,52 @@ class FirstInstallTests(unittest.TestCase):
                 firmware.first_install_history(target, root / "bundle", config=config, journal=journal,
                                                records=records, directory=firmware_dir, owner=os.geteuid())
 
+    def test_first_install_history_rejects_upgrade_transfer_evidence(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(firmware, "protected_ancestry"):
+            root = Path(directory)
+            records, firmware_dir = root / "records", root / "firmware"
+            records.mkdir(mode=0o750)
+            firmware_dir.mkdir(mode=0o700)
+            operation = "a" * 32
+            target = firmware_dir / ("b" * 32 + ".json")
+            prior = {"schema_version": 1, "operation_id": operation, "action": "upgrade",
+                     "plan_digest": "c" * 64, "selected": None, "approved_scope": [],
+                     "previous_service_state": None, "pre_observations": [], "checkpoints": [],
+                     "post_observations": [], "outcome": "completed", "bundle_digest": None,
+                     "image_digest": None, "physical_selection": None}
+            path = records / (operation + ".json")
+            def check():
+                path.write_text(json.dumps(prior))
+                path.chmod(0o640)
+                return firmware.first_install_history(target, root / "bundle", config=root / "config",
+                                                      journal=root / "journal", records=records,
+                                                      directory=firmware_dir, owner=os.geteuid())
+            check()
+            prior["outcome"] = "failed-known"
+            prior["checkpoints"] = [{"name": "service-quiesced"}]
+            check()
+            prior["checkpoints"].append({"name": "upgrade-transfer-starting",
+                                         "evidence": str(firmware_dir / (operation + ".json"))})
+            with self.assertRaises(ValueError):
+                check()
+            prior["checkpoints"].append({"name": "upgrade-transfer-not-started",
+                                         "evidence": "child exited without creating its write-ahead transfer record"})
+            with self.assertRaises(ValueError):
+                check()
+            prior["checkpoints"].append({"name": "upgrade-not-transferred", "evidence": "d" * 64})
+            check()
+            prior["checkpoints"].append({"name": "upgrade-publish-starting"})
+            with self.assertRaises(ValueError):
+                check()
+            prior["checkpoints"].pop()
+            prior["outcome"] = "completed"
+            with self.assertRaises(ValueError):
+                check()
+            prior["checkpoints"] = []
+            (firmware_dir / (operation + ".json")).write_text("{}")
+            with self.assertRaises(ValueError):
+                check()
+
     def test_pinned_mount_rejects_detached_and_replaced_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -654,6 +700,150 @@ class UpdateTests(unittest.TestCase):
                 report["serial"] = "ffffffffffffffff"
                 original["checkpoints"][1]["evidence"] = json.dumps(report)
                 save(records / (transfer + ".json"), original, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+
+    def test_coordinated_upgrade_handoff_and_history_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            firmware_dir, records, staging = root / "firmware", root / "records", root / "staging"
+            firmware_dir.mkdir(mode=0o700)
+            records.mkdir(mode=0o750)
+            operation, old = "a" * 32, "b" * 32
+            serial, image = "0123456789abcdef", "c" * 64
+            bundle = staging / operation / "authorization" / "firmware"
+            bundle.mkdir(parents=True)
+            stage = staging / operation
+            def save(path, value, mode):
+                path.write_text(json.dumps(value))
+                path.chmod(mode)
+            names = ("manager", "daemon", "cli", "firmware", "tool", "deployment")
+            artifacts = [{"path": "firmware/" + firmware.ARTIFACTS[1], "sha256": image}]
+            components = []
+            for name in names:
+                path = "firmware/" + firmware.ARTIFACTS[1] if name == "firmware" else name
+                if name != "firmware":
+                    artifacts.append({"path": path, "sha256": "d" * 64})
+                components.append({"name": name, "version": "1", "build_id": "build",
+                                   "artifact": path, "digest": "e" * 64})
+            manifest = {"release": {"tag": "v1", "version": "1", "source_commit": "f" * 40,
+                                    "channel": "stable"}, "platform": {"target": "linux"},
+                        "qualification": "qualified", "components": components, "artifacts": artifacts}
+            save(bundle.parent / "distribution.json", manifest, 0o600)
+            digest = firmware.sha256((bundle.parent / "distribution.json").read_bytes())
+            selected = dict(manifest["release"], platform="linux", qualification="qualified", manifest_digest=digest,
+                            components=[{"component": c["name"], "version": c["version"], "build_id": c["build_id"],
+                                         "digest": c["digest"], "entrypoint_digest": image if c["name"] == "firmware" else "d" * 64,
+                                         "source_commit": "f" * 40, "manifest_digest": digest} for c in components])
+            prior = {"role": "primary", "current": {"old": True}}
+            save(stage / "prior-registry.json", prior, 0o600)
+            registry_digest = firmware.sha256((stage / "prior-registry.json").read_bytes())
+            target = {"role": "primary", "current": selected}
+            save(stage / "target-registry.json", target, 0o600)
+            target_digest = firmware.sha256((stage / "target-registry.json").read_bytes())
+            device = {"usb_serial": serial, "id": "1" * 32, "identity_public_key": "2" * 64}
+            save(root / "config", {"device": device}, 0o600)
+            record_path = firmware_dir / (operation + ".json")
+            action = {"action": "upgrade", "serial": serial, "device_id": device["id"],
+                      "identity_public_key": device["identity_public_key"], "record": str(record_path),
+                      "manifest_digest": digest, "expected_registry_digest": registry_digest,
+                      "expected_service_state": "state=active;", "pre_state": {
+                          "device_info": {"device_id": device["id"], "usb_serial": serial},
+                          "security": {"stepping": "A2"}}}
+            checkpoints = [{"name": name, "evidence": evidence} for name, evidence in (
+                ("intent-durable", "3" * 64), ("staged-authenticated", digest),
+                ("live-compatibility", "pinned device and current storage revalidated"),
+                ("candidate-config", "selected daemon accepted current configuration as service identity"),
+                ("upgrade-ready", target_digest), ("service-quiesced", "state=inactive;"),
+                ("upgrade-service-inhibit-starting", "3" * 64),
+                ("upgrade-transfer-starting", str(record_path)))]
+            intent = {"schema_version": 1, "operation_id": operation, "action": "upgrade",
+                      "outcome": "intent-durable", "plan_digest": "3" * 64, "approved_scope": [json.dumps(action)],
+                      "pre_observations": [json.dumps([prior["current"], "generations/old"])],
+                      "previous_service_state": "state=active;", "selected": selected,
+                      "bundle_digest": digest, "image_digest": image, "checkpoints": checkpoints}
+            intent_path = records / (operation + ".json")
+            save(intent_path, intent, 0o640)
+            def check():
+                return firmware.update_history(record_path, bundle, serial, image, directory=firmware_dir,
+                                               records=records, config=root / "config", staging=staging,
+                                               owner=os.geteuid())
+            with mock.patch.object(firmware, "protected_ancestry"):
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                for index in range(len(checkpoints)):
+                    removed = checkpoints.pop(index)
+                    save(intent_path, intent, 0o640)
+                    with self.assertRaises(ValueError):
+                        check()
+                    checkpoints.insert(index, removed)
+                checkpoints[4]["evidence"] = "0" * 64
+                save(intent_path, intent, 0o640)
+                with self.assertRaises(ValueError):
+                    check()
+                checkpoints[4]["evidence"] = target_digest
+                checkpoints.append(dict(checkpoints[-1], evidence="wrong"))
+                save(intent_path, intent, 0o640)
+                with self.assertRaises(ValueError):
+                    check()
+                checkpoints.pop()
+                for field, bad in (("manifest_digest", "0" * 64), ("identity_public_key", "0" * 64),
+                                   ("record", str(root / "other")), ("expected_registry_digest", "0" * 64)):
+                    value = action[field]
+                    action[field] = bad
+                    intent["approved_scope"] = [json.dumps(action)]
+                    save(intent_path, intent, 0o640)
+                    with self.assertRaises(ValueError):
+                        check()
+                    action[field] = value
+                intent["approved_scope"] = [json.dumps(action)]
+                target["current"] = dict(selected, version="wrong")
+                save(stage / "target-registry.json", target, 0o600)
+                save(intent_path, intent, 0o640)
+                with self.assertRaises(ValueError):
+                    check()
+                target["current"] = selected
+                save(stage / "target-registry.json", target, 0o600)
+                past_path = records / (old + ".json")
+                past_tool = firmware_dir / (old + ".json")
+                past = {"schema_version": 1, "operation_id": old, "action": "upgrade",
+                        "outcome": "failed-known", "checkpoints": checkpoints[:-1]}
+                save(past_path, past, 0o640)
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                past["outcome"] = "completed"
+                save(past_path, past, 0o640)
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                past["outcome"] = "failed-known"
+                past["checkpoints"] = checkpoints
+                save(past_path, past, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+                past["checkpoints"] = [dict(c) for c in checkpoints]
+                past["checkpoints"][-1]["evidence"] = str(past_tool)
+                past["checkpoints"] += [{"name": "upgrade-transfer-not-started",
+                                         "evidence": "child exited without creating its write-ahead transfer record"},
+                                        {"name": "upgrade-not-transferred", "evidence": "4" * 64}]
+                save(past_path, past, 0o640)
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                past["checkpoints"].append({"name": "upgrade-transfer-flushed"})
+                save(past_path, past, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+                past["outcome"] = "completed"
+                past["image_digest"] = image
+                past["checkpoints"] = [{"name": "upgrade-transfer-starting", "evidence": str(past_tool)},
+                                       {"name": "upgrade-transfer-flushed", "evidence": str(past_tool)}]
+                save(past_path, past, 0o640)
+                save(past_tool, {"schema_version": 1, "operation_id": old, "action": "update",
+                                 "uf2_sha256": image, "checkpoints": ["intent", "transfer-started",
+                                                                       "transfer-complete", "flush-complete"]}, 0o600)
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                past["outcome"] = "uncertain"
+                save(past_path, past, 0o640)
                 with self.assertRaisesRegex(ValueError, "unresolved original"):
                     check()
 

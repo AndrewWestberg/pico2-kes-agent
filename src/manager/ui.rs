@@ -31,6 +31,135 @@ use super::{
 };
 use crate::cli;
 
+/// Run the finite bootstrap installation without entering the interactive menu.
+pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
+    use std::io::{IsTerminal, Write};
+    use super::{host::{self, HostAction, HostPlan}, release::{self, Admission}};
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::other("installation requires an attended terminal"));
+    }
+    let (verified, candidate_accepted) = match release::verify_bundle(&bundle, Admission::Qualified) {
+        Ok(verified) => (verified, false),
+        Err(qualified_error) => {
+            let verified = release::verify_bundle(&bundle, Admission::AttendedCandidate)
+                .map_err(|_| qualified_error)?;
+            println!("This signed bundle is a candidate, not a qualified release. Install only on a disposable host.");
+            print!("Type DISPOSABLE CANDIDATE to accept: ");
+            io::stdout().flush()?;
+            if host::read_confirmation(io::stdin().lock())?.trim() != "DISPOSABLE CANDIDATE" {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "candidate not accepted"));
+            }
+            (verified, true)
+        }
+    };
+    let executable = host::trusted_bootstrap_manager(&verified)?;
+    let plan = HostPlan::new(HostAction::Install {
+        bundle,
+        role,
+        manifest_digest: verified.selection().manifest_digest.to_string(),
+        candidate_accepted,
+    })?;
+    let cache = super::release_discovery::default_cache()?;
+    let path = cache.join(format!("install-plan-{}.json", plan.plan_id));
+    crate::files::publish_no_clobber(&path, &serde_json::to_vec(&plan).map_err(io::Error::other)?, 0o600)?;
+    println!("Installation plan retained at {}. The privileged helper will display the scope and request its digest.", path.display());
+    let mut command = if rustix::process::geteuid().is_root() {
+        Command::new(executable)
+    } else {
+        let mut command = Command::new("/usr/bin/pkexec");
+        command.arg(executable);
+        command
+    };
+    let status = command.arg("host-apply").arg("--plan").arg(&path).status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!("installation failed or was interrupted ({status}); retain the original plan {}", path.display())));
+    }
+    println!("Installation completed; retained plan: {}", safe(&path.to_string_lossy()));
+    println!("Reopen with: {}", if role == InstallationRole::Backup { "p2kesup --role backup" } else { "p2kesup" });
+    Ok(())
+}
+
+pub fn upgrade(version: Option<&str>, bundle: Option<PathBuf>) -> io::Result<()> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "upgrade requires an attended terminal"));
+    }
+    let store = super::records::RecordStore::open_host(super::setup::service_identity()?.1)?;
+    if store.list()?.iter().any(|record| match record {
+        super::records::Record::Supported(record) => !super::host::maintenance_outcome_allows_new_action(&record.outcome),
+        super::records::Record::Unknown(_) => true,
+    }) {
+        return Err(io::Error::other("unresolved maintenance blocks upgrade, including no-op claims; recover the original operation (p2kesup upgrade --resume ORIGINAL_PLAN for an upgrade)"));
+    }
+    let (digest, registry, service, _) = super::host::update_review()?;
+    super::host::verify_installed_ownership()?;
+    let explicit = version.is_some() || bundle.is_some();
+    let path = match bundle {
+        Some(path) => path,
+        None => super::release_discovery::fetch_release(version)?,
+    };
+    let verified = super::release::verify_bundle(
+        &path,
+        if explicit { super::release::Admission::AttendedCandidate } else { super::release::Admission::Qualified },
+    )?;
+    let current = registry.current.as_ref().ok_or_else(|| io::Error::other("installed selection unavailable"))?;
+    if super::host::same_selection(current, verified.selection()) {
+        println!("Managed {:?} host selection is already {}. No changes made; device firmware was not checked.", registry.role, current.tag);
+        return Ok(());
+    }
+    let mut terminal = TerminalOwner::acquire()?;
+    let result = releases::upgrade_direct(&mut terminal, path, verified, digest, registry, service);
+    let closed = terminal.close();
+    result?;
+    closed?;
+    println!("Upgrade completed and validated. Re-run p2kesup to use the installed manager.");
+    Ok(())
+}
+
+pub fn resume_upgrade(path: PathBuf) -> io::Result<()> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+    use super::{host::{self, HostAction, HostPlan}, records::{Record, RecordStore}};
+    let file = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "original plan must be a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "original plan exceeds 1 MiB"));
+    }
+    let plan: HostPlan = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    plan.validate()?;
+    if !matches!(&plan.action, HostAction::Upgrade { .. }) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "original plan is not an upgrade"));
+    }
+    let store = RecordStore::open_host(super::setup::service_identity()?.1)?;
+    let mut matches = store.list()?.into_iter().filter_map(|record| match record {
+        Record::Supported(record) if record.plan_digest.to_string() == plan.approved_digest && record.action == "upgrade" => Some(record),
+        _ => None,
+    });
+    let record = matches.next().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "original upgrade record not found"))?;
+    if matches.next().is_some() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "multiple original records match the plan"));
+    }
+    let operation = record.operation_id.to_string();
+    let mut action = host::review_upgrade_recovery(&operation, &plan.approved_digest)?;
+    let HostAction::UpgradeRecovery { temporary_validation, .. } = &mut action else {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid recovery review"));
+    };
+    *temporary_validation = true;
+    let executable = host::trusted_upgrade_recovery_manager(&operation, &plan.approved_digest)?;
+    let mut terminal = TerminalOwner::acquire()?;
+    let result = releases::resume_upgrade_direct(&mut terminal, action, executable, &operation);
+    let closed = terminal.close();
+    result?;
+    closed?;
+    println!("Original upgrade recovery completed; consult its retained record for the observed outcome.");
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
     Overview,

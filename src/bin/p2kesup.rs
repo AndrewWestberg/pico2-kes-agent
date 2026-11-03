@@ -5,7 +5,7 @@ use pico2_kes_agent::{
     manager::{model::InstallationRole, ui},
 };
 
-const USAGE: &str = "Usage: p2kesup [--role primary|backup] [--socket PATH] [--bundle DIRECTORY]\n       p2kesup --help | --version [--json]";
+const USAGE: &str = "Usage: p2kesup [--role primary|backup] [--socket PATH] [--bundle DIRECTORY]\n       p2kesup install --bundle DIRECTORY --role primary|backup\n       p2kesup upgrade [--version TAG | --bundle DIRECTORY | --resume PLAN]\n       p2kesup --help | --version [--json]";
 
 fn main() {
     std::process::exit(run(std::env::args_os().skip(1).collect()));
@@ -131,6 +131,73 @@ fn run(args: Vec<OsString>) -> i32 {
             pico2_kes_agent::manager::host::apply_plan(&path)
         };
         return host_result(result);
+    }
+    if args.first().is_some_and(|arg| arg == "install") {
+        let mut role = None;
+        let mut bundle = None;
+        let mut args = args.into_iter().skip(1);
+        while let Some(arg) = args.next() {
+            let Some(value) = args.next().filter(|value| !value.is_empty()) else {
+                return invalid();
+            };
+            if arg == "--role" && role.is_none() {
+                role = if value == "primary" {
+                    Some(InstallationRole::Primary)
+                } else if value == "backup" {
+                    Some(InstallationRole::Backup)
+                } else {
+                    return invalid();
+                };
+            } else if arg == "--bundle" && bundle.is_none() {
+                let path = PathBuf::from(value);
+                if !path.is_absolute() {
+                    return invalid();
+                }
+                bundle = Some(path);
+            } else {
+                return invalid();
+            }
+        }
+        return match (bundle, role) {
+            (Some(bundle), Some(role)) => host_result(ui::install(bundle, role)),
+            _ => invalid(),
+        };
+    }
+    if args.first().is_some_and(|arg| arg == "upgrade") {
+        let mut version = None;
+        let mut bundle = None;
+        let mut resume = None;
+        let mut args = args.into_iter().skip(1);
+        while let Some(arg) = args.next() {
+            let Some(value) = args.next().filter(|value| !value.is_empty()) else {
+                return invalid();
+            };
+            if arg == "--version" && version.is_none() && bundle.is_none() && resume.is_none() {
+                let Some(tag) = value.to_str() else { return invalid() };
+                if tag.len() > 128 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) || tag.starts_with('-') {
+                    return invalid();
+                }
+                version = Some(tag.to_owned());
+            } else if arg == "--bundle" && bundle.is_none() && version.is_none() && resume.is_none() {
+                let path = PathBuf::from(value);
+                if !path.is_absolute() {
+                    return invalid();
+                }
+                bundle = Some(path);
+            } else if arg == "--resume" && resume.is_none() && version.is_none() && bundle.is_none() {
+                let path = PathBuf::from(value);
+                if !path.is_absolute() {
+                    return invalid();
+                }
+                resume = Some(path);
+            } else {
+                return invalid();
+            }
+        }
+        return host_result(match resume {
+            Some(path) => ui::resume_upgrade(path),
+            None => ui::upgrade(version.as_deref(), bundle),
+        });
     }
     let mut role = InstallationRole::Primary;
     let mut socket = PathBuf::from("/run/pico2-kes-agent/management.sock");

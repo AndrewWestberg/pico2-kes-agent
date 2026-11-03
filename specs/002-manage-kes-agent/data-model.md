@@ -49,7 +49,7 @@ Factory/BOOTSEL-only board → authenticated bundle and attended unambiguous phy
 
 ### Release admission and promotion
 
-Signed candidate metadata authorizes exact component digest tuples for explicitly reviewed, attended offline `--bundle` acceptance on a disposable host, subject to the normal trust, schema, state, hardware and applicable security checks. Discovery offers only signed `qualified` releases, independent of stable/prerelease channel. Acceptance evidence for the exact tuple and supported targets permits re-signing metadata as `qualified` with identical component payload digests and source commit; changed source or payload requires a new candidate and acceptance. Compatibility authorization alone never proves qualification.
+Signed candidate metadata authorizes exact component digest tuples for explicitly reviewed, attended `--version TAG` or offline `--bundle` acceptance on a disposable host, subject to the normal trust, schema, state, hardware and applicable security checks. Default discovery offers only signed qualified stable releases. Acceptance evidence for the exact tuple and supported targets permits re-signing metadata as `qualified` with identical component payload digests and source commit; changed source or payload requires a new candidate and acceptance. Compatibility authorization alone never proves qualification.
 
 ### Lifecycle mutation
 

@@ -13,7 +13,7 @@ on:
         description: Full candidate source commit
         required: true
       publication_tag:
-        description: New immutable tag pointing to the same commit
+        description: New immutable qualified-<candidate_tag> tag pointing to the same commit
         required: true
       evidence_run:
         description: Workflow run containing signed promotion evidence artifact
@@ -382,7 +382,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
-          test "$CANDIDATE_TAG" != "$PUBLICATION_TAG"
+          test "$PUBLICATION_TAG" = "qualified-$CANDIDATE_TAG"
           sudo apt-get update
           sudo apt-get install -y binutils gpg openssl
           gh release download "$CANDIDATE_TAG" --repo AndrewWestberg/pico2-kes-agent --dir candidate-assets

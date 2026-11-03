@@ -73,6 +73,18 @@ pub(super) fn bundle(
     terminal: &mut TerminalOwner,
     selected: Option<&PathBuf>,
 ) -> io::Result<Option<(PathBuf, VerifiedBundle, bool)>> {
+    let retained = if selected.is_none() {
+        match host::installation_registry() {
+            Ok(registry) => registry.current.map(|selection| {
+                Path::new("/usr/lib/pico2-kes-agent/sources").join(selection.manifest_digest.to_string())
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    let selected = selected.or(retained.as_ref());
     let default = selected.and_then(|p| p.to_str()).unwrap_or("");
     let Some(values) = public_fields(
         terminal,
@@ -90,7 +102,7 @@ pub(super) fn bundle(
         ));
     }
     let candidate = selected.is_some_and(|p| p == &path) && review(terminal, "Candidate admission is not qualification", vec![
-        format!("Explicit offline bundle: {}", path.display()),
+        format!("Explicit or installed retained bundle: {}", path.display()),
         "Allow signed candidate status only for attended acceptance on a disposable host?".into(),
         "Cancel here uses ordinary qualified-only admission. Signature, compatibility, state and hardware checks remain mandatory.".into(),
     ], Some("DISPOSABLE CANDIDATE"))?;

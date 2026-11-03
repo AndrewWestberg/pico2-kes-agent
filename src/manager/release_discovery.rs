@@ -27,6 +27,8 @@ use std::{
 
 const API: &str =
     "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases?per_page=100";
+const TAG_API: &str = "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/tags/";
+const LATEST_API: &str = "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/latest";
 const PROJECT: &str = "https://github.com/AndrewWestberg/pico2-kes-agent/releases/download/";
 const ARCHIVE_LIMIT: u64 = MAX_RELEASE_BYTES + 1024 * 1024;
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -364,7 +366,7 @@ fn url_allowed(url: &str, initial: bool) -> bool {
         && !url.contains('\\')
 }
 fn fetch(url: &str, target: &Path, limit: u64, api: bool) -> io::Result<()> {
-    if (!api && !url_allowed(url, true)) || (api && url != API) {
+    if (!api && !url_allowed(url, true)) || (api && url != API && url != LATEST_API && !url.strip_prefix(TAG_API).is_some_and(valid_tag)) {
         return Err(invalid("unapproved release URL"));
     }
     private_file(target)?;
@@ -561,6 +563,8 @@ fn extract(archive: &Path, output: &Path, manifest: &Manifest) -> io::Result<()>
 #[derive(Deserialize)]
 struct GithubRelease {
     draft: bool,
+    tag_name: String,
+    prerelease: bool,
     assets: Vec<GithubAsset>,
 }
 #[derive(Deserialize)]
@@ -568,7 +572,13 @@ struct GithubAsset {
     name: String,
     browser_download_url: String,
 }
-fn obtain(cache: &Path, item: &GithubRelease) -> io::Result<()> {
+fn publication_matches(published: &str, signed: &str, qualification: Qualification) -> bool {
+    published == signed
+        || (qualification == Qualification::Qualified
+            && published.strip_prefix("qualified-") == Some(signed))
+}
+
+fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only: bool) -> io::Result<PathBuf> {
     if item.draft || item.assets.len() > 128 {
         return Err(invalid("invalid release assets"));
     }
@@ -611,12 +621,20 @@ fn obtain(cache: &Path, item: &GithubRelease) -> io::Result<()> {
     let bytes = read_bounded(&bundle.join("distribution.json"), MAX_MANIFEST_BYTES)?;
     let manifest: Manifest =
         serde_json::from_slice(&bytes).map_err(|_| invalid("invalid signed manifest"))?;
-    if manifest.qualification != Qualification::Qualified {
-        return Err(invalid("release is not qualified"));
+    if (stable_only && (item.prerelease || manifest.release.channel != "stable"))
+        || (matches!(admission, Admission::Qualified) && manifest.qualification != Qualification::Qualified)
+        || !publication_matches(&item.tag_name, &manifest.release.tag, manifest.qualification)
+    {
+        return Err(invalid("release tag, channel or qualification differs from authenticated manifest"));
     }
     let digest = format!("{:x}", Sha256::digest(&bytes));
     if cache.join(&digest).exists() {
-        return Ok(());
+        let path = cache.join(&digest).join("bundle");
+        let verified = release::verify_bundle(&path, admission)?;
+        if verified.selection().manifest_digest.to_string() != digest {
+            return Err(invalid("cached manifest digest mismatch"));
+        }
+        return Ok(path);
     }
     let total = manifest
         .artifacts
@@ -654,12 +672,12 @@ fn obtain(cache: &Path, item: &GithubRelease) -> io::Result<()> {
     {
         return Err(invalid("archive authority mismatch"));
     }
-    let verified = release::verify_bundle(&bundle, Admission::Qualified)?;
+    let verified = release::verify_bundle(&bundle, admission)?;
     drop(verified);
     fs::remove_file(archive)?;
     private_file(&stage.0.join("fetched"))?.write_all(now().to_string().as_bytes())?;
-    fs::rename(&stage.0, cache.join(digest))?;
-    Ok(())
+    fs::rename(&stage.0, cache.join(&digest))?;
+    Ok(cache.join(digest).join("bundle"))
 }
 fn offers(cache: &Path, prerelease: bool) -> io::Result<Vec<Offer>> {
     let mut result = Vec::new();
@@ -708,6 +726,34 @@ fn offers(cache: &Path, prerelease: bool) -> io::Result<Vec<Offer>> {
     }
     Ok(result)
 }
+
+fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag != "." && tag != ".." && !tag.starts_with('-') && tag.len() <= 128
+        && tag.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+/// Fetch the newest qualified stable release, or one explicitly named release.
+pub fn fetch_release(tag: Option<&str>) -> io::Result<PathBuf> {
+    if tag.is_some_and(|tag| !valid_tag(tag)) {
+        return Err(invalid("invalid release tag"));
+    }
+    let cache = default_cache()?;
+    let stage = temporary(&cache)?;
+    let api = stage.0.join("releases.json");
+    if let Some(tag) = tag {
+        fetch(&format!("{TAG_API}{tag}"), &api, MAX_MANIFEST_BYTES, true)?;
+        let item: GithubRelease = serde_json::from_slice(&read_bounded(&api, MAX_MANIFEST_BYTES)?)
+            .map_err(|_| invalid("invalid release discovery response"))?;
+        if item.tag_name != tag {
+            return Err(invalid("release response tag differs from requested tag"));
+        }
+        return obtain(&cache, &item, Admission::AttendedCandidate, false);
+    }
+    fetch(LATEST_API, &api, MAX_MANIFEST_BYTES, true)?;
+    let item: GithubRelease = serde_json::from_slice(&read_bounded(&api, MAX_MANIFEST_BYTES)?)
+        .map_err(|_| invalid("invalid latest release response"))?;
+    obtain(&cache, &item, Admission::Qualified, true)
+}
 /// Hidden subprocess entry point; never execute a downloaded program as discovery authority.
 pub fn run_worker(cache: &Path, include_prerelease: bool, online: bool) -> io::Result<()> {
     release::inherit_worker_process_group();
@@ -721,8 +767,8 @@ pub fn run_worker(cache: &Path, include_prerelease: bool, online: bool) -> io::R
         let releases: Vec<GithubRelease> = serde_json::from_slice(&bytes)
             .map_err(|_| invalid("invalid release discovery response"))?;
         for item in releases.iter().take(100) {
-            match obtain(cache, item) {
-                Ok(()) => {}
+            match obtain(cache, item, Admission::Qualified, false) {
+                Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
                 Err(error) if error.kind() == io::ErrorKind::StorageFull => {
                     notice = Some("Cache capacity reached; stopped additional downloads and reverified available cached releases".into());
@@ -742,6 +788,16 @@ pub fn run_worker(cache: &Path, include_prerelease: bool, online: bool) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn qualified_publication_mapping_does_not_promote_candidates() {
+        assert!(publication_matches("qualified-v1.2.3", "v1.2.3", Qualification::Qualified));
+        assert!(!publication_matches("qualified-v1.2.3", "v1.2.3", Qualification::Candidate));
+        assert!(!publication_matches("qualified-v1.2.4", "v1.2.3", Qualification::Qualified));
+        assert!(publication_matches("v1.2.3-rc1", "v1.2.3-rc1", Qualification::Candidate));
+        assert!(valid_tag("v1.2.3-rc1"));
+        assert!(!valid_tag("../v1"));
+        assert!(!valid_tag(".."));
+    }
     #[test]
     fn paths_and_origins_are_confined() {
         assert!(safe_path("firmware/release.json"));
