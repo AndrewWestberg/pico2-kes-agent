@@ -134,7 +134,31 @@ p2kesup
 
 Versions/source/build IDs must match the signed candidate, not `development-unqualified`. Installed version and running process version are separate observations.
 
-Navigation: Tab/Shift-Tab changes screens; arrows or j/k select; Enter opens/reviews; Esc backs out; `r` refreshes; `?` helps. In a field, Tab changes field, Enter advances, Backspace edits; fields are not shell-expanded, so paste `/home/operator/...`, **not** `$OPS/...` or `~/...`. Review all text before typing confirmation. `q` inside a text field is a character, not a general cancel key.
+Navigation: 1–6 or Tab/Shift-Tab changes sections; `d` opens technical evidence; arrows or j/k select; Enter opens/reviews; Esc backs out; `r` refreshes; `?` helps. In a field, Tab changes field, Enter advances, Backspace edits; fields are not shell-expanded, so paste `/home/operator/...`, **not** `$OPS/...` or `~/...`. Review all text before typing confirmation. `q` inside a text field is a character, not a general cancel key.
+
+### Local UI iteration (not release qualification)
+
+Build and install only the development manager in the operator's PATH:
+
+```bash
+cargo build --locked --release --bin p2kesup
+install -Dm0755 target/release/p2kesup "$HOME/.local/bin/p2kesup"
+hash -r
+command -v p2kesup
+p2kesup
+```
+
+Keep `$HOME/.local/bin` ahead of `/usr/bin`. This UI reports `development-unqualified`; **Installed software** still reports the managed release separately. The signed `/usr/bin/p2kesup`, protected helpers, daemon, CLI and registry are not replaced. Privileged operations still use the authenticated installed helper and its unchanged approval checks. Use `/usr/bin/p2kesup` for the signed RC UI; remove the local development copy and run `hash -r` when returning to ordinary release testing.
+
+For each UI iteration:
+
+1. At 80×24, check the status, configuration, daemon state and next action without scrolling. Unknown observations must not become empty or healthy. The **Pool checks** banner covers observed pool conditions, not independent identity attestation, host-policy qualification or node forging.
+2. Press Enter on **Next**, then choose existing-device or blank-device setup. Missing configuration must not select commissioning automatically. Setup status comes from current observations; eligibility and configuration validation remain separate checks on each reviewed action.
+3. Visit all six primary sections; in **Pools**, press `a` for enrollment/recipient actions or Enter on a selected pool for its lifecycle actions. Refresh must preserve the exact pool/incarnation selection, including when the displayed order changes. A vanished target must not become a different selected pool.
+4. Press `d` for full evidence, then Esc. Cancel a configuration form. Try a nonexistent candidate and verify refusal without a write. Review long confirmation tokens at 80 columns; their labels must wrap rather than hide the target.
+5. Repeat with `NO_COLOR=1`, resize below 80×24 and back, then quit. Navigation, selection, statuses and cancellation must remain understandable, and terminal echo/cursor/alternate-screen state must be restored.
+
+Do not repeat a lifecycle mutation, firmware transfer or OTP operation solely to test layout. Device-backed pool states and private backup workflows require their separate disposable-host acceptance scenarios below.
 
 ## 6. Grant access and enforce host policy
 
@@ -157,7 +181,7 @@ systemctl show pico2-kes-agentd.service --property=LimitCORE --property=MemorySw
 sudo /usr/libexec/pico2-kes-agent-host-check --commission
 ```
 
-For normal operation, apply the supplied drop-in to the actual `cardano-node.service` through **Producer hardening → Install producer memory hardening**, review the restart/disruption, and follow the normal-mode acknowledgements/preflight in the README. Other unit names do not change the literal preflight constraint. Never create a dummy node unit or weaken preflight to make this test pass. Host-wide security-policy edits are deliberate administrator actions, not automatic setup behavior.
+For normal operation, apply the supplied drop-in to the actual `cardano-node.service` through **Host → Producer memory policy → Install producer memory hardening**, review the restart/disruption, and follow the normal-mode acknowledgements/preflight in the README. Other unit names do not change the literal preflight constraint. Never create a dummy node unit or weaken preflight to make this test pass. Host-wide security-policy edits are deliberate administrator actions, not automatic setup behavior.
 
 ## 7. Install firmware, or retain an existing compatible blank application
 
@@ -165,7 +189,7 @@ For normal operation, apply the supplied drop-in to the actual `cardano-node.ser
 
 Setup preselects the installed release's retained authenticated source directory. Accept that default; no separate asset download or unpack is needed. RC source reuse still requires deliberate candidate acceptance and signature verification.
 
-- **Factory/BOOTSEL-only board:** Setup → **Factory-only firmware install / original record (skip compatible blank app)**. Review the new original record, authenticated image and exact physical BOOTSEL/mount association. Preview first; then follow the foreground tool's attended apply/physical instructions. It may write firmware only in `[0x10000000,0x10100000)` and must preserve `[0x10100000,0x10308000)`. Do not manually copy a different UF2, select by volume label alone, erase flash or run a competing USB tool.
+- **Factory/BOOTSEL-only board:** Host → Continue setup → Set up a new blank device → **Install firmware (BOOTSEL only; skip compatible app)**. Review the new original record, authenticated image and exact physical BOOTSEL/mount association. Preview first; then follow the foreground tool's attended apply/physical instructions. It may write firmware only in `[0x10000000,0x10100000)` and must preserve `[0x10100000,0x10308000)`. Do not manually copy a different UF2, select by volume label alone, erase flash or run a competing USB tool.
 - **Already running compatible blank application:** skip transfer and proceed to its restricted-daemon blank/build observation.
 - **Already commissioned/populated device:** do not use either blank setup path. Retain the original pin/config/journal and use a separately authorized compatible maintenance operation. Missing identity files do not make a device factory-new.
 
@@ -189,10 +213,10 @@ mkdir -m 0700 "$OPS"
 
 Save the complete [commissioning configuration template](../README.md#operator-workspace-and-commissioning-mode) as `$OPS/commission.json`, replacing its serial. It has no pin, networks or pools. In `p2kesup`:
 
-1. **Setup → Review/install explicit commissioning configuration**; select that absolute file and inspect the exact diff.
-2. **Start restricted commissioning service**; require the intended compatible blank application through the sole daemon.
+1. **Host → Continue setup → Set up a new blank device → Install commissioning configuration**; select that absolute file and inspect the exact diff.
+2. **Start commissioning service**; require the intended compatible blank application through the sole daemon.
 3. If needed, resolve the **original** first-install record with the fresh blank/build evidence.
-4. **Commission intended blank application**; review serial, blank admission, receipt and unused public output path such as `$OPS/device.json`; confirm once.
+4. **Commission blank device**; review serial, blank admission, receipt and unused public output path such as `$OPS/device.json`; confirm once.
 5. Archive the public enrollment record and original receipt off-primary. It is a pin obtained through attended trust, not independent hardware attestation.
 
 **Interface rule for the rest of this guide:** the recommended pass uses the named TUI action. The CLI blocks are equivalent standalone command tests, **not commands to run again after doing the same mutation in the TUI**. Choose one interface per mutation. For TUI results, set shell variables from the observed public IDs/receipts, or recover them with read-only status; do not repeat a mutation merely to populate a shell variable. A later independent CLI pass needs new disposable identities and unique receipts.
@@ -205,7 +229,7 @@ pico2-kes-agent-cli --json device commission --usb-serial "$USB_SERIAL" \
   --out "$OPS/device.json"
 ```
 
-On lost output/uncertainty, preserve that receipt and use **Operations → Reconcile an original receipt** in the same restricted serial-bound mode, with an unused output path if the public record needs recovery. Do not require the now-commissioned board to become blank again or submit a second commission.
+On lost output/uncertainty, preserve that receipt and use **Activity → Reconcile an original receipt** in the same restricted serial-bound mode, with an unused output path if the public record needs recovery. Do not require the now-commissioned board to become blank again or submit a second commission.
 
 ## 9. Install the normal pin/network configuration
 
@@ -221,12 +245,12 @@ Create `$OPS/config.json` using the complete [normal configuration template](../
 
 Check correct UTC and independently trusted network timing before exposing keys to context. Advancing a test host clock or supplying incorrect genesis can irreversibly evolve/expire keys; never accelerate production time to shorten a test.
 
-Through Setup:
+Through Host → Continue setup → Set up a new blank device:
 
-1. **Stop restricted commissioning service**.
-2. **Review/install explicit normal configuration and pin**; inspect the exact candidate/diff.
+1. **Stop commissioning service**.
+2. **Install normal configuration and identity pin**; inspect the exact candidate/diff.
 3. Complete the real normal-mode node/host policy prerequisites from step 6.
-4. **Start normal service (existing preflight still applies)**.
+4. **Start normal service** (existing preflight still applies).
 
 Use manager configuration actions rather than manually replacing managed files or deleting systemd overrides. Check:
 
@@ -240,7 +264,7 @@ pico2-kes-agent-cli --json device inventory
 pico2-kes-agent-cli --json pool list --page-size 16
 ```
 
-Expected: exact pinned identity and selected firmware; normal-mode observations; truthful empty membership only if the authenticated complete inventory is empty. Host `pool list` alone is not authoritative device absence. `host observe` and `pool list` are paged: follow their returned cursor (and host snapshot ID) until completion; use **Operations → List complete device inventory and host bindings** for the manager's complete join.
+Expected: exact pinned identity and selected firmware; normal-mode observations; truthful empty membership only if the authenticated complete inventory is empty. Host `pool list` alone is not authoritative device absence. `host observe` and `pool list` are paged: follow their returned cursor (and host snapshot ID) until completion; use **Pools → a (Actions) → List complete device inventory and host bindings** for the manager's complete join.
 
 ## 10. Install the backup-role manager and create a recipient off-primary
 
@@ -269,7 +293,7 @@ RECIPIENT_KEY="$BACKUP_OPS/recipient.private"
 RECIPIENT_PUBLIC="$BACKUP_OPS/recipient.public.json"
 ```
 
-Select **Backup host → Create protected backup recipient**. Approve the finite local privileged role/process inspection before private-path forms and again before the child; it does not connect to the primary/daemon/device. Enter the two absolute output paths. The foreground CLI, not a TUI field, asks for the passphrase. Do not record, pipe, tee or put it in argv/environment.
+Select **Recipients → Create protected backup recipient**. Approve the finite local privileged role/process inspection before private-path forms and again before the child; it does not connect to the primary/daemon/device. Enter the two absolute output paths. The foreground CLI, not a TUI field, asks for the passphrase. Do not record, pipe, tee or put it in argv/environment.
 
 Equivalent **backup-host-only** CLI test:
 
@@ -284,7 +308,7 @@ Expected: new protected private file and public JSON, no overwrite. Transfer **o
 
 **Primary.** Public inputs and their immediate parent must be operator-owned and not group/world writable. Copy transferred files into `$OPS` as the operator. Do not ask the CLI to publish into root-owned `/etc`.
 
-TUI: **Operations → Install / rotate public recipient**. Supply the public file and new receipt path. Review fresh device identity/revision. Equivalent:
+TUI: **Pools → a (Actions) → Install / rotate public recipient**. Supply the public file and new receipt path. Review fresh device identity/revision. Equivalent:
 
 ```bash
 RECIPIENT_PUBLIC="$OPS/recipient.public.json"
@@ -315,11 +339,11 @@ pico2-kes-agent-cli --json pool list --page-size 16
 
 Do not pipe a mutation into `jq` or hide its exit status. Every mutation gets a new receipt; uncertainty reuses the original receipt, not a new request. IDs: pool is 56 lowercase hex characters, not `pool1...`; device/incarnation/generation IDs are 32 hex characters. Save exact returned IDs.
 
-**Required before readiness:** obtain this pool's `socket_path` from the complete list; add `{pool_id, incarnation_id, socket_path, network}` to a normal configuration candidate. Use **Service → Review/validate supplied configuration candidate**, review/cancel once, then validate/apply and separately **Restart managed agent**. Enrollment/journal reconstruction alone does **not** start a context poller for a pool absent from startup configuration. Never substitute the management socket for the pool delivery socket.
+**Required before readiness:** obtain this pool's `socket_path` from the complete list; add `{pool_id, incarnation_id, socket_path, network}` to a normal configuration candidate. Use **Host → Review/validate supplied configuration candidate**, review/cancel once, then validate/apply and separately **Restart managed agent**. Enrollment/journal reconstruction alone does **not** start a context poller for a pool absent from startup configuration. Never substitute the management socket for the pool delivery socket.
 
 ## 12. Generate, inspect and export the first generation
 
-TUI: **Operations → Create staged generation**. Review exact pool/incarnation and fresh pool revision. Equivalent:
+TUI: **Pools → selected pool → Create staged generation**. Review exact pool/incarnation and fresh pool revision. Equivalent:
 
 ```bash
 POOL_STATUS=$(pico2-kes-agent-cli --json pool status --pool "$POOL")
@@ -372,7 +396,7 @@ cardano-cli "$ERA" node issue-op-cert --kes-verification-key-file "$KES_VKEY" \
 
 Preserve the updated authoritative counter. Do not reset it or issue another certificate merely because a transfer timed out. Transfer only the resulting public certificate back to primary `$OPS/first.opcert`, and add it to the off-primary archive.
 
-**Primary**, TUI **Operations → Install matching public certificate**; equivalent:
+**Primary**, TUI **Pools → selected pool → Install matching public certificate**; equivalent:
 
 ```bash
 OPCERT="$OPS/first.opcert"
@@ -418,7 +442,7 @@ Use **Install / rotate public recipient** or step 11's `recipient set`, with the
 
 ## 16. Exercise receipt discovery and reconciliation
 
-First rehearse read-only discovery: **Operations → Discover and inspect original operation receipts**. Record the exact original path, operation ID, request digest, target and result. A manager reference is not a substitute for the CLI receipt.
+First rehearse read-only discovery: **Activity → Discover and inspect original operation receipts**. Record the exact original path, operation ID, request digest, target and result. A manager reference is not a substitute for the CLI receipt.
 
 For a qualification-controlled interrupted **non-OTP** lifecycle submission on disposable state, terminate only the manager after submission but before final display. Do not kill the daemon or unplug storage merely to test a lost UI response. The result may already be committed; reopening must not invent a retry.
 
@@ -454,7 +478,7 @@ A genuine storage-uncertainty recovery is different from a lost UI response. Fol
 
 Transfer only the encrypted artifact and its public verification bundle from primary. Verify the independently archived device identity and exact archived pool/incarnation/generation/vkey/recipient association; do not obtain a replacement identity from an untrusted artifact alone.
 
-TUI: **Backup host → Restore encrypted backup locally**; approve local role admission and enter the exact evidence/private-file **paths**, never private contents. Equivalent backup-host-only CLI:
+TUI: **Restore → Restore encrypted backup locally**; approve local role admission and enter the exact evidence/private-file **paths**, never private contents. Equivalent backup-host-only CLI:
 
 ```bash
 DEVICE_RECORD="$BACKUP_OPS/device.json"
@@ -480,11 +504,11 @@ Format/permissions alone do not satisfy the inherited [independent backup-fideli
 
 Use the actual UI, not just CLI success, for these cases:
 
-1. **Overview/Pools:** compare installed vs running builds and complete inventory; inspect the last pool/unmatched bindings. Temporarily deny/disconnect only under the disposable scenario; stale/unavailable must appear with last-success evidence within 10 seconds, not healthy/zero. Local navigation must work without release networking.
-2. **Service:** cancel then perform reviewed start/stop/restart; observe the exact service state and running build. Uptime is not delivery/forging. Test an invalid configuration candidate and verify working bytes/mode/owner remain unchanged; apply a valid candidate only after exact diff/service-identity validation, then separately approve restart.
-3. **Diagnostics:** inspect bounded public history; export to a new absolute protected path. Check mode 0600, inspect public-only content, record its hash, then request the same destination and verify no-clobber refusal/unchanged hash. Do not include private child traffic in a report.
-4. **Original host recovery:** after an admitted interrupted service/config operation, use **Inspect original host operation and actual state** then **Reconcile original service/configuration outcome without replay** with the original operation ID/digest. It must not silently repeat a restart/configuration write.
-5. **Producer hardening:** operator supplies one actual disposable concrete `.service` name; inspect `/etc/systemd/system/<unit>.d/pico2-kes-memory.conf`, reload result and separately approved restart or deferral. Stopped services must not start. Test invalid `../escape.service` and cancellation before any changes. Preserve unrelated drop-ins. Recovery uses **Recover original producer batch**, the original ID/digest and fresh review; never a new batch to hide partial results.
+1. **Overview/Pools:** press `d` to compare installed vs running builds and complete inventory; inspect the last pool/unmatched bindings. Temporarily deny/disconnect only under the disposable scenario; stale/unavailable must appear with last-success evidence within 10 seconds, not healthy/zero. Local navigation must work without release networking.
+2. **Host:** cancel then perform reviewed start/stop/restart; observe the exact service state and running build. Uptime is not delivery/forging. Test an invalid configuration candidate and verify working bytes/mode/owner remain unchanged; apply a valid candidate only after exact diff/service-identity validation, then separately approve restart.
+3. **Activity / Diagnostics:** inspect bounded public history; export to a new absolute protected path. Check mode 0600, inspect public-only content, record its hash, then request the same destination and verify no-clobber refusal/unchanged hash. Do not include private child traffic in a report.
+4. **Activity / Original host recovery:** after an admitted interrupted service/config operation, use **Inspect original host operation and actual state** then **Reconcile original service/configuration outcome without replay** with the original operation ID/digest. It must not silently repeat a restart/configuration write.
+5. **Host / Producer memory policy:** operator supplies one actual disposable concrete `.service` name; inspect `/etc/systemd/system/<unit>.d/pico2-kes-memory.conf`, reload result and separately approved restart or deferral. Stopped services must not start. Test invalid `../escape.service` and cancellation before any changes. Preserve unrelated drop-ins. Recovery uses **Recover original producer batch**, the original ID/digest and fresh review; never a new batch to hide partial results.
 6. **Keyboard/terminal:** rerun the applicable selection/review/error paths with `NO_COLOR=1 p2kesup`; resize below/above 80×24, cancel fields, complete/fail/cancel foreground handoffs, and inspect restored echo/cursor/terminal state. Nonterminal invocation must refuse interactive mutation. Never repeat OTP writes or record passphrase sessions merely for accessibility.
 
 For performance/capacity acceptance, repeat the setup with 64 distinct disposable pools and the required 64 active/64 staged workload, then verify enrollment 65 is rejected without eviction. Measure the 5-second overview/10-second full inventory/10-second loss bounds with the approved instrument. A single-pool run or host model is not that reading. Follow the existing [baseline and sensitivity procedure](../specs/002-manage-kes-agent/contracts/quality.md#required-project-performance-gate); do not invent a zero baseline or accelerate clocks. Your own manual pass does not substitute for the fixed five-person uncoached cohort.
@@ -507,7 +531,7 @@ After collecting pre-state, ordinary supported host/device recovery may be teste
 **Skip applying OTP for the normal test.** To test it, use an eligible blank sacrificial target and the existing hardware/tool/image qualification, before commissioning. Signed software or successful preview does not grant that qualification. If it is absent, record the branch blocked.
 
 1. Complete authenticated install, host policy and the appropriate restricted blank-application observation setup, without commissioning.
-2. **Device security → Read-only security preview**. Review exact serial, tool/bundle, supported stepping/flash, blank status, evidence and irreversibility. Nondefault management sockets are unsupported by the owning tool and must refuse before service stops/writes.
+2. **Device → Security / OTP (advanced) → Read-only security preview**. Review exact serial, tool/bundle, supported stepping/flash, blank status, evidence and irreversibility. Nondefault management sockets are unsupported by the owning tool and must refuse before service stops/writes.
 3. Review/apply **Prepare one stage** only. Use the foreground tool's exact physical transitions and direct prompts; preserve its original protected record/readbacks.
 4. Reopen/read the same record. If preparation is proven complete and fresh restricted blank admission is available, separately review/apply **Enable one stage**.
 5. After its required evidence, separately review/apply **Lock one stage**. Cancel between stages once; completed stages remain and the next must not start automatically.
@@ -518,7 +542,7 @@ The detailed physical authority remains the [maintainer security procedure](main
 
 ## 21. Delete the disposable pool last
 
-Only after required exports, restore testing and maintenance observations, fence/remove any producer use of this test credential. Retain its archived public/backup evidence. Cancel **Operations → Delete exact pool incarnation (irreversible)** once and verify no change; then review and confirm the exact disposable incarnation.
+Only after required exports, restore testing and maintenance observations, fence/remove any producer use of this test credential. Retain its archived public/backup evidence. Cancel **Pools → selected pool → Delete exact pool incarnation (irreversible)** once and verify no change; then review and confirm the exact disposable incarnation.
 
 Equivalent CLI, freshly observed pool revision:
 
@@ -539,7 +563,7 @@ Deletion does not revoke exported backup copies or state already delivered to a 
 
 Do this last on the disposable host:
 
-1. Open **Uninstall**, choose `new`, enter the exact comma-separated installed component names (`manager,daemon,cli,firmware,tool,deployment` as applicable), and explicitly decide whether stopping the affected managed daemon is permitted.
+1. Open **Software → Uninstall managed components (advanced)**, choose `new`, enter the exact comma-separated installed component names (`manager,daemon,cli,firmware,tool,deployment` as applicable), and explicitly decide whether stopping the affected managed daemon is permitted.
 2. Review every removal and retained path. Cancel once; then reopen and approve only the intended selection. Modified/external files must block, not be silently removed.
 3. Verify retained configuration, journal, receipts, public pin/identity, maintenance/OTP records, accounts/groups, producer drop-ins and all device state. No producer restart or wipe/revocation claim is allowed. Removing the host `firmware` component removes its managed host files, not device flash.
 4. If an admitted interruption occurred, choose `recover`, provide original operation ID/digest and review fresh evidence. Recovery does not stop a newly changed service. If the command itself was removed, reopen through the independently verified retained bootstrap/bundle, then recover the original record rather than reinstalling blindly.

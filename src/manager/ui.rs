@@ -9,17 +9,26 @@ use std::{
 };
 mod backup;
 mod lifecycle;
+mod navigation;
 mod producer;
 mod provisioning;
 mod releases;
 mod service;
 mod setup;
+mod status;
 mod uninstall;
+mod widgets;
+
+use navigation::{Action, View};
+#[cfg(test)]
+use widgets::review_paragraph;
+use widgets::{public_fields, review, tone};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
-    layout::{Constraint, Layout},
-    text::Line,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use serde_json::Value;
@@ -33,22 +42,33 @@ use crate::cli;
 
 /// Run the finite bootstrap installation without entering the interactive menu.
 pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
+    use super::{
+        host::{self, HostAction, HostPlan},
+        release::{self, Admission},
+    };
     use std::io::{IsTerminal, Write};
-    use super::{host::{self, HostAction, HostPlan}, release::{self, Admission}};
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(io::Error::other("installation requires an attended terminal"));
+        return Err(io::Error::other(
+            "installation requires an attended terminal",
+        ));
     }
-    let (verified, candidate_accepted) = match release::verify_bundle(&bundle, Admission::Qualified) {
+    let (verified, candidate_accepted) = match release::verify_bundle(&bundle, Admission::Qualified)
+    {
         Ok(verified) => (verified, false),
         Err(qualified_error) => {
             let verified = release::verify_bundle(&bundle, Admission::AttendedCandidate)
                 .map_err(|_| qualified_error)?;
-            println!("This signed bundle is a candidate, not a qualified release. Install only on a disposable host.");
+            println!(
+                "This signed bundle is a candidate, not a qualified release. Install only on a disposable host."
+            );
             print!("Type DISPOSABLE CANDIDATE to accept: ");
             io::stdout().flush()?;
             if host::read_confirmation(io::stdin().lock())?.trim() != "DISPOSABLE CANDIDATE" {
-                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "candidate not accepted"));
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "candidate not accepted",
+                ));
             }
             (verified, true)
         }
@@ -62,8 +82,15 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
     })?;
     let cache = super::release_discovery::default_cache()?;
     let path = cache.join(format!("install-plan-{}.json", plan.plan_id));
-    crate::files::publish_no_clobber(&path, &serde_json::to_vec(&plan).map_err(io::Error::other)?, 0o600)?;
-    println!("Installation plan retained at {}. The privileged helper will display the scope and request its digest.", path.display());
+    crate::files::publish_no_clobber(
+        &path,
+        &serde_json::to_vec(&plan).map_err(io::Error::other)?,
+        0o600,
+    )?;
+    println!(
+        "Installation plan retained at {}. The privileged helper will display the scope and request its digest.",
+        path.display()
+    );
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
@@ -71,26 +98,50 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
         command.arg("--").arg(executable);
         command
     };
-    let status = command.arg("host-apply").arg("--plan").arg(&path).status()?;
+    let status = command
+        .arg("host-apply")
+        .arg("--plan")
+        .arg(&path)
+        .status()?;
     if !status.success() {
-        return Err(io::Error::other(format!("installation failed or was interrupted ({status}); retain the original plan {}", path.display())));
+        return Err(io::Error::other(format!(
+            "installation failed or was interrupted ({status}); retain the original plan {}",
+            path.display()
+        )));
     }
-    println!("Installation completed; retained plan: {}", safe(&path.to_string_lossy()));
-    println!("Reopen with: {}", if role == InstallationRole::Backup { "p2kesup --role backup" } else { "p2kesup" });
+    println!(
+        "Installation completed; retained plan: {}",
+        safe(&path.to_string_lossy())
+    );
+    println!(
+        "Reopen with: {}",
+        if role == InstallationRole::Backup {
+            "p2kesup --role backup"
+        } else {
+            "p2kesup"
+        }
+    );
     Ok(())
 }
 
 pub fn upgrade(version: Option<&str>, bundle: Option<PathBuf>) -> io::Result<()> {
     use std::io::IsTerminal;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "upgrade requires an attended terminal"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "upgrade requires an attended terminal",
+        ));
     }
     let store = super::records::RecordStore::open_host(super::setup::service_identity()?.1)?;
     if store.list()?.iter().any(|record| match record {
-        super::records::Record::Supported(record) => !super::host::maintenance_outcome_allows_new_action(&record.outcome),
+        super::records::Record::Supported(record) => {
+            !super::host::maintenance_outcome_allows_new_action(&record.outcome)
+        }
         super::records::Record::Unknown(_) => true,
     }) {
-        return Err(io::Error::other("unresolved maintenance blocks upgrade, including no-op claims; recover the original operation (p2kesup upgrade --resume ORIGINAL_PLAN for an upgrade)"));
+        return Err(io::Error::other(
+            "unresolved maintenance blocks upgrade, including no-op claims; recover the original operation (p2kesup upgrade --resume ORIGINAL_PLAN for an upgrade)",
+        ));
     }
     let (digest, registry, service, _) = super::host::update_review()?;
     super::host::verify_installed_ownership()?;
@@ -101,11 +152,21 @@ pub fn upgrade(version: Option<&str>, bundle: Option<PathBuf>) -> io::Result<()>
     };
     let verified = super::release::verify_bundle(
         &path,
-        if explicit { super::release::Admission::AttendedCandidate } else { super::release::Admission::Qualified },
+        if explicit {
+            super::release::Admission::AttendedCandidate
+        } else {
+            super::release::Admission::Qualified
+        },
     )?;
-    let current = registry.current.as_ref().ok_or_else(|| io::Error::other("installed selection unavailable"))?;
+    let current = registry
+        .current
+        .as_ref()
+        .ok_or_else(|| io::Error::other("installed selection unavailable"))?;
     if super::host::same_selection(current, verified.selection()) {
-        println!("Managed {:?} host selection is already {}. No changes made; device firmware was not checked.", registry.role, current.tag);
+        println!(
+            "Managed {:?} host selection is already {}. No changes made; device firmware was not checked.",
+            registry.role, current.tag
+        );
         return Ok(());
     }
     let mut terminal = TerminalOwner::acquire()?;
@@ -118,36 +179,67 @@ pub fn upgrade(version: Option<&str>, bundle: Option<PathBuf>) -> io::Result<()>
 }
 
 pub fn resume_upgrade(path: PathBuf) -> io::Result<()> {
+    use super::{
+        host::{self, HostAction, HostPlan},
+        records::{Record, RecordStore},
+    };
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
-    use super::{host::{self, HostAction, HostPlan}, records::{Record, RecordStore}};
-    let file = std::fs::OpenOptions::new().read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
     if !file.metadata()?.is_file() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "original plan must be a regular file"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "original plan must be a regular file",
+        ));
     }
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "original plan exceeds 1 MiB"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "original plan exceeds 1 MiB",
+        ));
     }
     let plan: HostPlan = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
     plan.validate()?;
     if !matches!(&plan.action, HostAction::Upgrade { .. }) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "original plan is not an upgrade"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "original plan is not an upgrade",
+        ));
     }
     let store = RecordStore::open_host(super::setup::service_identity()?.1)?;
     let mut matches = store.list()?.into_iter().filter_map(|record| match record {
-        Record::Supported(record) if record.plan_digest.to_string() == plan.approved_digest && record.action == "upgrade" => Some(record),
+        Record::Supported(record)
+            if record.plan_digest.to_string() == plan.approved_digest
+                && record.action == "upgrade" =>
+        {
+            Some(record)
+        }
         _ => None,
     });
-    let record = matches.next().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "original upgrade record not found"))?;
+    let record = matches.next().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "original upgrade record not found")
+    })?;
     if matches.next().is_some() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "multiple original records match the plan"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "multiple original records match the plan",
+        ));
     }
     let operation = record.operation_id.to_string();
     let mut action = host::review_upgrade_recovery(&operation, &plan.approved_digest)?;
-    let HostAction::UpgradeRecovery { temporary_validation, .. } = &mut action else {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid recovery review"));
+    let HostAction::UpgradeRecovery {
+        temporary_validation,
+        ..
+    } = &mut action
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid recovery review",
+        ));
     };
     *temporary_validation = true;
     let executable = host::trusted_upgrade_recovery_manager(&operation, &plan.approved_digest)?;
@@ -156,24 +248,10 @@ pub fn resume_upgrade(path: PathBuf) -> io::Result<()> {
     let closed = terminal.close();
     result?;
     closed?;
-    println!("Original upgrade recovery completed; consult its retained record for the observed outcome.");
+    println!(
+        "Original upgrade recovery completed; consult its retained record for the observed outcome."
+    );
     Ok(())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum View {
-    Overview,
-    Pools,
-    Details,
-    Setup,
-    Releases,
-    Operations,
-    Service,
-    DeviceSecurity,
-    ProducerHardening,
-    BackupHost,
-    Uninstall,
-    Help,
 }
 
 enum Exit {
@@ -194,166 +272,6 @@ fn safe(text: &str) -> String {
         }
     }
     escaped
-}
-
-fn public_fields(
-    terminal: &mut TerminalOwner,
-    title: &str,
-    fields: &[(&str, &str)],
-) -> io::Result<Option<Vec<String>>> {
-    let mut values: Vec<String> = fields
-        .iter()
-        .map(|(_, value)| (*value).to_owned())
-        .collect();
-    let mut selected = 0;
-    let mut redraw = true;
-    loop {
-        let size = terminal.terminal()?.size()?;
-        let small = size.width < 80 || size.height < 24;
-        if redraw {
-            terminal.terminal()?.draw(|frame| {
-                let lines: Vec<Line> = if small {
-                    vec![Line::from("Resize to at least 80×24; Esc or q cancels without applying.")]
-                } else {
-                    let value = safe(&values[selected]);
-                    let start = value.char_indices().rev().nth(255).map_or(0, |(index, _)| index);
-                    let shown = if start == 0 { value } else { format!("…{}", &value[start..]) };
-                    vec![
-                        Line::from(format!("Field {} of {}: {}", selected + 1, fields.len(), fields[selected].0)),
-                        Line::from(shown),
-                        Line::from("Long values show their final 256 characters here; review the full target before approval."),
-                        Line::from("Public inputs only. Never enter a private key or passphrase here."),
-                        Line::from("Tab/Shift-Tab: field; Enter: next/review; Esc: cancel; Backspace: edit"),
-                    ]
-                };
-                frame.render_widget(
-                    Paragraph::new(lines).wrap(Wrap { trim: false })
-                        .block(Block::default().borders(Borders::ALL).title(title)),
-                    frame.area(),
-                );
-            })?;
-            redraw = false;
-        }
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-        redraw = true;
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind == KeyEventKind::Release {
-            continue;
-        }
-        if key.code == KeyCode::Esc || (small && key.code == KeyCode::Char('q')) {
-            return Ok(None);
-        }
-        if small {
-            continue;
-        }
-        match key.code {
-            KeyCode::Tab => selected = (selected + 1) % fields.len(),
-            KeyCode::BackTab => selected = (selected + fields.len() - 1) % fields.len(),
-            KeyCode::Enter if selected + 1 == fields.len() => return Ok(Some(values)),
-            KeyCode::Enter => selected += 1,
-            KeyCode::Backspace => {
-                values[selected].pop();
-            }
-            KeyCode::Char(c)
-                if !c.is_control()
-                    && values[selected].len() + c.len_utf8() <= 4096
-                    && !key.modifiers.intersects(
-                        crossterm::event::KeyModifiers::CONTROL
-                            | crossterm::event::KeyModifiers::ALT,
-                    ) =>
-            {
-                values[selected].push(c);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn review_paragraph(title: &str, lines: Vec<String>) -> io::Result<Paragraph<'_>> {
-    let lines: Vec<Line> = lines
-        .into_iter()
-        .map(|line| Line::from(safe(&line)))
-        .collect();
-    let paragraph = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(Block::default().borders(Borders::ALL).title(title));
-    if paragraph.line_count(78) > usize::from(u16::MAX) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "review exceeds the terminal scroll range; reformat public inputs before approval",
-        ));
-    }
-    Ok(paragraph)
-}
-
-fn review(
-    terminal: &mut TerminalOwner,
-    title: &str,
-    lines: Vec<String>,
-    confirmation: Option<&str>,
-) -> io::Result<bool> {
-    let mut paragraph = review_paragraph(title, lines)?;
-    let mut scroll = 0u16;
-    let mut redraw = true;
-    loop {
-        let size = terminal.terminal()?.size()?;
-        let small = size.width < 80 || size.height < 24;
-        if redraw {
-            paragraph = paragraph.scroll((scroll, 0));
-            terminal.terminal()?.draw(|frame| {
-                let areas = Layout::vertical([Constraint::Min(1), Constraint::Length(2)])
-                    .split(frame.area());
-                if small {
-                    frame.render_widget(
-                        Paragraph::new("Resize to at least 80×24; Esc or q cancels."),
-                        areas[0],
-                    );
-                } else {
-                    frame.render_widget(&paragraph, areas[0]);
-                }
-                frame.render_widget(
-                    Paragraph::new(if confirmation.is_some() {
-                        "↑↓/j k: scroll; Enter: explicit confirmation; Esc/q: cancel"
-                    } else {
-                        "↑↓/j k: scroll; Esc/q: return"
-                    }),
-                    areas[1],
-                );
-            })?;
-            redraw = false;
-        }
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-        redraw = true;
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind == KeyEventKind::Release {
-            continue;
-        }
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-            return Ok(false);
-        }
-        if small {
-            continue;
-        }
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => scroll = scroll.saturating_add(1),
-            KeyCode::Up | KeyCode::Char('k') => scroll = scroll.saturating_sub(1),
-            KeyCode::Enter if confirmation.is_some() => {
-                let expected = confirmation.expect("checked confirmation");
-                let label = format!("Type exactly {expected}");
-                return Ok(public_fields(terminal, title, &[(&label, "")])?
-                    .is_some_and(|values| values[0] == expected));
-            }
-            _ => {}
-        }
-    }
 }
 
 fn foreground(
@@ -457,7 +375,7 @@ fn overview(
         }
         lines.push(observation("Service", &local.service, elapsed));
         if let Some(service) = &local.service.value {
-            lines.push(safe(service));
+            lines.extend(service.lines().map(safe));
         }
         lines.push(observation("Configuration", &local.config, elapsed));
         lines.push(observation(
@@ -643,20 +561,59 @@ pub fn run(role: InstallationRole, socket: PathBuf, bundle: Option<PathBuf>) -> 
 
 fn action_menu(
     frame: &mut ratatui::Frame<'_>,
-    area: ratatui::layout::Rect,
+    area: Rect,
     title: &str,
-    labels: impl Iterator<Item = &'static str>,
+    entries: &[navigation::Entry],
     selected: usize,
 ) {
-    let mut state = ListState::default().with_selected(Some(selected));
+    let mut state = ListState::default().with_selected((!entries.is_empty()).then_some(selected));
     frame.render_stateful_widget(
-        List::new(labels.map(ListItem::new))
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .highlight_symbol("> "),
+        List::new(entries.iter().map(|entry| ListItem::new(entry.label)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+            )
+            .highlight_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))
+            .highlight_symbol(" > "),
         area,
         &mut state,
     );
 }
+
+fn release_action(
+    action: releases::Action,
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    bundle: Option<&PathBuf>,
+    state: &mut releases::State,
+    snapshot: Option<&Snapshot>,
+    role: InstallationRole,
+) -> io::Result<Option<PathBuf>> {
+    use releases::Action;
+    match action {
+        Action::Browse => {
+            review(terminal, "Release evidence", state.lines(), None)?;
+        }
+        Action::Refresh => state.refresh(),
+        Action::Prerelease => state.toggle_prerelease(),
+        Action::Offline => state.toggle_offline(),
+        Action::Select => {
+            releases::component_update(terminal, worker, socket, bundle, state, snapshot, role)?
+        }
+        Action::FirmwarePreview => releases::firmware_preview(terminal, worker, socket, bundle)?,
+        Action::FirmwareUpdate => releases::firmware_update(terminal, worker, socket, bundle)?,
+        Action::Inspect => setup::run(1, terminal, worker, role, socket, bundle)?,
+        Action::RecoverFirmware => releases::recover_firmware(terminal, worker, socket)?,
+        Action::Fallback => releases::fallback(terminal, worker, socket)?,
+        Action::Reexec => return releases::reexec(terminal),
+        Action::Remove => state.remove(terminal)?,
+    }
+    Ok(None)
+}
+
 fn event_loop(
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
@@ -664,57 +621,31 @@ fn event_loop(
     bundle: Option<&PathBuf>,
     socket: &Path,
 ) -> io::Result<Exit> {
+    let roots = navigation::roots(role);
     let mut view = View::Overview;
-    let mut previous = View::Overview;
+    let mut history = Vec::new();
+    let mut evidence_origin = View::Overview;
+    let mut menu_view = view;
+    let mut entries = navigation::entries(view, role);
     let mut selected = 0usize;
+    let mut overview_selected = 6usize;
     let mut selected_identity: Option<(String, String)> = None;
     let mut scroll = 0u16;
-    let mut setup_selected = 0usize;
-    let mut release_selected = 0usize;
-    let mut lifecycle_selected = 0usize;
-    let mut service_selected = 0usize;
-    let mut security_selected = 0usize;
-    let mut producer_selected = 0usize;
-    let mut backup_selected = 0usize;
     let mut diagnostics = super::observe::Diagnostics::default();
     let mut release_state = releases::State::new();
-    let release_actions = if role == InstallationRole::Primary {
-        releases::PRIMARY_ACTIONS
-    } else {
-        releases::BACKUP_ACTIONS
-    };
-    let setup_count = if role == InstallationRole::Primary {
-        setup::ACTIONS.len()
-    } else {
-        2
-    };
-    let views: &[View] = if role == InstallationRole::Primary {
-        &[
-            View::Overview,
-            View::Pools,
-            View::Setup,
-            View::Releases,
-            View::Operations,
-            View::Service,
-            View::DeviceSecurity,
-            View::ProducerHardening,
-            View::Uninstall,
-        ]
-    } else {
-        &[
-            View::Overview,
-            View::Setup,
-            View::Releases,
-            View::BackupHost,
-            View::Uninstall,
-        ]
-    };
     let mut last_snapshot: Option<std::sync::Arc<Snapshot>> = None;
     let mut last_draw = std::time::Instant::now();
     let mut redraw = true;
     let mut small = false;
     loop {
         redraw |= release_state.poll();
+        if menu_view != view {
+            entries = navigation::entries(view, role);
+            selected = 0;
+            scroll = 0;
+            menu_view = view;
+            redraw = true;
+        }
         let snapshot = worker.as_ref().map(Worker::snapshot);
         let changed = match (&snapshot, &last_snapshot) {
             (Some(current), Some(previous)) => !std::sync::Arc::ptr_eq(current, previous),
@@ -724,72 +655,126 @@ fn event_loop(
         if changed && let Some(snapshot) = &snapshot {
             diagnostics.record(snapshot);
         }
+        if selected_identity.is_none()
+            && let Some(s) = &snapshot
+            && let Some(&index) = status::pool_order(s).first()
+        {
+            let pool = &s.pools[index];
+            selected_identity = Some((pool.pool_id.clone(), pool.incarnation_id.clone()));
+        }
+        let pool_index = snapshot.as_ref().and_then(|s| {
+            selected_identity.as_ref().and_then(|(pool, incarnation)| {
+                s.pools
+                    .iter()
+                    .position(|p| &p.pool_id == pool && &p.incarnation_id == incarnation)
+            })
+        });
         if redraw || changed || last_draw.elapsed() >= Duration::from_secs(1) {
-            if let Some(s) = &snapshot {
-                if let Some((pool, incarnation)) = &selected_identity
-                    && let Some(index) = s
-                        .pools
-                        .iter()
-                        .position(|p| &p.pool_id == pool && &p.incarnation_id == incarnation)
-                {
-                    selected = index;
-                }
-                selected = selected.min(s.pools.len().saturating_sub(1));
-                selected_identity = s
-                    .pools
-                    .get(selected)
-                    .map(|p| (p.pool_id.clone(), p.incarnation_id.clone()));
-            }
             let size = terminal.terminal()?.size()?;
             small = size.width < 80 || size.height < 24;
             terminal.terminal()?.draw(|frame| {
-            let area = frame.area();
-            if small {
-                frame.render_widget(Paragraph::new("Terminal too small. Resize to at least 80×24; q quits.").block(Block::default().borders(Borders::ALL).title("p2kesup")), area);
-                return;
-            }
-            let regions = Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)]).split(area);
-            let header = format!("{view:?} | {} | Tab / Shift-Tab changes section", if role == InstallationRole::Primary { "primary" } else { "backup: no daemon/device" });
-            frame.render_widget(Paragraph::new(header).block(Block::default().borders(Borders::ALL).title("p2kesup")), regions[0]);
-            match view {
-                View::Pools => {
-                    let items: Vec<ListItem> = snapshot.as_ref().map(|s| s.pools.iter().map(|p| ListItem::new(format!("{} / {}  [{:?}]", safe(&p.pool_id), safe(&p.incarnation_id), p.observation.state))).collect()).unwrap_or_default();
-                    let mut state = ListState::default().with_selected((!items.is_empty()).then_some(selected));
-                    frame.render_stateful_widget(List::new(items).block(Block::default().borders(Borders::ALL).title("Pools — Enter for details; empty is not necessarily complete" )).highlight_symbol("> "), regions[1], &mut state);
+                let screen = frame.area();
+                if small {
+                    frame.render_widget(Paragraph::new("Resize to 80×24 · q quit").style(tone(Color::Yellow)), screen);
+                    return;
                 }
-                View::Setup => {
-                    let items: Vec<ListItem> = setup::ACTIONS[..setup_count].iter().map(|(_, name)| ListItem::new(*name)).collect();
-                    let mut state = ListState::default().with_selected(Some(setup_selected));
-                    frame.render_stateful_widget(List::new(items).block(Block::default().borders(Borders::ALL).title("Setup — separate reviewed steps; never replay a setup script")).highlight_symbol("> "), regions[1], &mut state);
+                let width = screen.width.min(120);
+                let area = Rect::new(screen.x + (screen.width - width) / 2, screen.y, width, screen.height);
+                let regions = Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)]).split(area);
+                let header = Line::from(vec![
+                    Span::styled("p2kesup  ", tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw(if role == InstallationRole::Primary { "primary  " } else { "backup  " }),
+                    Span::styled(safe(env!("P2KES_EMBEDDED_VERSION")), tone(Color::Yellow)),
+                ]);
+                let root = if matches!(view, View::Evidence | View::Help) { evidence_origin.root() } else { view.root() };
+                let tabs = Line::from(roots.iter().enumerate().flat_map(|(index, candidate)| [
+                    Span::styled(format!("{} {}", index + 1, candidate.label()),
+                        if *candidate == root { tone(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { Style::default() }),
+                    Span::raw("  "),
+                ]).collect::<Vec<_>>());
+                frame.render_widget(Paragraph::new(vec![header, tabs]), regions[0]);
+                match view {
+                    View::Overview => status::render_overview(frame, regions[1], snapshot.as_deref(), role, overview_selected),
+                    View::Pools => status::render_pools(frame, regions[1], snapshot.as_deref(), pool_index.unwrap_or(usize::MAX)),
+                    View::Device => {
+                        let parts = Layout::vertical([Constraint::Length(8), Constraint::Min(1)]).split(regions[1]);
+                        status::render_device(frame, parts[0], snapshot.as_deref());
+                        action_menu(frame, parts[1], "Device actions", &entries, selected);
+                    }
+                    View::Details => {
+                        let lines = snapshot.as_ref().map(|s| status::pool_lines(s, pool_index.unwrap_or(usize::MAX)))
+                            .unwrap_or_else(|| vec![Line::from("Pool: unavailable")]);
+                        let summary = Paragraph::new(lines).wrap(Wrap { trim: false });
+                        let height = (summary.line_count(regions[1].width) as u16).min(regions[1].height.saturating_sub(6));
+                        let parts = Layout::vertical([Constraint::Length(height), Constraint::Min(6)]).split(regions[1]);
+                        frame.render_widget(summary, parts[0]);
+                        if pool_index.is_some() {
+                            action_menu(frame, parts[1], "Pool actions", &entries, selected);
+                        } else {
+                            frame.render_widget(Paragraph::new("Selected pool: unavailable · Esc back").style(tone(Color::Yellow)), parts[1]);
+                        }
+                    }
+                    View::Evidence | View::Help => {
+                        let lines = if view == View::Help {
+                            vec![
+                                "1–6 / Tab / Shift-Tab: section".into(),
+                                "↑↓ / j k: select or scroll".into(),
+                                "Enter: open / review".into(),
+                                "Pools → a: enrollment and recipient actions".into(),
+                                "d: full evidence · r: refresh".into(),
+                                "Esc: back · q: quit".into(),
+                                "Colors: green verified condition; yellow attention/unknown; red fault.".into(),
+                                "NO_COLOR: labels and selection remain available.".into(),
+                                "Viewing makes no changes. Actions require separate review.".into(),
+                                "Recovery: original plan or receipt; never a replacement retry.".into(),
+                            ]
+                        } else if matches!(evidence_origin, View::Pools | View::Details) {
+                            snapshot.as_ref().map(|s| detail(s, pool_index.unwrap_or(usize::MAX))).unwrap_or_default()
+                        } else {
+                            overview(snapshot.as_deref(), role, bundle)
+                        };
+                        let paragraph = Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+                            .block(Block::default().borders(Borders::ALL).title(view.label()))
+                            .wrap(Wrap { trim: false });
+                        let max = paragraph.line_count(regions[1].width.saturating_sub(2))
+                            .saturating_sub(usize::from(regions[1].height)).min(usize::from(u16::MAX)) as u16;
+                        scroll = scroll.min(max);
+                        frame.render_widget(paragraph.scroll((scroll, 0)), regions[1]);
+                    }
+                    _ => {
+                        let hint = match view {
+                            View::Setup => "Device: existing or blank? Missing configuration does not mean blank.",
+                            View::SetupExisting => "Preserve identity/state. Use the original trusted pin and public inputs.",
+                            View::SetupNew => "Blank device only. Each step checks current state; no automatic replay.",
+                            View::Activity => "Recovery: original plans / receipts only. No replacement retries.",
+                            View::DeviceSecurity => "OTP: irreversible. Separate qualification and confirmation required.",
+                            View::ProducerHardening => "Policy: explicit services only. Restart requires approval.",
+                            View::Recipients => "Private recipient: backup host only. Transfer public file only.",
+                            View::Restore => "Restore: protected local output. Existing files are never overwritten.",
+                            View::Releases => "Installed / running versions: d. Updates require authenticated releases.",
+                            _ => "pico2-kes-agentd: service and configuration",
+                        };
+                        let mut summary = vec![Line::from(hint).style(tone(Color::DarkGray)), Line::default()];
+                        if view == View::Releases {
+                            summary.extend(status::software_lines(snapshot.as_deref()));
+                        } else if matches!(view, View::SetupExisting | View::SetupNew) {
+                            summary.extend(status::setup_lines(snapshot.as_deref()));
+                        }
+                        let paragraph = Paragraph::new(summary).wrap(Wrap { trim: false });
+                        let height = paragraph.line_count(regions[1].width).min(7) as u16;
+                        let parts = Layout::vertical([Constraint::Length(height), Constraint::Min(1)]).split(regions[1]);
+                        frame.render_widget(paragraph, parts[0]);
+                        action_menu(frame, parts[1], view.label(), &entries, selected);
+                    }
                 }
-                View::Releases => {
-                    let areas = Layout::vertical([Constraint::Length(release_actions.len() as u16 + 2), Constraint::Min(1)]).split(regions[1]);
-                    let items: Vec<ListItem> = release_actions.iter().map(|action| ListItem::new(action.label())).collect();
-                    let mut state = ListState::default().with_selected(Some(release_selected));
-                    frame.render_stateful_widget(List::new(items).block(Block::default().borders(Borders::ALL).title("Releases — exact authenticated tuples; original maintenance evidence")).highlight_symbol("> "), areas[0], &mut state);
-                    let lines: Vec<Line> = release_state.lines().iter().map(|line| Line::from(safe(line))).collect();
-                    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), areas[1]);
-                }
-                View::Operations => action_menu(frame, regions[1], "Operations — Enter reviews; Esc cancels", lifecycle::ACTIONS.iter().map(|(_, label)| *label), lifecycle_selected),
-                View::Service => action_menu(frame, regions[1], "Service — Enter reviews; Esc cancels", service::ACTIONS.iter().map(|(_, label)| *label), service_selected),
-                View::DeviceSecurity => action_menu(frame, regions[1], "DeviceSecurity — Enter reviews; Esc cancels", provisioning::ACTIONS.iter().map(|(_, label)| *label), security_selected),
-                View::ProducerHardening => action_menu(frame, regions[1], "ProducerHardening — Enter reviews; Esc cancels", producer::ACTIONS.iter().map(|(_, label)| *label), producer_selected),
-                View::BackupHost => action_menu(frame, regions[1], "BackupHost — Enter reviews; Esc cancels", backup::ACTIONS.iter().map(|(_, label)| *label), backup_selected),
-                _ => {
-                    let (title, lines) = match view {
-                        View::Overview => ("Overview", overview(snapshot.as_deref(), role, bundle)),
-                        View::Details => ("Pool details", snapshot.as_ref().map(|s| detail(s, selected)).unwrap_or_default()),
-                        View::Uninstall => ("Uninstall", vec!["Enter reviews selected managed components or recovery of an original removal; opening this screen removes nothing.".into(), "External/modified files block removal. Stop approval applies only to the managed daemon when selected components affect it.".into(), "Configuration, journals, receipts, identity/pin, maintenance records, service account/group, producer drop-ins and all device state remain.".into(), "No producer restart, secure-wipe claim or revocation claim.".into()]),
-                        View::Help => ("Help", vec!["Up/down or j/k: select or scroll".into(), "Tab/Shift-Tab: next/previous view".into(), "Enter: details or review; Esc: back".into(), "r: refresh observations; ?: help; q: quit".into(), "Viewing never changes installation/device. Applying asks exact target confirmation.".into(), "Backup role never contacts a daemon or device.".into()]),
-                        View::Pools | View::Setup | View::Releases | View::Operations | View::Service | View::DeviceSecurity | View::ProducerHardening | View::BackupHost => unreachable!(),
-                    };
-                    let text: Vec<Line> = lines.into_iter().map(Line::from).collect();
-                    frame.render_widget(Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title)).wrap(Wrap { trim: false }).scroll((scroll, 0)), regions[1]);
-                }
-            }
-            let footer = "↑↓/j k: move  Enter: review  Esc: back  r: refresh  ?: help  q: quit";
-            frame.render_widget(Paragraph::new(footer), regions[2]);
-        })?;
+                let keys = match view {
+                    View::Overview => "↑↓ Select   Enter Open   d Evidence   r Refresh   ? Help   q Quit",
+                    View::Pools => "↑↓ Select  Enter Pool  a Actions  d Evidence  r Refresh  q Quit",
+                    View::Evidence | View::Help => "↑↓ Scroll   Esc Back   r Refresh   q Quit",
+                    _ => "↑↓ Select   Enter Open   Esc Back   d Evidence   ? Help   q Quit",
+                };
+                frame.render_widget(Paragraph::new(vec![Line::from(keys), Line::from("Tab / Shift-Tab: section   1–6: jump").style(tone(Color::DarkGray))]), regions[2]);
+            })?;
             last_snapshot = snapshot.clone();
             last_draw = std::time::Instant::now();
             redraw = false;
@@ -811,155 +796,40 @@ fn event_loop(
             continue;
         }
         match key.code {
+            KeyCode::Char(c @ '1'..='6') => {
+                if let Some(next) = roots.get(c as usize - '1' as usize) {
+                    view = *next;
+                    history.clear();
+                }
+            }
             KeyCode::Tab | KeyCode::BackTab => {
-                let index = views
+                let index = roots
                     .iter()
-                    .position(|candidate| *candidate == view)
+                    .position(|candidate| *candidate == view.root())
                     .unwrap_or(0);
                 let step = if key.code == KeyCode::BackTab {
-                    views.len() - 1
+                    roots.len() - 1
                 } else {
                     1
                 };
-                view = views[(index + step) % views.len()];
-                scroll = 0;
+                view = roots[(index + step) % roots.len()];
+                history.clear();
             }
-            KeyCode::Char('?') => {
-                if view != View::Help {
-                    previous = view;
-                    view = View::Help;
-                    scroll = 0;
+            KeyCode::Char('?') | KeyCode::Char('d') => {
+                if !matches!(view, View::Help | View::Evidence) {
+                    evidence_origin = view;
+                    history.push(view);
+                    view = if key.code == KeyCode::Char('?') {
+                        View::Help
+                    } else {
+                        View::Evidence
+                    };
                 }
             }
-            KeyCode::Esc => {
-                view = if view == View::Help {
-                    previous
-                } else if view == View::Details {
-                    View::Pools
-                } else {
-                    View::Overview
-                };
-                scroll = 0;
-            }
-            KeyCode::Enter if view == View::Uninstall => {
-                release_state.pause();
-                if let Err(error) = uninstall::run(terminal, worker, socket, role, bundle) {
-                    review(terminal, "Uninstall blocked or failed", vec![error.to_string(), "No unproven ownership authorizes removal; retain the original maintenance record after any partial failure.".into()], None)?;
-                }
-                release_state.refresh();
-                last_snapshot = None;
-            }
-            KeyCode::Enter if view == View::Setup => {
-                release_state.pause();
-                if let Err(error) =
-                    setup::run(setup_selected, terminal, worker, role, socket, bundle)
-                {
-                    review(terminal, "Setup blocked or failed", vec![error.to_string(), "Preserve original records. Failure or unknown state is not permission to retry under a new identity.".into()], None)?;
-                }
-                release_state.refresh();
-                last_snapshot = None;
-            }
-            KeyCode::Enter if view == View::Releases => {
-                release_state.pause();
-                use releases::Action;
-                let result = match release_actions[release_selected] {
-                    Action::Browse => review(
-                        terminal,
-                        "Authenticated release inventory",
-                        release_state.lines(),
-                        None,
-                    )
-                    .map(|_| None),
-                    Action::Refresh => {
-                        release_state.refresh();
-                        Ok(None)
-                    }
-                    Action::Prerelease => {
-                        release_state.toggle_prerelease();
-                        Ok(None)
-                    }
-                    Action::Offline => {
-                        release_state.toggle_offline();
-                        Ok(None)
-                    }
-                    Action::Select => releases::component_update(
-                        terminal,
-                        worker,
-                        socket,
-                        bundle,
-                        &release_state,
-                        snapshot.as_deref(),
-                        role,
-                    )
-                    .map(|()| None),
-                    Action::FirmwarePreview => {
-                        releases::firmware_preview(terminal, worker, socket, bundle).map(|()| None)
-                    }
-                    Action::FirmwareUpdate => {
-                        releases::firmware_update(terminal, worker, socket, bundle).map(|()| None)
-                    }
-                    Action::Inspect => {
-                        setup::run(1, terminal, worker, role, socket, bundle).map(|()| None)
-                    }
-                    Action::RecoverFirmware => {
-                        releases::recover_firmware(terminal, worker, socket).map(|()| None)
-                    }
-                    Action::Fallback => releases::fallback(terminal, worker, socket).map(|()| None),
-                    Action::Reexec => releases::reexec(terminal),
-                    Action::Remove => release_state.remove(terminal).map(|()| None),
-                };
-                match result {
-                    Ok(Some(path)) => return Ok(Exit::Reexec(path)),
-                    Ok(None) => {}
-                    Err(error) => {
-                        review(terminal, "Release operation blocked or incomplete", vec![error.to_string(), "Retain original plans/receipts after interruption. Unknown state never authorizes replay, erasure, pin replacement or automatic fallback.".into()], None)?;
-                    }
-                }
-                release_state.resume();
-                last_snapshot = None;
-            }
-            KeyCode::Enter
-                if matches!(
-                    view,
-                    View::Operations
-                        | View::Service
-                        | View::DeviceSecurity
-                        | View::ProducerHardening
-                        | View::BackupHost
-                ) =>
-            {
-                release_state.pause();
-                let result = match view {
-                    View::Operations => {
-                        lifecycle::run(lifecycle_selected, terminal, worker, socket, bundle)
-                    }
-                    View::Service => {
-                        service::run(service_selected, terminal, worker, socket, &diagnostics)
-                    }
-                    View::DeviceSecurity => {
-                        provisioning::run(security_selected, terminal, worker, socket, bundle)
-                    }
-                    View::ProducerHardening => {
-                        producer::run(producer_selected, terminal, worker, socket, bundle)
-                    }
-                    View::BackupHost => {
-                        backup::run(backup_selected, terminal, worker, socket, bundle)
-                    }
-                    _ => unreachable!(),
-                };
-                if let Err(error) = result {
-                    review(terminal, "Operation blocked or incomplete", vec![error.to_string(),
-                        "Retain original receipts and records. Reopening does not authorize new-ID retries or automatic recovery.".into()], None)?;
-                }
-                release_state.resume();
-                last_snapshot = None;
-            }
-            KeyCode::Enter
-                if view == View::Pools
-                    && snapshot.as_ref().is_some_and(|s| !s.pools.is_empty()) =>
-            {
-                view = View::Details;
-                scroll = 0;
+            KeyCode::Esc => view = history.pop().unwrap_or(View::Overview),
+            KeyCode::Char('a') if view == View::Pools => {
+                history.push(view);
+                view = View::PoolActions;
             }
             KeyCode::Char('r') => {
                 if view == View::Releases {
@@ -969,60 +839,142 @@ fn event_loop(
                     worker.refresh();
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if view == View::Pools {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') => {
+                let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
+                if view == View::Overview {
+                    overview_selected = if down {
+                        (overview_selected + 1).min(6)
+                    } else {
+                        overview_selected.saturating_sub(1)
+                    };
+                } else if view == View::Pools {
                     if let Some(s) = &snapshot {
-                        selected = selected
-                            .saturating_add(1)
-                            .min(s.pools.len().saturating_sub(1));
-                        selected_identity = s
-                            .pools
-                            .get(selected)
-                            .map(|p| (p.pool_id.clone(), p.incarnation_id.clone()));
+                        let order = status::pool_order(s);
+                        let current = pool_index
+                            .and_then(|i| order.iter().position(|&candidate| candidate == i));
+                        let next = match current {
+                            Some(i) if down => (i + 1).min(order.len().saturating_sub(1)),
+                            Some(i) => i.saturating_sub(1),
+                            None => 0,
+                        };
+                        if let Some(&index) = order.get(next) {
+                            let pool = &s.pools[index];
+                            selected_identity =
+                                Some((pool.pool_id.clone(), pool.incarnation_id.clone()));
+                        }
                     }
-                } else if view == View::Setup {
-                    setup_selected = (setup_selected + 1).min(setup_count - 1);
-                } else if view == View::Releases {
-                    release_selected = (release_selected + 1).min(release_actions.len() - 1);
-                } else if view == View::Operations {
-                    lifecycle_selected = (lifecycle_selected + 1).min(lifecycle::ACTIONS.len() - 1);
-                } else if view == View::Service {
-                    service_selected = (service_selected + 1).min(service::ACTIONS.len() - 1);
-                } else if view == View::DeviceSecurity {
-                    security_selected =
-                        (security_selected + 1).min(provisioning::ACTIONS.len() - 1);
-                } else if view == View::ProducerHardening {
-                    producer_selected = (producer_selected + 1).min(producer::ACTIONS.len() - 1);
-                } else if view == View::BackupHost {
-                    backup_selected = (backup_selected + 1).min(backup::ACTIONS.len() - 1);
+                } else if matches!(view, View::Help | View::Evidence) {
+                    scroll = if down {
+                        scroll.saturating_add(1)
+                    } else {
+                        scroll.saturating_sub(1)
+                    };
                 } else {
-                    scroll = scroll.saturating_add(1);
+                    selected = if down {
+                        selected
+                            .saturating_add(1)
+                            .min(entries.len().saturating_sub(1))
+                    } else {
+                        selected.saturating_sub(1)
+                    };
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if view == View::Pools {
-                    selected = selected.saturating_sub(1);
-                    selected_identity = snapshot
-                        .as_ref()
-                        .and_then(|s| s.pools.get(selected))
-                        .map(|p| (p.pool_id.clone(), p.incarnation_id.clone()));
-                } else if view == View::Setup {
-                    setup_selected = setup_selected.saturating_sub(1);
-                } else if view == View::Releases {
-                    release_selected = release_selected.saturating_sub(1);
-                } else if view == View::Operations {
-                    lifecycle_selected = lifecycle_selected.saturating_sub(1);
-                } else if view == View::Service {
-                    service_selected = service_selected.saturating_sub(1);
-                } else if view == View::DeviceSecurity {
-                    security_selected = security_selected.saturating_sub(1);
-                } else if view == View::ProducerHardening {
-                    producer_selected = producer_selected.saturating_sub(1);
-                } else if view == View::BackupHost {
-                    backup_selected = backup_selected.saturating_sub(1);
+            KeyCode::Enter if view == View::Overview => {
+                history.push(view);
+                view = if role == InstallationRole::Backup {
+                    View::Recipients
+                } else if overview_selected < 6 {
+                    [
+                        View::Releases,
+                        View::Setup,
+                        View::Host,
+                        View::Device,
+                        View::Device,
+                        View::Pools,
+                    ][overview_selected]
                 } else {
-                    scroll = scroll.saturating_sub(1);
+                    match status::next_step(snapshot.as_deref()) {
+                        status::NextStep::Setup => View::Setup,
+                        status::NextStep::Host => View::Host,
+                        status::NextStep::Pools => View::Pools,
+                        status::NextStep::Refresh => {
+                            if let Some(worker) = worker {
+                                worker.refresh();
+                            }
+                            history.pop();
+                            View::Overview
+                        }
+                    }
+                };
+            }
+            KeyCode::Enter if view == View::Pools && pool_index.is_some() => {
+                history.push(view);
+                view = View::Details;
+            }
+            KeyCode::Enter => {
+                if view == View::Details && pool_index.is_none() {
+                    continue;
                 }
+                let Some(entry) = entries.get(selected) else {
+                    continue;
+                };
+                if let Action::Open(next) = entry.action {
+                    evidence_origin = view;
+                    history.push(view);
+                    view = next;
+                    continue;
+                }
+                release_state.pause();
+                let target = if view == View::Details {
+                    selected_identity
+                        .as_ref()
+                        .map(|(p, i)| (p.as_str(), i.as_str()))
+                } else {
+                    None
+                };
+                let result = match entry.action {
+                    Action::Setup(index) => {
+                        setup::run(index, terminal, worker, role, socket, bundle).map(|()| None)
+                    }
+                    Action::Release(action) => release_action(
+                        action,
+                        terminal,
+                        worker,
+                        socket,
+                        bundle,
+                        &mut release_state,
+                        snapshot.as_deref(),
+                        role,
+                    ),
+                    Action::Lifecycle(index) => {
+                        lifecycle::run(index, terminal, worker, socket, target).map(|()| None)
+                    }
+                    Action::Service(index) => {
+                        service::run(index, terminal, worker, socket, &diagnostics).map(|()| None)
+                    }
+                    Action::Security(index) => {
+                        provisioning::run(index, terminal, worker, socket, bundle).map(|()| None)
+                    }
+                    Action::Producer(index) => {
+                        producer::run(index, terminal, worker, socket, bundle).map(|()| None)
+                    }
+                    Action::Backup(index) => {
+                        backup::run(index, terminal, worker, socket, bundle).map(|()| None)
+                    }
+                    Action::Uninstall => {
+                        uninstall::run(terminal, worker, socket, role, bundle).map(|()| None)
+                    }
+                    Action::Open(_) => unreachable!(),
+                };
+                match result {
+                    Ok(Some(path)) => return Ok(Exit::Reexec(path)),
+                    Ok(None) => {}
+                    Err(error) => {
+                        review(terminal, "Blocked / incomplete", vec![error.to_string(), "Recovery: Activity → original plan / receipt. Do not create a replacement retry.".into()], None)?;
+                    }
+                }
+                release_state.resume();
+                last_snapshot = None;
             }
             _ => {}
         }

@@ -314,7 +314,7 @@ pub(super) fn run(
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
     socket: &Path,
-    _selected: Option<&PathBuf>,
+    selected: Option<(&str, &str)>,
 ) -> io::Result<()> {
     let action = ACTIONS
         .get(action)
@@ -332,14 +332,19 @@ pub(super) fn run(
             },
         )?;
     }
-    let result = run_stopped(action, terminal, socket);
+    let result = run_stopped(action, terminal, socket, selected);
     if observing && terminal.terminal().is_ok() {
         *worker = Some(Worker::start(socket.to_owned(), None));
     }
     result
 }
 
-fn run_stopped(action: Action, terminal: &mut TerminalOwner, socket: &Path) -> io::Result<()> {
+fn run_stopped(
+    action: Action,
+    terminal: &mut TerminalOwner,
+    socket: &Path,
+    selected: Option<(&str, &str)>,
+) -> io::Result<()> {
     let cli = host::trusted_cli()?;
     if action == Action::Receipts {
         let Some(v) = public_fields(
@@ -485,7 +490,11 @@ fn run_stopped(action: Action, terminal: &mut TerminalOwner, socket: &Path) -> i
     );
     let mut fields = Vec::new();
     if targeted {
-        fields.extend([("Exact pool ID", ""), ("Exact incarnation ID", "")]);
+        let (pool, incarnation) = selected.unwrap_or(("", ""));
+        fields.extend([
+            ("Exact pool ID", pool),
+            ("Exact incarnation ID", incarnation),
+        ]);
     }
     if generation {
         fields.push(("Exact generation ID", ""));

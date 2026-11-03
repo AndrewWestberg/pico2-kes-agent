@@ -228,11 +228,11 @@ These US1–US3 checkpoints are historical observations of their respective deve
 
 ## Navigation and recovery
 
-Use Tab/Shift-Tab to change views and up/down to select actions, Enter to review and Esc to cancel. In **Setup**, select **Install authenticated host bundle**, **Factory-only firmware install / original record**, **Review/install explicit commissioning configuration**, **Start restricted commissioning service**, **Commission intended blank application**, **Stop restricted commissioning service**, and **Review/install explicit normal configuration and pin** as applicable. An interrupted first install uses **Reconcile original first install with attended blank-application evidence**, not a new transfer.
+Use 1–6 or Tab/Shift-Tab to change sections, arrows to select, Enter to review, `d` for evidence and Esc to cancel. **Software → Install authenticated bundle** installs host components. **Host → Continue setup** separates existing-device configuration from new blank-device setup. The blank path contains firmware installation, commissioning configuration/service/identity steps, and normal configuration/startup. An interrupted first install uses **Activity → Reconcile original first firmware install**, not a new transfer.
 
-**Operations** contains the lifecycle actions and **Discover and inspect original operation receipts** / **Reconcile an original receipt**. Original commissioning reconciliation uses the saved serial and restricted daemon authority even if committed and no normal pin exists; it does not require a second blank admission. Normal actions use normal pinned authority. Both use caller-bound expiring root admission and paired CLI peer PID/UID checks before bytes; changed authority requires a fresh review.
+**Pools → a (Actions)** contains enrollment, recipient installation and inventory. Selecting a pool opens its lifecycle actions with its identity prefilled. **Activity** contains **Discover and inspect original operation receipts** / **Reconcile an original receipt**. Original commissioning reconciliation uses the saved serial and restricted daemon authority even if committed and no normal pin exists; it does not require a second blank admission. Normal actions use normal pinned authority. Both use caller-bound expiring root admission and paired CLI peer PID/UID checks before bytes; changed authority requires a fresh review.
 
-**Releases** offers independent host component selection, firmware preview/update, original-plan inspection, original firmware reconciliation, compatible binary fallback and explicit re-exec. **Service** offers start/stop/restart, configuration review/edit, public diagnostics/export and original service/configuration reconciliation. **Device security** offers preview, individual stages, original-record reopen, admitted pre-OTP resume and read-only permission reconciliation. **Backup host** offers recipient creation, local restore and public-transfer guidance. **Producer hardening** offers installation or original-batch recovery; **Uninstall** asks `new` or `recover`.
+**Software** offers host component selection and explicit re-exec. **Device** offers firmware preview/update and **Security / OTP (advanced)**. **Host** offers service/configuration controls and producer memory policy. **Activity** contains diagnostics/export, original plans/receipts, firmware reconciliation and compatible binary fallback. Backup-role **Recipients** and **Restore** provide the isolated backup workflows. **Software → Uninstall managed components (advanced)** asks `new` or `recover`.
 
 ## Q1 — Bootstrap, reopen and absent/partial inventory
 
@@ -253,7 +253,7 @@ Expected: SC-001 inventory correctness, local overview ≤5 seconds, no unexpect
 
 ## Q2 — Guided prerequisites and setup
 
-In Setup, inspect exact packages/privileges/paths, decline once, then approve prerequisites using the supported OS package path. Inject one package-install failure; setup remains blocked with the failing command/tool and no bypass. Complete clean installation of selected manager/daemon/CLI/deployment files. Supply network/public pool inputs and host-policy declarations; missing/malformed/conflicting files must not replace working config or trigger node lookups.
+In Software → Install authenticated bundle, inspect exact packages/privileges/paths, decline once, then approve prerequisites using the supported OS package path. Inject one package-install failure; setup remains blocked with the failing command/tool and no bypass. Complete clean installation of selected manager/daemon/CLI/deployment files. Supply network/public pool inputs and host-policy declarations; missing/malformed/conflicting files must not replace working config or trigger node lookups.
 
 Review and cancel a configuration change, then accept a valid one. Independent existing validator:
 
@@ -300,9 +300,9 @@ Through the manager, on disposable identities:
 5. Cancel a staged discard and pool deletion; verify unchanged state. Then perform each with exact target confirmation and retained receipts; unrelated active/pool state remains intact.
 6. Rotate the public recipient; future artifacts bind the new recipient, older artifacts remain bound to the original private key.
 7. Exercise 64-pool capacity and rejected 65th enrollment without eviction.
-8. Terminate the manager after a mutation is submitted but before its outcome is displayed. Reopen Operations and reconcile the original receipt; never resubmit under a new identity.
+8. Terminate the manager after a mutation is submitted but before its outcome is displayed. Reopen Activity and reconcile the original receipt; never resubmit under a new identity.
 
-For an interrupted original commissioning, retain its reference/receipt and use **Operations → Reconcile an original receipt** with its original public output destination when needed. The restricted daemon must correspond to the saved serial; do not demand blank state or a normal pin for this recovery and do not submit a new commission.
+For an interrupted original commissioning, retain its reference/receipt and use **Activity → Reconcile an original receipt** with its original public output destination when needed. The restricted daemon must correspond to the saved serial; do not demand blank state or a normal pin for this recovery and do not submit a new commission.
 
 Existing independent reconciliation command, with `RECEIPT` set to the original file:
 
@@ -330,7 +330,7 @@ Offline maintenance still verifies authority/integrity/compatibility; missing ve
 
 ## Q6 — Attended firmware upgrade, downgrade and interruption
 
-Use signed compatible firmware admitted through the candidate/qualified distribution rules, with all separately required hardware/tool/image qualification and complete pre-state. From Releases, review the exact pinned device, firmware build, affected pools and disruption; approve daemon shutdown. Follow the trusted foreground tool's physical BOOTSEL/destination instructions. Do not pick a mount solely by label or USB address. A second/ambiguous board must block guessing. This existing-installation path never substitutes unpinned first-install admission.
+Use signed compatible firmware admitted through the candidate/qualified distribution rules, with all separately required hardware/tool/image qualification and complete pre-state. From Device → Update firmware, review the exact pinned device, firmware build, affected pools and disruption; approve daemon shutdown. Follow the trusted foreground tool's physical BOOTSEL/destination instructions. Do not pick a mount solely by label or USB address. A second/ambiguous board must block guessing. This existing-installation path never substitutes unpinned first-install admission.
 
 After transfer/flush, manager reconnects through the daemon and verifies selected live build, unchanged pin, retained memberships/recipient and allowed generation/period transitions. A file copy alone must leave validation pending. Repeat compatible downgrade; select an incompatible storage/boot-key profile and verify rejection.
 
@@ -366,17 +366,17 @@ Expected: no daemon/device/node contact, no key import, no changed certificate l
 
 ## Q9 — Service, diagnostics and uninstall
 
-Through Service, start/stop/restart the managed daemon with reviewed disruption/privileges. Inject invalid configuration; working config remains intact and failed start is not healthy. Service running, device connected and pool ready remain distinct. Diagnostics show useful public identities/errors without secret/raw traffic.
+Through Host, start/stop/restart the managed daemon with reviewed disruption/privileges. Inject invalid configuration; working config remains intact and failed start is not healthy. Service running, device connected and pool ready remain distinct. Diagnostics show useful public identities/errors without secret/raw traffic.
 
-Inspect **Service → Inspect bounded public diagnostic history** and export through **Export public diagnostics to a new protected file** to an absolute protected path. Verify mode 0600 and refusal of an existing destination; public identities and paths may still be sensitive. For interrupted service work use **Reconcile original service/configuration outcome without replay**; pending systemd jobs block, and the same active `InvocationID` does not establish a restart.
+Inspect **Activity → Inspect bounded public diagnostic history** and export through **Export public diagnostics to a new protected file** to an absolute protected path. Verify mode 0600 and refusal of an existing destination; public identities and paths may still be sensitive. For interrupted service work use **Reconcile original service/configuration outcome without replay**; pending systemd jobs block, and the same active `InvocationID` does not establish a restart.
 
-Select uninstall and cancel once, then confirm only manager-owned components. Modified/external paths are not silently removed. Inspect retained config, journal, receipts, public identities, maintenance records, service user/group, producer drop-ins and device state. No producer restart occurs. Remaining data are listed, and uninstall is not presented as erasure or revocation.
+Select Software → Uninstall managed components (advanced) and cancel once, then confirm only manager-owned components. Modified/external paths are not silently removed. Inspect retained config, journal, receipts, public identities, maintenance records, service user/group, producer drop-ins and device state. No producer restart occurs. Remaining data are listed, and uninstall is not presented as erasure or revocation.
 
 Review the selected inventory digest including registered files/links, not only registry bytes. On a disposable interrupted removal choose **Uninstall → recover**, supply the original operation ID and plan digest, review fresh readback and cancel once; approved recovery refuses changed evidence and does not stop services. After completed full removal verify retained registry provenance/source cache and the other listed state; initial Install may restore the exact prior single-bundle tuple, not silently reinterpret mixed tuples. Do not call removal secure erasure or revocation.
 
 ## Q10 — Actual terminal and operator acceptance
 
-Exercise Q1–Q9 and Q11 with keyboard-only navigation and `NO_COLOR=1`, including Service/configuration/diagnostics/Uninstall, Producer hardening and backup/OTP selection, confirmation and error screens—not only return from their children. Resize below/above minimum while selecting and reviewing; confirm text identifies targets, state and failures without color. Record per-flow results, including declined/deferred actions and safe cancellation. Reuse qualifying manual scenario runs and schedule irreversible OTP stages once on their eligible target; never replay writes merely to repeat an accessibility check. Return from failed/cancelled/complete foreground handoffs with echo/cursor/raw mode restored and no passphrase in UI history/diagnostics. Nonterminal manager/bootstrap input must not cause unattended mutation.
+Exercise Q1–Q9 and Q11 with keyboard-only navigation and `NO_COLOR=1`, including Host/configuration, Activity/diagnostics, Software/Uninstall, Producer memory policy and backup/OTP selection, confirmation and error screens—not only return from their children. Resize below/above minimum while selecting and reviewing; confirm text identifies targets, state and failures without color. Record per-flow results, including declined/deferred actions and safe cancellation. Reuse qualifying manual scenario runs and schedule irreversible OTP stages once on their eligible target; never replay writes merely to repeat an accessibility check. Return from failed/cancelled/complete foreground handoffs with echo/cursor/raw mode restored and no passphrase in UI history/diagnostics. Nonterminal manager/bootstrap input must not cause unattended mutation.
 
 Evaluate the fixed cohort under [SC-003](spec.md#measurable-outcomes), recording each participant's result for each of the three actions and whether at least four distinct participants complete all three. Supplementary runs do not alter the cohort or its results. No production secret recording or node integration checks are needed.
 
