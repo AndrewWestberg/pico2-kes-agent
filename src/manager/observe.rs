@@ -330,8 +330,8 @@ fn platform_support(release: &str, arch: &str) -> String {
     };
     let id = field("ID=");
     let version = field("VERSION_ID=");
-    let selected =
-        arch == "x86_64" && matches!((id, version), ("debian", "12") | ("ubuntu", "24.04"));
+    let selected = arch == "x86_64"
+        && matches!((id, version), ("debian", "12") | ("ubuntu", "24.04") | ("ubuntu", "26.04"));
     format!(
         "{id} {version} / {arch}: {}",
         if selected {

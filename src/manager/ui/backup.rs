@@ -228,8 +228,8 @@ fn privileged_admission(terminal: &mut TerminalOwner, socket: &Path) -> io::Resu
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
-        let mut command = Command::new("/usr/bin/pkexec");
-        command.arg(executable);
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("--").arg(executable);
         command
     };
     command.arg("host-backup-admit").arg("--socket").arg(socket);

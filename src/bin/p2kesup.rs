@@ -91,23 +91,9 @@ fn run(args: Vec<OsString>) -> i32 {
         {
             return invalid();
         }
-        let caller = match std::env::var("PKEXEC_UID") {
-            Ok(value) => match value.parse::<u32>() {
-                Ok(uid) => uid,
-                Err(_) => {
-                    return host_result(Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "invalid privilege caller identity",
-                    )));
-                }
-            },
-            Err(std::env::VarError::NotPresent) => rustix::process::getuid().as_raw(),
-            Err(_) => {
-                return host_result(Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "invalid privilege caller identity",
-                )));
-            }
+        let caller = match caller_identity(std::env::var("SUDO_UID"), rustix::process::getuid().as_raw()) {
+            Ok(uid) => uid,
+            Err(error) => return host_result(Err(error)),
         };
         return host_result(pico2_kes_agent::manager::lifecycle::admit(
             args[2].to_str().unwrap(),
@@ -232,6 +218,20 @@ fn run(args: Vec<OsString>) -> i32 {
     ui::run(role, socket, bundle)
 }
 
+fn caller_identity(value: Result<String, std::env::VarError>, direct_uid: u32) -> io::Result<u32> {
+    match value {
+        Ok(value) => value.parse().map_err(|_| io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid privilege caller identity",
+        )),
+        Err(std::env::VarError::NotPresent) => Ok(direct_uid),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "invalid privilege caller identity",
+        )),
+    }
+}
+
 fn invalid() -> i32 {
     eprintln!("{USAGE}");
     cli::EXIT_INVOCATION
@@ -250,6 +250,25 @@ fn host_result(result: io::Result<()>) -> i32 {
             } else {
                 cli::EXIT_FAILURE
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caller_identity;
+    use std::{env::VarError, ffi::OsString, io, os::unix::ffi::OsStringExt};
+
+    #[test]
+    fn lifecycle_caller_identity_uses_sudo_uid_and_rejects_invalid_values() {
+        assert_eq!(caller_identity(Ok("1234".into()), 0).unwrap(), 1234);
+        assert_eq!(caller_identity(Err(VarError::NotPresent), 0).unwrap(), 0);
+        for value in [
+            Ok("invalid".into()),
+            Ok("4294967296".into()),
+            Err(VarError::NotUnicode(OsString::from_vec(vec![0xff]))),
+        ] {
+            assert_eq!(caller_identity(value, 0).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
         }
     }
 }

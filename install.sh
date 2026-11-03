@@ -33,29 +33,30 @@ exec 3<>/dev/tty
 [ "$(uname -m)" = x86_64 ] && [ -d /run/systemd/system ] || { echo 'Unsupported host: x86-64 and systemd required.' >&2; exit 4; }
 [ -r /etc/os-release ] || { echo 'Unsupported operating system.' >&2; exit 4; }
 . /etc/os-release
-case "${ID:-}:${VERSION_ID:-}" in debian:12|ubuntu:24.04) ;; *) echo 'Unsupported operating system.' >&2; exit 4 ;; esac
+case "${ID:-}:${VERSION_ID:-}" in debian:12|ubuntu:24.04|ubuntu:26.04) ;; *) echo 'Unsupported operating system.' >&2; exit 4 ;; esac
 libc=$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null) || { echo 'Unsupported libc.' >&2; exit 4; }
 case "$libc" in glibc\ 2.*) minor=${libc#glibc 2.}; case "$minor" in *[!0-9]*|'') echo 'Unsupported libc.' >&2; exit 4 ;; esac; [ "$minor" -ge 36 ] || { echo 'glibc 2.36 or later required.' >&2; exit 4; } ;; *) echo 'Unsupported libc.' >&2; exit 4 ;; esac
 [ -x /usr/bin/apt-get ] && [ -x /usr/bin/dpkg-query ] || { echo 'Trusted apt is required.' >&2; exit 4; }
+if [ "$(id -u)" -ne 0 ] && [ ! -x /usr/bin/sudo ]; then
+    echo 'sudo is required for non-root installation. Install sudo as root, then retry from a terminal, or run the installer as root in a terminal.' >&2
+    exit 4
+fi
 missing=
-for pair in python3:python3 gpg:gnupg gpgv:gpgv openssl:openssl pkexec:pkexec readelf:binutils; do
+for pair in python3:python3 gpg:gnupg gpgv:gpgv openssl:openssl sudo:sudo readelf:binutils; do
     tool=${pair%%:*}; package=${pair#*:}
     [ -x "/usr/bin/$tool" ] || missing="$missing $package"
 done
 [ -n "$bundle" ] || [ -s /etc/ssl/certs/ca-certificates.crt ] || missing="$missing ca-certificates"
 if [ -n "$missing" ]; then
     if [ "$(id -u)" -eq 0 ]; then elevate=none
-    elif [ -x /usr/bin/sudo ]; then elevate=sudo
-    elif [ -x /usr/bin/pkexec ]; then elevate=pkexec
-    else echo 'Root, sudo, or pkexec is required to install prerequisites.' >&2; exit 4
+    else elevate=sudo
     fi
     printf 'Refresh trusted OS package indexes before resolving missing packages:%s\nType REFRESH to approve apt-get update: ' "$missing" >&3
     IFS= read -r choice <&3 || exit 3
     [ "$choice" = REFRESH ] || { echo 'Package-index refresh declined.' >&2; exit 3; }
     case "$elevate" in
         none) /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
-        sudo) /usr/bin/sudo /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
-        pkexec) /usr/bin/pkexec /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
+        sudo) /usr/bin/sudo -- /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
     esac || { echo 'Package-index refresh failed.' >&2; exit 4; }
     proposal=$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing) || { echo 'Prerequisite simulation failed.' >&2; exit 4; }
     printf 'Required bootstrap packages:%s\nExact apt simulation, including dependencies:\n%s\nType INSTALL to approve: ' "$missing" "$proposal" >&3
@@ -64,10 +65,9 @@ if [ -n "$missing" ]; then
     [ "$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing)" = "$proposal" ] || { echo 'Apt proposal changed; review again.' >&2; exit 4; }
     case "$elevate" in
         none) /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
-        sudo) /usr/bin/sudo /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
-        pkexec) /usr/bin/pkexec /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
+        sudo) /usr/bin/sudo -- /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
     esac || { echo 'Prerequisite installation failed.' >&2; exit 4; }
-    for tool in python3 gpg gpgv openssl pkexec readelf; do
+    for tool in python3 gpg gpgv openssl sudo readelf; do
         [ -x "/usr/bin/$tool" ] || { echo "Prerequisite $tool unavailable." >&2; exit 4; }
     done
     [ -n "$bundle" ] || [ -s /etc/ssl/certs/ca-certificates.crt ] || { echo 'TLS certificates unavailable.' >&2; exit 4; }
@@ -148,7 +148,7 @@ values={}
 for line in data.splitlines():
     if '=' in line:
         k,v=line.split('=',1); values[k]=v.strip('"')
-if (values.get('ID'),values.get('VERSION_ID')) not in (('debian','12'),('ubuntu','24.04')): raise SystemExit(1)
+if (values.get('ID'),values.get('VERSION_ID')) not in (('debian','12'),('ubuntu','24.04'),('ubuntu','26.04')): raise SystemExit(1)
 libc=ctypes.CDLL(None); libc.gnu_get_libc_version.restype=ctypes.c_char_p
 parts=libc.gnu_get_libc_version().decode('ascii').split('.')
 if len(parts)<2 or tuple(map(int,parts[:2]))<(2,36): raise SystemExit(1)
@@ -304,7 +304,7 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-preverify-') as temp:
     if len(binary)!=entries[0].get('size_bytes') or hashlib.sha256(binary).hexdigest()!=entries[0].get('sha256'): raise ValueError('manager digest mismatch')
 PY
 )" "$bundle" "$explicit" || { echo 'Bootstrap authentication failed before privilege handoff.' >&2; exit 4; }
-echo 'A polkit authentication agent is required. The privileged verifier will authenticate and protect the selected manager before it runs.' >&2
+echo 'The privileged verifier will authenticate and protect the selected manager before it runs.' >&2
 root_code="$verifier_code
 $(cat <<'PY'
 import ctypes, hashlib, json, os, re, stat, subprocess, sys, tempfile
@@ -347,7 +347,7 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
         if '=' in line:
             k,v=line.split('=',1); os_release[k]=v.strip('"')
     identity=(os_release.get('ID'),os_release.get('VERSION_ID'))
-    if identity not in (('debian','12'),('ubuntu','24.04')): fail('unsupported operating system')
+    if identity not in (('debian','12'),('ubuntu','24.04'),('ubuntu','26.04')): fail('unsupported operating system')
     libc=ctypes.CDLL(None); libc.gnu_get_libc_version.restype=ctypes.c_char_p
     version=libc.gnu_get_libc_version().decode('ascii').split('.')
     if len(version)<2 or tuple(map(int,version[:2]))<(2,36): fail('glibc 2.36 or later required')
@@ -393,7 +393,7 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
             subprocess.run(['/usr/bin/apt-get','install','--',*missing],env=apt_env,stdin=tty,stdout=tty,stderr=tty,check=True)
         for package in missing:
             if bounded_command(['/usr/bin/dpkg-query','-W','-f=${Status}',package]) != b'install ok installed': fail('prerequisite recheck failed')
-    for tool in ('/usr/bin/gpg','/usr/bin/gpgv','/usr/bin/openssl','/usr/bin/python3','/usr/bin/pkexec','/usr/bin/readelf'):
+    for tool in ('/usr/bin/gpg','/usr/bin/gpgv','/usr/bin/openssl','/usr/bin/python3','/usr/bin/sudo','/usr/bin/readelf'):
         if not os.path.isfile(tool) or not os.access(tool,os.X_OK): fail('required tool unavailable after installation')
     os.umask(0o022)
     parent=Path('/var/lib/p2kesup')
@@ -415,7 +415,7 @@ PY
 if [ "$(id -u)" -eq 0 ]; then
     manager=$(/usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version") || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
 else
-    manager=$(/usr/bin/pkexec /usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version" <&3) || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
+    manager=$(/usr/bin/sudo -- /usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version" <&3) || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
 fi
 echo 'Bootstrap authenticated. Starting the reviewed installation.' >&2
 if [ -n "${work:-}" ]; then keep_bundle=yes; fi

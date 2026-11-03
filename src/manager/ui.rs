@@ -67,8 +67,8 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
-        let mut command = Command::new("/usr/bin/pkexec");
-        command.arg(executable);
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("--").arg(executable);
         command
     };
     let status = command.arg("host-apply").arg("--plan").arg(&path).status()?;

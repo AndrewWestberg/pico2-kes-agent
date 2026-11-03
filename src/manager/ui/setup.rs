@@ -180,8 +180,8 @@ pub(super) fn apply(
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
-        let mut command = Command::new("/usr/bin/pkexec");
-        command.arg(executable);
+        let mut command = Command::new("/usr/bin/sudo");
+        command.arg("--").arg(executable);
         command
     };
     command.arg("host-apply").arg("--plan").arg(&path);
@@ -440,8 +440,8 @@ pub(super) fn run(
                 let mut command = if rustix::process::geteuid().is_root() {
                     Command::new(helper)
                 } else {
-                    let mut command = Command::new("/usr/bin/pkexec");
-                    command.arg(helper);
+                    let mut command = Command::new("/usr/bin/sudo");
+                    command.arg("--").arg(helper);
                     command
                 };
                 command.arg("host-admit").arg("--plan").arg(&values[4]);
@@ -509,8 +509,8 @@ pub(super) fn run(
             let mut command = if rustix::process::geteuid().is_root() {
                 Command::new(executable)
             } else {
-                let mut command = Command::new("/usr/bin/pkexec");
-                command.arg(executable);
+                let mut command = Command::new("/usr/bin/sudo");
+                command.arg("--").arg(executable);
                 command
             };
             command.arg("host-inspect").arg("--plan").arg(&path);

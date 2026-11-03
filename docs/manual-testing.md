@@ -9,11 +9,11 @@ Use this in order, stopping at the first unexpected result. It covers publishing
 | Location | What belongs there |
 |---|---|
 | Maintainer workstation | Trusted source checkout and Git/GitHub CLI for tagging and release review |
-| Disposable primary | Debian 12 or Ubuntu 24.04 **x86-64**, systemd/udev, attended terminal, sole attached test device, public inputs, encrypted artifacts and receipts |
+| Disposable primary | Debian 12, Ubuntu 24.04 or Ubuntu 26.04 **x86-64**, systemd/udev, attended terminal, sole attached test device, public inputs, encrypted artifacts and receipts |
 | Isolated backup host | Same supported installation platform; no primary configuration/state, daemon or device; recipient private material and restored test key |
 | Offline cold-key host | Disposable pool cold signing key, authoritative issuance counter, matching Cardano CLI; never transfer those private inputs to primary |
 
-The maintainer workstation is not required to be the primary. **Ubuntu 26.04 is rejected by the installer.** Use a fresh supported host rather than trying to adopt this checkout's old manual installation. Existing unregistered files, service accounts/groups and state can intentionally block a managed install. Do not remove them blindly.
+The maintainer workstation is not required to be the primary. **Ubuntu 26.04 is an installation target for releases containing the Ubuntu 26.04 support change.** RC.13 and earlier retain their original installer and signed-manifest restrictions: publish a new RC containing this change, then use that tag instead of the older examples below. Updating only the launcher cannot authorize an old bundle for a new OS. Existing unregistered files, service accounts/groups and state can still intentionally block a managed install; use a clean disposable host or a separately reviewed migration, not blind deletion/adoption.
 
 Before beginning, obtain:
 
@@ -118,7 +118,9 @@ The launcher is trusted from the project's HTTPS-hosted default branch. This ini
 curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh -s -- --version v0.1.0-rc.12
 ```
 
-Default installation without `--version` selects the latest qualified stable release, not this RC. Review the candidate status, exact tuple, dependencies, paths, privilege and service effects; approve only on the disposable host. The installer offers reviewed missing packages via the trusted OS apt channel. Declining or failed installation blocks the dependent action. Confirmations use `/dev/tty` despite the pipe; without an interactive terminal mutation must be refused. A working polkit authentication agent is required. Do not use a root TUI or pipe passwords.
+Default installation without `--version` selects the latest qualified stable release, not this RC. Review the candidate status, exact tuple, dependencies, paths, privilege and service effects; approve only on the disposable host. The installer offers reviewed missing packages via the trusted OS apt channel. Declining or failed installation blocks the dependent action. Confirmations use `/dev/tty` despite the pipe; without an interactive terminal mutation must be refused. Non-root privilege handoffs use `sudo` in that terminal, including over SSH with a terminal allocated; no GUI or polkit agent is required. The account needs sudo authorization. If sudo is absent, have an administrator install it or run the installer from a root terminal. Do not run the ordinary TUI as root or pipe passwords.
+
+Sudo may reuse its normal terminal authorization cache; expiry or site policy can require another terminal password prompt. Typed package, candidate and exact-plan approvals remain separate and mandatory. The manager suspends its TUI for authentication and resumes afterward; it does not capture passwords, enable askpass, alter sudoers or keep credentials alive. Select a new release containing this terminal-authentication change: replacing only the launcher does not change an older bundled manager's authentication behavior.
 
 The installer directly installs the persistent host command after approval; hardware setup is separate. Retain the displayed original operation/plan record for interruption recovery. Reopen the normal manager and check installed versions:
 
@@ -551,7 +553,7 @@ Manual testing is complete only for the paths actually exercised. Release accept
 
 | Symptom | Next action, without bypass |
 |---|---|
-| Unsupported OS/architecture | Move installation test to Debian 12/Ubuntu 24.04 x86-64; do not patch the support check |
+| Unsupported OS/architecture | Use Debian 12, Ubuntu 24.04 or Ubuntu 26.04 x86-64 with a release whose installer and signed manifest support that host; Ubuntu 26.04 requires a new release after RC.13. Do not patch downloaded assets or the support check |
 | Missing secret or signing failure | Review the exact job and existing authority capability; do not generate a replacement key |
 | Signature/hash/inventory mismatch | Preserve assets/error; obtain a newly authenticated complete candidate; never run the disputed code |
 | Candidate absent from discovery | Expected: select its exact `--version TAG`, or an optional offline `--bundle`, with deliberate candidate admission |
