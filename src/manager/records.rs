@@ -313,6 +313,88 @@ impl RecordStore {
         let _lock = self.lock()?;
         self.read(OsStr::new(&record_name(id)?)).map(|r| r.0)
     }
+    /// Lists host maintenance records read-only without creating directories or lock files.
+    pub fn list_host_readonly() -> io::Result<Vec<Record>> {
+        Self::list_readonly_at(Path::new("/var/lib/p2kesup/records"), 0, 0o750, 0o640)
+    }
+    /// Lists backup-local maintenance records read-only without creating directories or lock files.
+    pub fn list_backup_readonly() -> io::Result<Vec<Record>> {
+        let base = match std::env::var_os("XDG_STATE_HOME") {
+            Some(value) if !value.is_empty() => PathBuf::from(value),
+            _ => match std::env::var_os("HOME") {
+                Some(home) if !home.is_empty() => PathBuf::from(home).join(".local/state"),
+                _ => return Ok(Vec::new()),
+            },
+        };
+        let uid = unsafe { libc::geteuid() };
+        Self::list_readonly_at(&base.join("p2kesup/records"), uid, 0o700, 0o600)
+    }
+    pub(crate) fn list_readonly_at(
+        path: &Path,
+        owner: u32,
+        dir_mode: u32,
+        file_mode: u32,
+    ) -> io::Result<Vec<Record>> {
+        if !path.is_absolute() {
+            return Err(error(
+                io::ErrorKind::InvalidInput,
+                "record store path must be absolute",
+            ));
+        }
+        let mut dir = File::open("/")?;
+        let parts: Vec<_> = path
+            .components()
+            .filter(|c| *c != Component::RootDir)
+            .collect();
+        for (index, part) in parts.iter().enumerate() {
+            let Component::Normal(name) = part else {
+                return Err(error(
+                    io::ErrorKind::InvalidInput,
+                    "unsafe record store ancestry",
+                ));
+            };
+            let next = match open_at(&dir, name, libc::O_RDONLY | libc::O_DIRECTORY, 0) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(e) => return Err(e),
+            };
+            let m = next.metadata()?;
+            let last = index + 1 == parts.len();
+            if last {
+                if m.uid() != owner || m.mode() & 0o7777 != dir_mode {
+                    return Err(error(
+                        io::ErrorKind::PermissionDenied,
+                        "unsafe record directory ownership or mode",
+                    ));
+                }
+            } else if (m.uid() != 0 && m.uid() != owner)
+                || (m.mode() & 0o022 != 0 && !(m.uid() == 0 && m.mode() & 0o1000 != 0))
+            {
+                return Err(error(
+                    io::ErrorKind::PermissionDenied,
+                    "unsafe record directory ancestry",
+                ));
+            }
+            dir = next;
+        }
+        let group = dir.metadata()?.gid();
+        let store = Self {
+            dir,
+            owner,
+            group,
+            file_mode,
+        };
+        let mut records = Vec::new();
+        for name in store.entries()? {
+            if name.as_bytes().starts_with(b".tmp-") {
+                continue;
+            }
+            if let Ok((record, _)) = store.read(&name) {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
     fn usage(&self) -> io::Result<u64> {
         let mut total = 0u64;
         for name in self.entries()? {
@@ -562,6 +644,34 @@ mod tests {
         ));
         assert!(store.update(&record()).is_err());
         assert!(capacity(MAX_MAINTENANCE_STORE_BYTES, 0, 1).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn readonly_listing_does_not_create_missing_and_rejects_unsafe_modes() {
+        let missing = std::env::temp_dir().join(format!(
+            "p2kes-records-missing-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let uid = unsafe { libc::geteuid() };
+        assert!(
+            RecordStore::list_readonly_at(&missing, uid, 0o700, 0o600)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!missing.exists());
+
+        let (store, path) = store();
+        let original = record();
+        store.create(&original).unwrap();
+        let listed = RecordStore::list_readonly_at(&path, uid, 0o700, 0o600).unwrap();
+        assert_eq!(listed.len(), 1);
+
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o777))
+            .unwrap();
+        assert!(RecordStore::list_readonly_at(&path, uid, 0o700, 0o600).is_err());
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
         std::fs::remove_dir_all(path).unwrap();
     }
 }

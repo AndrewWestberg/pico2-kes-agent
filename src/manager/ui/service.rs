@@ -1,10 +1,15 @@
-use super::{foreground, public_fields, review, setup};
+use super::{
+    foreground, review, setup,
+    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
+};
 use crate::{
     files,
     manager::{
+        config_builder::{CommissioningSpec, build_commissioning_bytes},
         host::{self, HostAction, ServiceAction},
         observe::{Diagnostics, Worker},
         terminal::TerminalOwner,
+        workspace::{self, WorkspaceKind},
     },
 };
 use std::{
@@ -31,26 +36,62 @@ pub(super) const ACTIONS: &[(Action, &str)] = &[
     (Action::Restart, "Restart managed agent"),
     (
         Action::Configuration,
-        "Review/validate supplied configuration candidate",
+        "Build or install configuration candidate",
     ),
-    (Action::Edit, "Edit a new public configuration candidate"),
+    (
+        Action::Edit,
+        "Edit configuration candidate in /usr/bin/editor",
+    ),
     (
         Action::Diagnostics,
         "Inspect bounded public diagnostic history",
     ),
     (
         Action::Export,
-        "Export public diagnostics to a new protected file",
+        "Export public diagnostics to a protected file",
     ),
     (
         Action::Inspect,
-        "Inspect original host operation and actual state",
+        "Inspect original host plan and actual state",
     ),
     (
         Action::Reconcile,
-        "Reconcile original service/configuration outcome without replay",
+        "Reconcile original service/configuration record",
     ),
 ];
+
+pub(super) fn reconcile_record(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    operation_id: String,
+    original_plan_digest: String,
+) -> io::Result<()> {
+    let lines = vec![
+        format!("Original operation : {operation_id}"),
+        format!("Original plan SHA  : {original_plan_digest}"),
+        "The privileged helper will independently read current service/configuration state without replaying start/stop/restart or overwriting config."
+            .into(),
+    ];
+    if !review_mode(
+        terminal,
+        "Read-only host reconciliation",
+        lines,
+        ConfirmMode::Enter("stage read-only reconciliation plan"),
+    )? {
+        return Ok(());
+    }
+    setup::apply(
+        terminal,
+        worker,
+        socket,
+        HostAction::HostReconcile {
+            operation_id,
+            original_plan_digest,
+        },
+        None,
+    )
+}
 
 pub(super) fn run(
     index: usize,
@@ -71,14 +112,6 @@ pub(super) fn run(
                 _ => ServiceAction::Restart,
             };
             let expected_state = host::observed_service_state(false)?;
-            if !review(terminal, "Review managed service transition", vec![
-                format!("Requested: {operation:?}; unit: pico2-kes-agentd.service"),
-                format!("Reviewed service/file/PID identity: {expected_state}"),
-                "Administrative approval is required. Stop/restart interrupts delivery for every served pool; this never controls a producer service.".into(),
-                "Start/restart uses the unchanged installed unit and host-memory/preflight checks. Commissioning must be stopped. Invalid configuration or preflight failure is not healthy startup.".into(),
-                "Only service state and the selected running daemon executable are checked here; uptime is not device, pool-delivery, node-consumption or forging evidence.".into(),
-                "An interrupted operation retains its original host plan and public maintenance checkpoints; inspect those rather than assuming cancellation.".into(),
-            ], Some("APPLY AGENT SERVICE ACTION"))? { return Ok(()); }
             setup::apply(
                 terminal,
                 worker,
@@ -90,115 +123,158 @@ pub(super) fn run(
                 None,
             )
         }
-        Action::Configuration | Action::Edit => {
-            let edit = matches!(action, Action::Edit);
-            let Some(values) = public_fields(
+        Action::Configuration => {
+            let Some(candidate) = setup::guided_normal_candidate(terminal)? else {
+                return Ok(());
+            };
+            setup::configuration(terminal, worker, socket, false, candidate)
+        }
+        Action::Edit => {
+            let suggested =
+                workspace::next_path(WorkspaceKind::Candidates, "edited-config", "json")?
+                    .to_string_lossy()
+                    .into_owned();
+            let mode_opts = [
+                ("normal", "Validate edited file as normal pinned config"),
+                (
+                    "commissioning",
+                    "Validate edited file as commissioning config",
+                ),
+            ];
+            let specs = [
+                FieldSpec::text("New candidate config path", &suggested),
+                FieldSpec::select("Validation mode after editing", "normal", &mode_opts),
+            ];
+            let Some((candidate, commissioning)) = form_validated(
                 terminal,
-                "Public configuration candidate",
-                &[(
-                    if edit {
-                        "New absolute candidate path in your protected directory"
-                    } else {
-                        "Absolute supplied candidate path"
-                    },
-                    "",
-                )],
+                "Edit public configuration candidate",
+                &specs,
+                |values| {
+                    let p = PathBuf::from(values[0].trim());
+                    if !p.is_absolute() {
+                        return Err((Some(0), "Candidate path must be absolute".into()));
+                    }
+                    Ok((p, values[1] == "commissioning"))
+                },
             )?
             else {
                 return Ok(());
             };
-            let candidate = PathBuf::from(&values[0]);
-            if !candidate.is_absolute() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "candidate path must be absolute",
-                ));
-            }
-            if edit {
-                let (_, bytes) =
-                    crate::manager::setup::current_config_review()?.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::NotFound,
-                            "no working configuration; supply an explicit candidate through Setup",
-                        )
-                    })?;
-                let editor = Path::new("/usr/bin/editor");
-                host::trusted_ancestry(editor)?;
-                host::trusted_ancestry(&std::fs::canonicalize(editor)?)?;
-                if !review(terminal, "Edit public candidate only", vec![
-                    format!("Create owner-only, no-clobber copy: {}", candidate.display()),
-                    "The system editor runs unprivileged in the restored foreground terminal. Never enter private keys, passphrases or current KES traffic.".into(),
-                    "Working configuration is unchanged. The candidate remains for inspection if editing or later validation fails. Exact diff and service-identity validation precede replacement; restart is separate.".into(),
-                ], Some("CREATE PUBLIC CANDIDATE"))? { return Ok(()); }
-                files::publish_no_clobber(&candidate, &bytes, 0o600)?;
-                let status = foreground(
-                    terminal,
-                    worker,
-                    socket,
-                    Command::new(editor).arg("--").arg(&candidate),
-                    false,
-                )?;
-                if !status.success() {
-                    return Err(io::Error::other(format!(
-                        "editor exited {status}; candidate retained, working configuration unchanged"
-                    )));
+            let seed_bytes = match crate::manager::setup::current_config_review()? {
+                Some((_, bytes)) => bytes,
+                None => {
+                    let mut spec = CommissioningSpec::default();
+                    if spec.usb_serial.len() != 16 {
+                        spec.usb_serial = "0000000000000000".into();
+                    }
+                    build_commissioning_bytes(&spec)?
                 }
+            };
+            let editor = Path::new("/usr/bin/editor");
+            host::trusted_ancestry(editor)?;
+            host::trusted_ancestry(&std::fs::canonicalize(editor)?)?;
+            if !review_mode(
+                terminal,
+                "Open /usr/bin/editor on public candidate",
+                vec![
+                    format!("Candidate copy: {}", candidate.display()),
+                    "Working /etc/pico2-kes-agent/config.json is untouched while editing.".into(),
+                    "Never enter private keys or passphrases in configuration files.".into(),
+                ],
+                ConfirmMode::Enter("create candidate & open /usr/bin/editor"),
+            )? {
+                return Ok(());
             }
-            setup::configuration(terminal, worker, socket, false, candidate)
+            files::publish_no_clobber(&candidate, &seed_bytes, 0o600)?;
+            let status = foreground(
+                terminal,
+                worker,
+                socket,
+                Command::new(editor).arg("--").arg(&candidate),
+                false,
+            )?;
+            if !status.success() {
+                return Err(io::Error::other(format!(
+                    "editor exited {status}; candidate retained at {}, working configuration unchanged",
+                    candidate.display()
+                )));
+            }
+            setup::configuration(terminal, worker, socket, commissioning, candidate)
         }
         Action::Diagnostics => {
-            let mut lines = vec!["Bounded public observation history; no raw subprocess/socket streams. Application security reports are not independent attestation. No node connection/consumption/forging conclusion is implied.".into()];
+            let mut lines = vec![
+                "Bounded public observation history (application security reports are not hardware attestation):"
+                    .into(),
+                String::new(),
+            ];
             lines.extend(diagnostics.lines().map(str::to_owned));
             review(terminal, "Public diagnostics", lines, None).map(|_| ())
         }
         Action::Export => {
-            let Some(values) = public_fields(
-                terminal,
-                "Export public diagnostics",
-                &[("New absolute output in your protected directory", "")],
-            )?
+            let suggested = workspace::next_path(WorkspaceKind::Exports, "diagnostics", "txt")?
+                .to_string_lossy()
+                .into_owned();
+            let specs = [FieldSpec::text(
+                "New protected diagnostics output path (0600, no overwrite)",
+                &suggested,
+            )];
+            let Some(destination) =
+                form_validated(terminal, "Export public diagnostics", &specs, |values| {
+                    let p = PathBuf::from(values[0].trim());
+                    if !p.is_absolute() {
+                        return Err((Some(0), "Destination path must be absolute".into()));
+                    }
+                    Ok(p)
+                })?
             else {
                 return Ok(());
             };
-            let destination = Path::new(&values[0]);
-            if !review(terminal, "Review diagnostic export", vec![format!("Output: {}; owner-only mode 0600; no overwrite", destination.display()), "Only bounded, escaped public observation metadata is exported. Inspect before sharing; public identities and filesystem paths can still be sensitive operational information.".into()], Some("EXPORT PUBLIC DIAGNOSTICS"))? { return Ok(()); }
-            diagnostics.export(destination)?;
+            if !review_mode(
+                terminal,
+                "Review diagnostic export",
+                vec![
+                    format!("Output: {} (owner-only mode 0600)", destination.display()),
+                    "Only bounded, escaped public observation metadata is exported. Review paths and pool IDs before sharing externally."
+                        .into(),
+                ],
+                ConfirmMode::Enter("write diagnostic export"),
+            )? {
+                return Ok(());
+            }
+            diagnostics.export(&destination)?;
             review(
                 terminal,
                 "Diagnostic export published",
-                vec![destination.display().to_string()],
+                vec![format!("Exported to {}", destination.display())],
                 None,
             )
             .map(|_| ())
         }
         Action::Reconcile => {
-            let Some(values) = public_fields(
+            let specs = [
+                FieldSpec::text("Original maintenance operation ID (32 hex)", ""),
+                FieldSpec::text("Original approved plan digest (64 hex)", ""),
+            ];
+            let Some((op_id, digest)) = form_validated(
                 terminal,
                 "Original service/configuration operation",
-                &[
-                    ("Original maintenance operation ID", ""),
-                    ("Original approved plan digest", ""),
-                ],
+                &specs,
+                |values| {
+                    let op = values[0].trim();
+                    let dg = values[1].trim();
+                    if op.len() != 32 || !op.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err((Some(0), "Operation ID must be 32 hex characters".into()));
+                    }
+                    if dg.len() != 64 || !dg.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err((Some(1), "Plan digest must be 64 hex characters".into()));
+                    }
+                    Ok((op.to_owned(), dg.to_owned()))
+                },
             )?
             else {
                 return Ok(());
             };
-            if !review(terminal, "Read-only host reconciliation", vec![
-                format!("Original operation: {}; plan: {}", values[0], values[1]),
-                "The privileged helper will independently read current service/configuration evidence and ask for its exact digest before resolving this original record.".into(),
-                "No start, stop, restart or configuration replacement is replayed. Prior failure/uncertainty remains in history. Transitional, changed or inaccessible evidence stays unresolved.".into(),
-                "After a known failed outcome is retained, corrective work still requires a separate fresh review and approval.".into(),
-            ], Some("RECONCILE ORIGINAL HOST OPERATION"))? { return Ok(()); }
-            setup::apply(
-                terminal,
-                worker,
-                socket,
-                HostAction::HostReconcile {
-                    operation_id: values[0].clone(),
-                    original_plan_digest: values[1].clone(),
-                },
-                None,
-            )
+            reconcile_record(terminal, worker, socket, op_id, digest)
         }
         Action::Inspect => setup::run(
             1,

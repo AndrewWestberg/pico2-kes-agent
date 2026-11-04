@@ -1,11 +1,17 @@
-use super::{foreground, public_fields, review, setup};
+use super::{
+    foreground, review, setup,
+    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
+};
 use crate::manager::{
+    config_builder::candidate_usb_serial,
     host::{self, HostAction},
-    model::{InstallationRegistry, InstallationRole, Qualification},
+    model::{InstallationRegistry, InstallationRole, MaintenanceRecord, Qualification},
     observe::{Snapshot, Worker},
+    records::{Record, RecordStore},
     release::{self, Admission, VerifiedBundle},
     release_discovery::{self, Offer},
     terminal::TerminalOwner,
+    workspace::{self, WorkspaceKind},
 };
 use std::{
     collections::BTreeMap,
@@ -14,8 +20,9 @@ use std::{
     process::Command,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
+    TupleUpgrade,
     Browse,
     Refresh,
     Prerelease,
@@ -30,6 +37,7 @@ pub(super) enum Action {
     Remove,
 }
 pub(super) const PRIMARY_ACTIONS: &[Action] = &[
+    Action::TupleUpgrade,
     Action::Browse,
     Action::Refresh,
     Action::Prerelease,
@@ -44,6 +52,7 @@ pub(super) const PRIMARY_ACTIONS: &[Action] = &[
     Action::Remove,
 ];
 pub(super) const BACKUP_ACTIONS: &[Action] = &[
+    Action::TupleUpgrade,
     Action::Browse,
     Action::Refresh,
     Action::Prerelease,
@@ -57,18 +66,19 @@ pub(super) const BACKUP_ACTIONS: &[Action] = &[
 impl Action {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Browse => "Inspect authenticated release inventory and freshness",
+            Self::TupleUpgrade => "Upgrade or switch complete release tuple (recommended)",
+            Self::Browse => "Inspect authenticated release inventory & freshness",
             Self::Refresh => "Refresh qualified releases / reverify offline cache",
             Self::Prerelease => "Toggle signed prerelease opt-in (never candidates)",
             Self::Offline => "Toggle online / offline discovery",
-            Self::Select => "Review independent host component versions",
-            Self::FirmwarePreview => "Preview authenticated firmware transfer (no writes)",
-            Self::FirmwareUpdate => "Review attended pinned firmware update",
-            Self::Inspect => "Inspect original host plan (never replay)",
+            Self::Select => "Select independent host component versions (advanced)",
+            Self::FirmwarePreview => "Preview authenticated firmware transfer (read-only)",
+            Self::FirmwareUpdate => "Update pinned Pico 2 firmware only",
+            Self::Inspect => "Inspect original host plan (read-only)",
             Self::RecoverFirmware => "Reconcile original firmware update",
-            Self::Fallback => "Review original host update / compatible binary fallback",
-            Self::Reexec => "Explicitly re-exec installed manager",
-            Self::Remove => "Remove one cached release (keep operational records)",
+            Self::Fallback => "Recover original host update / compatible fallback",
+            Self::Reexec => "Re-exec installed p2kesup manager",
+            Self::Remove => "Remove cached release bundle (preserves records)",
         }
     }
 }
@@ -78,8 +88,8 @@ pub(super) struct State {
     pub status: String,
     cache: Option<PathBuf>,
     worker: Option<release_discovery::Worker>,
-    prerelease: bool,
-    online: bool,
+    pub(super) prerelease: bool,
+    pub(super) online: bool,
 }
 impl State {
     pub fn new() -> Self {
@@ -131,7 +141,9 @@ impl State {
         match result {
             Ok(result) => {
                 self.offers = result.offers;
-                self.status = result.notice.unwrap_or_else(|| "Discovery completed; cache age does not establish current revocation/latest status".into());
+                self.status = result.notice.unwrap_or_else(|| {
+                    "Discovery completed; cache age does not establish current revocation/latest status".into()
+                });
             }
             Err(error) => {
                 self.status = format!(
@@ -145,11 +157,15 @@ impl State {
         let mut lines = vec![
             self.status.clone(),
             format!(
-                "Network: {}; prerelease opt-in: {}; candidates are never discovered",
-                self.online, self.prerelease
+                "Mode: {}; prerelease opt-in: {}; candidates are never auto-discovered",
+                if self.online { "online" } else { "offline" },
+                self.prerelease
             ),
             Offer::PROVENANCE.into(),
         ];
+        if self.offers.is_empty() {
+            lines.push("No cached or discovered release offers.".into());
+        }
         for (index, offer) in self.offers.iter().enumerate() {
             lines.push(format!(
                 "{}: {} [{}] source={} age={}s manifest={} bundle={}",
@@ -173,25 +189,59 @@ impl State {
         self.refresh();
     }
     pub fn remove(&mut self, terminal: &mut TerminalOwner) -> io::Result<()> {
-        let mut lines = self.lines();
-        lines.push("Remove only a selected release-cache entry. Installed components, receipts and operational records remain.".into());
-        review(terminal, "Release-cache inventory", lines, None)?;
-        let Some(values) = public_fields(
-            terminal,
-            "Remove cached bundle",
-            &[("Exact cached manifest digest", "")],
-        )?
+        if self.offers.is_empty() {
+            review(
+                terminal,
+                "Remove cached release bundle",
+                vec![
+                    "No cached release bundles are currently discovered.".into(),
+                    "Refresh release inventory first if you expected cached bundles.".into(),
+                ],
+                None,
+            )?;
+            return Ok(());
+        }
+        let owned_opts: Vec<(String, String)> = self
+            .offers
+            .iter()
+            .map(|o| {
+                let d = o.selection.manifest_digest.to_string();
+                let desc = format!(
+                    "{} [{}] age={}s ({})",
+                    o.selection.tag,
+                    o.selection.channel,
+                    o.age().as_secs(),
+                    workspace::short_id(&d)
+                );
+                (d, desc)
+            })
+            .collect();
+        let select_opts: Vec<(&str, &str)> = owned_opts
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let specs = [FieldSpec::select(
+            "Cached release bundle to remove",
+            select_opts[0].0,
+            &select_opts,
+        )];
+        let Some(digest) = form_validated(terminal, "Remove cached release bundle", &specs, |v| {
+            Ok(v[0].trim().to_owned())
+        })?
         else {
             return Ok(());
         };
-        if !review(
+        if !review_mode(
             terminal,
             "Confirm cache removal",
             vec![
-                format!("Manifest {}", values[0]),
-                "Offline use of this bundle will require reacquiring authenticated bytes.".into(),
+                format!("Manifest SHA-256: {digest}"),
+                "Removes only this cached release entry. Installed binaries, configs, receipts, and maintenance records remain untouched."
+                    .into(),
+                "Offline installation/upgrade of this release will require reacquiring authenticated bundle bytes."
+                    .into(),
             ],
-            Some(&values[0]),
+            ConfirmMode::Enter("remove selected cached bundle"),
         )? {
             return Ok(());
         }
@@ -200,10 +250,10 @@ impl State {
             self.cache
                 .as_deref()
                 .ok_or_else(|| io::Error::other("release cache unavailable"))?,
-            &values[0],
+            &digest,
         )?;
         self.offers
-            .retain(|offer| offer.selection.manifest_digest.to_string() != values[0]);
+            .retain(|offer| offer.selection.manifest_digest.to_string() != digest);
         self.refresh();
         Ok(())
     }
@@ -219,6 +269,7 @@ fn absolute(value: &str) -> io::Result<PathBuf> {
     }
     Ok(path)
 }
+
 fn candidate_review(
     terminal: &mut TerminalOwner,
     path: &Path,
@@ -227,8 +278,21 @@ fn candidate_review(
     if launched.map(PathBuf::as_path) != Some(path) {
         return Ok(false);
     }
-    review(terminal, "Explicit disposable candidate acceptance", vec![format!("Only this launched local bundle may introduce candidate components: {}", path.display()), "Signature, exact tuple, persistent-state readability, hardware and independent postchecks remain mandatory. Candidate is not qualified.".into()], Some("DISPOSABLE CANDIDATE"))
+    review(
+        terminal,
+        "Explicit disposable candidate acceptance",
+        vec![
+            format!(
+                "Only this launched local bundle may introduce candidate components: {}",
+                path.display()
+            ),
+            "Signature, exact tuple, persistent-state readability, hardware, and independent postchecks remain mandatory. Candidate is not qualified."
+                .into(),
+        ],
+        Some("DISPOSABLE CANDIDATE"),
+    )
 }
+
 fn verified(path: &Path, candidate: bool) -> io::Result<VerifiedBundle> {
     release::verify_bundle(
         path,
@@ -240,21 +304,208 @@ fn verified(path: &Path, candidate: bool) -> io::Result<VerifiedBundle> {
     )
 }
 
+pub(super) fn tuple_upgrade(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    launched: Option<&PathBuf>,
+    state: &State,
+    role: InstallationRole,
+) -> io::Result<Option<PathBuf>> {
+    let store = RecordStore::open_host(crate::manager::setup::service_identity()?.1)?;
+    if store.list()?.iter().any(|record| match record {
+        Record::Supported(record) => !host::maintenance_outcome_allows_new_action(&record.outcome),
+        Record::Unknown(_) => true,
+    }) {
+        return Err(io::Error::other(
+            "unresolved maintenance record blocks upgrade; open Activity (6) to reconcile the original operation first",
+        ));
+    }
+    let (digest, registry, service, _) = host::update_review()?;
+    if registry.role != role {
+        return Err(io::Error::other(
+            "launch role differs from the managed installation role",
+        ));
+    }
+    host::verify_installed_ownership()?;
+
+    let mut owned_opts: Vec<(String, String)> = Vec::new();
+    if let Some(path) = launched {
+        let p = path.to_string_lossy().into_owned();
+        owned_opts.push((p.clone(), format!("Launched --bundle ({p})")));
+    }
+    for offer in &state.offers {
+        let p = offer.bundle.to_string_lossy().into_owned();
+        if !owned_opts.iter().any(|(k, _)| k == &p) {
+            owned_opts.push((
+                p,
+                format!(
+                    "{} [{}] ({}, age {}s)",
+                    offer.selection.tag,
+                    offer.selection.channel,
+                    offer.source,
+                    offer.age().as_secs()
+                ),
+            ));
+        }
+    }
+    owned_opts.push((
+        "custom".into(),
+        "Specify another local release bundle directory...".into(),
+    ));
+    let select_opts: Vec<(&str, &str)> = owned_opts
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let custom_default = launched.and_then(|p| p.to_str()).unwrap_or("");
+    let specs = [
+        FieldSpec::select("Release bundle source", select_opts[0].0, &select_opts),
+        FieldSpec::text_hint(
+            "Custom bundle directory (used only when source = custom)",
+            custom_default,
+            "Absolute path to unpacked signed release bundle",
+        ),
+    ];
+    let Some((bundle_path, allow_candidate)) =
+        form_validated(terminal, "Coordinated release tuple upgrade", &specs, |v| {
+            let chosen = if v[0] == "custom" {
+                v[1].trim()
+            } else {
+                v[0].trim()
+            };
+            let path = absolute(chosen).map_err(|e| (Some(1), e.to_string()))?;
+            let explicit = v[0] == "custom" || launched.is_some_and(|l| l == &path);
+            Ok((path, explicit))
+        })?
+    else {
+        return Ok(None);
+    };
+
+    let verified_bundle = release::verify_bundle(
+        &bundle_path,
+        if allow_candidate {
+            Admission::AttendedCandidate
+        } else {
+            Admission::Qualified
+        },
+    )?;
+    let current = registry
+        .current
+        .as_ref()
+        .ok_or_else(|| io::Error::other("installed selection unavailable"))?;
+    if host::same_selection(current, verified_bundle.selection()) {
+        review(
+            terminal,
+            "Release tuple already installed",
+            vec![
+                format!(
+                    "Managed {:?} installation is already on {}.",
+                    registry.role, current.tag
+                ),
+                "No host or firmware changes were staged.".into(),
+            ],
+            None,
+        )?;
+        return Ok(None);
+    }
+
+    upgrade_direct_with_worker(
+        terminal,
+        worker,
+        socket,
+        bundle_path,
+        verified_bundle,
+        digest,
+        registry,
+        service,
+    )?;
+
+    reexec(terminal)
+}
+
+pub(super) fn recover_upgrade_record(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    operation_id: &str,
+    plan_digest: &str,
+) -> io::Result<()> {
+    let mut action = host::review_upgrade_recovery(operation_id, plan_digest)?;
+    let HostAction::UpgradeRecovery {
+        temporary_validation,
+        ..
+    } = &mut action
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid upgrade recovery review",
+        ));
+    };
+    *temporary_validation = true;
+    let executable = host::trusted_upgrade_recovery_manager(operation_id, plan_digest)?;
+    resume_upgrade_with_worker(terminal, worker, socket, action, executable, operation_id)
+}
+
 pub(super) fn resume_upgrade_direct(
     terminal: &mut TerminalOwner,
     action: HostAction,
     executable: PathBuf,
     operation: &str,
 ) -> io::Result<()> {
+    let mut worker = None;
+    resume_upgrade_with_worker(
+        terminal,
+        &mut worker,
+        Path::new("/run/pico2-kes-agent/management.sock"),
+        action,
+        executable,
+        operation,
+    )
+}
+
+fn resume_upgrade_with_worker(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    action: HostAction,
+    executable: PathBuf,
+    operation: &str,
+) -> io::Result<()> {
     let plan = host::HostPlan::new(action)?;
-    let mut lines: Vec<String> = serde_json::to_string_pretty(&plan)
-        .map_err(io::Error::other)?.lines().map(str::to_owned).collect();
-    lines.push("Reconcile only the original operation, without reflashing or rolling back device state. A stopped service may be started temporarily for validation and will be restored to its original state.".into());
-    if !review(terminal, "Recover original upgrade", lines, Some(&format!("RECOVER {operation}")))? {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "recovery cancelled"));
+    let path = workspace::next_path(WorkspaceKind::Plans, "upgrade-recovery-plan", "json")?;
+    let mut lines = vec![
+        format!("Original operation : {operation}"),
+        format!("Recovery plan file : {}", path.display()),
+        format!("Plan SHA-256       : {}", plan.approved_digest),
+        String::new(),
+        "Reconciles only the original upgrade operation without reflashing or rolling back Pico 2 state."
+            .into(),
+        "A stopped service may be started temporarily for validation and will be restored to its original state."
+            .into(),
+        String::new(),
+    ];
+    lines.extend(
+        serde_json::to_string_pretty(&plan)
+            .map_err(io::Error::other)?
+            .lines()
+            .map(str::to_owned),
+    );
+    if !review_mode(
+        terminal,
+        "Recover original upgrade",
+        lines,
+        ConfirmMode::Enter("stage upgrade recovery plan & launch sudo host-apply"),
+    )? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "recovery cancelled",
+        ));
     }
-    let path = release_discovery::default_cache()?.join(format!("upgrade-recovery-plan-{}.json", plan.plan_id));
-    crate::files::publish_no_clobber(&path, &serde_json::to_vec(&plan).map_err(io::Error::other)?, 0o600)?;
+    crate::files::publish_no_clobber(
+        &path,
+        &serde_json::to_vec_pretty(&plan).map_err(io::Error::other)?,
+        0o600,
+    )?;
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
     } else {
@@ -263,10 +514,11 @@ pub(super) fn resume_upgrade_direct(
         command
     };
     command.arg("host-apply").arg("--plan").arg(&path);
-    let mut worker = None;
-    let status = foreground(terminal, &mut worker, Path::new("/run/pico2-kes-agent/management.sock"), &mut command, true)?;
+    let status = foreground(terminal, worker, socket, &mut command, true)?;
     if !status.success() {
-        return Err(io::Error::other(format!("recovery failed or remains uncertain ({status}); retain original operation {operation}")));
+        return Err(io::Error::other(format!(
+            "recovery failed or remains uncertain ({status}); retain original operation {operation}"
+        )));
     }
     Ok(())
 }
@@ -279,27 +531,71 @@ pub(super) fn upgrade_direct(
     registry: InstallationRegistry,
     service: Option<String>,
 ) -> io::Result<()> {
+    let mut worker = None;
+    upgrade_direct_with_worker(
+        terminal,
+        &mut worker,
+        Path::new("/run/pico2-kes-agent/management.sock"),
+        path,
+        bundle,
+        registry_digest,
+        registry,
+        service,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upgrade_direct_with_worker(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    path: PathBuf,
+    bundle: VerifiedBundle,
+    registry_digest: String,
+    registry: InstallationRegistry,
+    service: Option<String>,
+) -> io::Result<()> {
     let role = registry.role;
     let candidate = bundle.selection().qualification == Qualification::Candidate;
-    if candidate && !review(
-        terminal,
-        "Explicit candidate admission",
-        vec!["This signed candidate is not qualified. Proceed only on a disposable host; all state and hardware checks remain mandatory.".into()],
-        Some("DISPOSABLE CANDIDATE"),
-    )? {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "candidate not accepted"));
+    if candidate
+        && !review(
+            terminal,
+            "Explicit candidate admission",
+            vec![
+                "This signed candidate is not qualified. Proceed only on a disposable host; all state and hardware checks remain mandatory."
+                    .into(),
+            ],
+            Some("DISPOSABLE CANDIDATE"),
+        )?
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "candidate not accepted",
+        ));
     }
-    let socket = Path::new("/run/pico2-kes-agent/management.sock");
-    let mut worker = None;
     let preview = if role == InstallationRole::Primary {
-        Some(capture_firmware_review(
-            terminal, &mut worker, socket,
-            service.as_deref().ok_or_else(|| io::Error::other("service observation unavailable"))?,
-        )?.ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "pre-state review cancelled"))?)
+        Some(
+            capture_firmware_review(
+                terminal,
+                worker,
+                socket,
+                service
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("service observation unavailable"))?,
+            )?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "pre-state review cancelled",
+                )
+            })?,
+        )
     } else {
         None
     };
-    let temporary_validation = preview.as_ref().is_some_and(|p| !p.service_state.starts_with("state=active;"));
+    let temporary_validation = preview
+        .as_ref()
+        .is_some_and(|p| !p.service_state.starts_with("state=active;"));
     let record = if preview.is_some() {
         Some(Path::new("/var/lib/p2kesup/firmware").join(format!("{}.json", new_id()?)))
     } else {
@@ -310,7 +606,10 @@ pub(super) fn upgrade_direct(
         manifest_digest: bundle.selection().manifest_digest.to_string(),
         candidate_accepted: candidate,
         expected_registry_digest: registry_digest,
-        expected_service_state: preview.as_ref().map(|p| p.service_state.clone()).or(service),
+        expected_service_state: preview
+            .as_ref()
+            .map(|p| p.service_state.clone())
+            .or(service),
         pre_state: preview.as_ref().map(|p| p.evidence.clone()),
         temporary_validation,
         serial: preview.as_ref().map(|p| p.serial.clone()),
@@ -319,26 +618,64 @@ pub(super) fn upgrade_direct(
         record,
     };
     let plan = host::HostPlan::new(action)?;
-    let cache = release_discovery::default_cache()?;
-    let plan_path = cache.join(format!("upgrade-plan-{}.json", plan.plan_id));
-    let current = registry.current.as_ref().ok_or_else(|| io::Error::other("installed selection unavailable"))?;
+    let plan_path = workspace::next_path(WorkspaceKind::Plans, "upgrade-plan", "json")?;
+    let current = registry
+        .current
+        .as_ref()
+        .ok_or_else(|| io::Error::other("installed selection unavailable"))?;
     let mut lines = vec![
-        format!("Installed release: {}", current.tag),
-        format!("Selected release: {} ({:?}); source {}", bundle.selection().tag, bundle.selection().qualification, bundle.selection().source_commit),
-        format!("Installation role: {role:?}"),
+        format!("Installed release : {}", current.tag),
+        format!(
+            "Selected release  : {} ({:?}); source {}",
+            bundle.selection().tag,
+            bundle.selection().qualification,
+            bundle.selection().source_commit
+        ),
+        format!("Installation role : {role:?}"),
+        format!("Retained plan     : {}", plan_path.display()),
+        format!("Plan SHA-256      : {}", plan.approved_digest),
+        String::new(),
+        "Component transitions:".into(),
     ];
     for next in &bundle.selection().components {
-        let previous = current.components.iter().find(|c| c.component == next.component)
+        let previous = current
+            .components
+            .iter()
+            .find(|c| c.component == next.component)
             .ok_or_else(|| io::Error::other("installed component missing"))?;
-        lines.push(format!("{}: {} -> {}", next.component, previous.version, next.version));
+        lines.push(format!(
+            "  {:<12}: {} -> {}",
+            next.component, previous.version, next.version
+        ));
     }
-    lines.extend(serde_json::to_string_pretty(&plan).map_err(io::Error::other)?.lines().map(str::to_owned));
-    lines.push("The complete signed tuple is installed together. Physical firmware transfer is attended; interrupted operations retain their original record. Device state is never rolled back.".into());
-    lines.push(format!("Original plan: {}. If interrupted, use p2kesup upgrade --resume with this path.", plan_path.display()));
-    if !review(terminal, "Review complete upgrade", lines, Some("UPGRADE"))? {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "upgrade cancelled"));
+    lines.push(String::new());
+    lines.push(
+        "The complete signed tuple is installed together. Physical firmware transfer is attended; interrupted operations retain their original record in Activity (6) or via p2kesup upgrade --resume."
+            .into(),
+    );
+    lines.push(String::new());
+    lines.extend(
+        serde_json::to_string_pretty(&plan)
+            .map_err(io::Error::other)?
+            .lines()
+            .map(str::to_owned),
+    );
+    if !review_mode(
+        terminal,
+        "Review complete tuple upgrade",
+        lines,
+        ConfirmMode::Enter("stage upgrade plan & launch sudo host-apply"),
+    )? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "upgrade cancelled",
+        ));
     }
-    crate::files::publish_no_clobber(&plan_path, &serde_json::to_vec(&plan).map_err(io::Error::other)?, 0o600)?;
+    crate::files::publish_no_clobber(
+        &plan_path,
+        &serde_json::to_vec_pretty(&plan).map_err(io::Error::other)?,
+        0o600,
+    )?;
     let executable = host::trusted_manager()?;
     let mut command = if rustix::process::geteuid().is_root() {
         Command::new(executable)
@@ -348,9 +685,12 @@ pub(super) fn upgrade_direct(
         command
     };
     command.arg("host-apply").arg("--plan").arg(&plan_path);
-    let status = foreground(terminal, &mut worker, socket, &mut command, true)?;
+    let status = foreground(terminal, worker, socket, &mut command, true)?;
     if !status.success() {
-        return Err(io::Error::other(format!("upgrade failed or was interrupted ({status}); retain original plan {}", plan_path.display())));
+        return Err(io::Error::other(format!(
+            "upgrade failed or was interrupted ({status}); reconcile in Activity (6) or retain original plan {}",
+            plan_path.display()
+        )));
     }
     Ok(())
 }
@@ -379,35 +719,32 @@ pub(super) fn component_update(
         .or_else(|| state.offers.first().map(|offer| offer.bundle.as_path()))
         .and_then(Path::to_str)
         .unwrap_or("");
-    review(
+    let specs = [
+        FieldSpec::text("Authorizing bundle directory", default),
+        FieldSpec::text_hint(
+            "Additional source bundle directories (semicolon-separated, optional)",
+            "",
+            "Installed retained sources are included automatically",
+        ),
+    ];
+    let Some((authorizing_path, extra_paths)) = form_validated(
         terminal,
-        "Authenticated release inventory",
-        state.lines(),
-        None,
-    )?;
-    let Some(values) = public_fields(
-        terminal,
-        "Select signed compatibility authority and sources",
-        &[
-            ("Authorizing bundle directory", default),
-            (
-                "Additional absolute source directories, separated by semicolons (optional)",
-                "",
-            ),
-        ],
+        "Select signed compatibility authority & sources",
+        &specs,
+        |v| {
+            let auth = absolute(v[0].trim()).map_err(|e| (Some(0), e.to_string()))?;
+            let mut extras = Vec::new();
+            for item in v[1].split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                extras.push(absolute(item).map_err(|e| (Some(1), e.to_string()))?);
+            }
+            Ok((auth, extras))
+        },
     )?
     else {
         return Ok(());
     };
-    let authorizing_path = absolute(&values[0])?;
     let mut paths = vec![authorizing_path.clone()];
-    for path in retained.into_iter().chain(
-        values[1]
-            .split(';')
-            .filter(|value| !value.is_empty())
-            .map(absolute)
-            .collect::<io::Result<Vec<_>>>()?,
-    ) {
+    for path in retained.into_iter().chain(extra_paths) {
         if !paths.contains(&path) {
             paths.push(path);
         }
@@ -452,34 +789,39 @@ pub(super) fn component_update(
         source_paths.push(path);
         sources.push(source);
     }
-    let mut lines = vec!["Choose one source/version per component. Only an explicitly signed exact tuple is admissible; no semantic-version inference.".into()];
-    for (index, source) in sources.iter().enumerate() {
-        lines.push(format!(
-            "Source {}: {} {:?}, manifest {}",
-            index + 1,
-            source.selection().tag,
-            source.selection().qualification,
-            source.selection().manifest_digest
-        ));
-        for component in &source.selection().components {
-            lines.push(format!(
-                "  {} {} build={} inventory={} source={}",
-                component.component,
-                component.version,
-                component.build_id,
-                component.digest,
-                component.source_commit
-            ));
-        }
-    }
-    lines.push("An existing candidate component may only carry forward unchanged; changing candidate components requires the explicitly launched bundle.".into());
-    review(
-        terminal,
-        "Deliberate component source selection",
-        lines,
-        None,
-    )?;
+
     let names = ["manager", "daemon", "cli", "tool", "deployment"];
+    let source_choice_owned: Vec<Vec<(String, String)>> = names
+        .iter()
+        .map(|name| {
+            sources
+                .iter()
+                .enumerate()
+                .map(|(idx, src)| {
+                    let ver = src
+                        .selection()
+                        .components
+                        .iter()
+                        .find(|c| c.component == *name)
+                        .map_or("?", |c| c.version.as_str());
+                    (
+                        idx.to_string(),
+                        format!(
+                            "Source {}: {} ({} {:?})",
+                            idx + 1,
+                            ver,
+                            src.selection().tag,
+                            src.selection().qualification
+                        ),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let source_choice_refs: Vec<Vec<(&str, &str)>> = source_choice_owned
+        .iter()
+        .map(|opts| opts.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
+        .collect();
     let defaults: Vec<String> = names
         .iter()
         .map(|name| {
@@ -492,91 +834,133 @@ pub(super) fn component_update(
                         source.selection().manifest_digest == component.manifest_digest
                     })
                 })
-                .map_or_else(|| "1".into(), |index| (index + 1).to_string())
+                .unwrap_or(0)
+                .to_string()
         })
         .collect();
-    let labels: Vec<String> = names
+    let stop_opts = if registry.role == InstallationRole::Primary {
+        &[
+            (
+                "yes",
+                "Allow stopping/restarting pico2-kes-agentd if daemon/deployment changes",
+            ),
+            (
+                "no",
+                "Decline service stop (only non-disruptive changes can proceed)",
+            ),
+        ][..]
+    } else {
+        &[("no", "Backup role has no agent service")][..]
+    };
+    let mut comp_specs: Vec<FieldSpec<'_>> = names
         .iter()
-        .map(|name| format!("{name}: source number (1-{})", sources.len()))
+        .enumerate()
+        .map(|(i, name)| FieldSpec::select(name, &defaults[i], &source_choice_refs[i]))
         .collect();
-    let fields: Vec<(&str, &str)> = labels
-        .iter()
-        .zip(&defaults)
-        .map(|(label, default)| (label.as_str(), default.as_str()))
-        .collect();
-    let Some(values) = public_fields(terminal, "Select each component independently", &fields)?
+    comp_specs.push(FieldSpec::select(
+        "Daemon interruption policy",
+        stop_opts[0].0,
+        stop_opts,
+    ));
+
+    let Some((selection, stop_service)) = form_validated(
+        terminal,
+        "Select exact signed component tuple",
+        &comp_specs,
+        |values| {
+            let firmware = current
+                .components
+                .iter()
+                .find(|component| component.component == "firmware")
+                .ok_or_else(|| (None, "Installed firmware selection unavailable".into()))?;
+            let mut choices =
+                BTreeMap::from([("firmware".to_owned(), firmware.manifest_digest.to_string())]);
+            for (field_i, (name, value)) in names.iter().zip(&values[..names.len()]).enumerate() {
+                let index = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|index| *index < sources.len())
+                    .ok_or_else(|| (Some(field_i), "Invalid source selection".into()))?;
+                let source = &sources[index];
+                let component = source
+                    .selection()
+                    .components
+                    .iter()
+                    .find(|component| component.component == *name)
+                    .ok_or_else(|| (Some(field_i), "Source component missing".into()))?;
+                if source.selection().qualification == Qualification::Candidate
+                    && candidate_source.as_ref() != Some(&source_paths[index])
+                    && !current.components.iter().any(|old| {
+                        old.component == *name
+                            && old.digest == component.digest
+                            && old.manifest_digest == component.manifest_digest
+                    })
+                {
+                    return Err((
+                        Some(field_i),
+                        "New candidate component requires the explicitly accepted launched bundle"
+                            .into(),
+                    ));
+                }
+                choices.insert(
+                    (*name).to_owned(),
+                    source.selection().manifest_digest.to_string(),
+                );
+            }
+            let references: Vec<&VerifiedBundle> = sources.iter().collect();
+            let sel = release::select_components(&sources[0], &references, &choices)
+                .map_err(|e| (None, e.to_string()))?;
+            let stop = values[names.len()] == "yes" && registry.role == InstallationRole::Primary;
+            Ok((sel, stop))
+        },
+    )?
     else {
         return Ok(());
     };
-    let firmware = current
-        .components
-        .iter()
-        .find(|component| component.component == "firmware")
-        .ok_or_else(|| io::Error::other("installed firmware selection unavailable"))?;
-    let mut choices =
-        BTreeMap::from([("firmware".to_owned(), firmware.manifest_digest.to_string())]);
-    for (name, value) in names.iter().zip(values) {
-        let index = value
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .filter(|index| *index < sources.len())
-            .ok_or_else(|| io::Error::other("source number is outside the reviewed inventory"))?;
-        let source = &sources[index];
-        let component = source
-            .selection()
+
+    let mut lines = vec![
+        format!(
+            "Service before : {}",
+            service
+                .as_deref()
+                .unwrap_or("backup role: no agent service")
+        ),
+        format!("Allow stop     : {stop_service}"),
+        "Component tuple transitions (firmware unchanged):".into(),
+    ];
+    for next in &selection.components {
+        let prev = current
             .components
             .iter()
-            .find(|component| component.component == *name)
-            .ok_or_else(|| io::Error::other("source component missing"))?;
-        if source.selection().qualification == Qualification::Candidate
-            && candidate_source.as_ref() != Some(&source_paths[index])
-            && !current.components.iter().any(|old| {
-                old.component == *name
-                    && old.digest == component.digest
-                    && old.manifest_digest == component.manifest_digest
-            })
-        {
-            return Err(io::Error::other(
-                "new candidate component is not from the explicitly accepted launched bundle",
-            ));
-        }
-        choices.insert(
-            (*name).to_owned(),
-            source.selection().manifest_digest.to_string(),
-        );
+            .find(|c| c.component == next.component)
+            .map_or("?", |c| c.version.as_str());
+        lines.push(format!(
+            "  {:<12}: {} -> {}",
+            next.component, prev, next.version
+        ));
     }
-    let references: Vec<&VerifiedBundle> = sources.iter().collect();
-    let selection = release::select_components(&sources[0], &references, &choices)?;
-    let mut lines = vec![format!("Current selection: {}", serde_json::to_string(current).map_err(io::Error::other)?), format!("Selected exact tuple: {}", serde_json::to_string(&selection).map_err(io::Error::other)?), format!("Service before: {}", service.as_deref().unwrap_or("backup role: no agent service")), "Host changes preserve configuration, journals, receipts, pins and device storage. Firmware is unchanged; select it through the separate attended firmware workflow.".into(), "The old manager keeps running until an explicitly reviewed re-exec. Stopped services stay stopped.".into()];
+    lines.push(String::new());
+    lines.push(
+        "Host changes preserve configuration, journals, receipts, pins, and Pico 2 storage. The current p2kesup process continues running until you explicitly re-exec."
+            .into(),
+    );
     if let Some(snapshot) = snapshot {
         lines.push(format!(
-            "Affected managed service pools: membership {:?}, observation age {}s",
+            "Observed service pools ({:?}, age {}s): {}",
             snapshot.membership.state,
-            snapshot.captured_at.elapsed().as_secs()
+            snapshot.captured_at.elapsed().as_secs(),
+            snapshot.pools.len()
         ));
-        lines.extend(snapshot.pools.iter().map(|pool| {
-            format!(
-                "  {} / {} [{:?}]",
-                pool.pool_id, pool.incarnation_id, pool.observation.state
-            )
-        }));
-    } else {
-        lines.push("Pool impact is unavailable; any daemon interruption affects all pools served by it, not just a selected row.".into());
     }
-    if !review(
+    if !review_mode(
         terminal,
-        "Version-change impact and preservation",
+        "Review host component update",
         lines,
-        Some("REVIEW EXACT TUPLE"),
+        ConfirmMode::Enter("approve component tuple & continue"),
     )? {
         return Ok(());
     }
-    let stop_service = if registry.role == InstallationRole::Primary {
-        review(terminal, "Daemon interruption approval", vec!["Allow the helper to stop the managed daemon if selected daemon/deployment changes require it? A previously running service is restored only after checks; stopped stays stopped.".into(), "Cancel declines interruption; manager-only changes can still proceed without stopping the daemon.".into()], Some("ALLOW AGENT STOP"))?
-    } else {
-        false
-    };
+
     let disruptive = registry.role == InstallationRole::Primary
         && selection.components.iter().any(|component| {
             matches!(component.component.as_str(), "daemon" | "deployment")
@@ -625,12 +1009,21 @@ pub(super) fn component_update(
 pub(super) fn reexec(terminal: &mut TerminalOwner) -> io::Result<Option<PathBuf>> {
     let path = host::trusted_manager()?;
     let current = crate::build_info::identity("p2kesup");
-    let lines = vec![format!("Running manager: {} build={} source={}", current.version, current.build_id, current.source_commit), format!("Authenticated installed manager: {}", path.display()), "Close this terminal session's workers, restore terminal state, and replace this process with the installed manager. Role, socket and explicit bundle arguments are preserved; candidate approval is not carried into the new session.".into()];
-    Ok(review(
+    let lines = vec![
+        format!(
+            "Running manager process : {} (build={}, commit={})",
+            current.version, current.build_id, current.source_commit
+        ),
+        format!("Installed manager binary: {}", path.display()),
+        String::new(),
+        "Replaces this process with the authenticated installed p2kesup binary, preserving --role, --socket, and --bundle arguments."
+            .into(),
+    ];
+    Ok(review_mode(
         terminal,
-        "Explicit manager re-exec",
+        "Re-exec installed p2kesup manager",
         lines,
-        Some("REEXEC INSTALLED MANAGER"),
+        ConfirmMode::Enter("re-exec installed p2kesup now"),
     )?
     .then_some(path))
 }
@@ -651,18 +1044,36 @@ pub(super) fn firmware_preview(
     worker: &mut Option<Worker>,
     socket: &Path,
     launched: Option<&PathBuf>,
+    snapshot: Option<&Snapshot>,
 ) -> io::Result<()> {
     let Some((_, bundle, _)) = setup::bundle(terminal, launched)? else {
         return Ok(());
     };
-    let Some(values) = public_fields(
-        terminal,
-        "Firmware transfer preview only",
-        &[(
-            "Previously pinned application serial (16 lowercase hex)",
-            "",
-        )],
-    )?
+    let serial_hint = snapshot
+        .and_then(|s| s.device.value.as_ref())
+        .and_then(|d| d.get("usb_serial"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            snapshot
+                .and_then(|s| s.local.value.as_ref())
+                .and_then(|l| l.config_summary.value.as_ref())
+                .and_then(|c| c.usb_serial.clone())
+        })
+        .or_else(candidate_usb_serial)
+        .unwrap_or_default();
+    let specs = [FieldSpec::text_hint(
+        "Pinned application USB serial (16 ASCII characters)",
+        &serial_hint,
+        "Read-only preview; no flash writes or service changes",
+    )];
+    let Some(serial) = form_validated(terminal, "Firmware transfer preview", &specs, |values| {
+        let ser = values[0].trim();
+        if ser.len() != 16 || !ser.is_ascii() {
+            return Err((Some(0), "USB serial must be 16 ASCII characters".into()));
+        }
+        Ok(ser.to_owned())
+    })?
     else {
         return Ok(());
     };
@@ -675,7 +1086,7 @@ pub(super) fn firmware_preview(
         .arg("--bundle")
         .arg(bundle.root().join("firmware"))
         .arg("--serial")
-        .arg(&values[0])
+        .arg(&serial)
         .arg("--record")
         .arg(record)
         .env_clear()
@@ -685,7 +1096,15 @@ pub(super) fn firmware_preview(
         )
         .env("LD_LIBRARY_PATH", bundle.root().join("runtime"));
     let status = foreground(terminal, worker, socket, &mut command, true)?;
-    review(terminal, "Firmware preview result", vec![format!("Foreground preview exit: {status}"), "No transfer, service change or new firmware record was requested. A supplied serial is not proof of live pin/board identity; apply requires separate protected pre-state and physical attendance.".into()], None)?;
+    review(
+        terminal,
+        "Firmware preview result",
+        vec![
+            format!("Foreground preview exit: {status}"),
+            "No transfer, service change, or new firmware record was requested.".into(),
+        ],
+        None,
+    )?;
     Ok(())
 }
 
@@ -723,18 +1142,25 @@ fn capture_firmware_review(
     service: &str,
 ) -> io::Result<Option<host::FirmwareReview>> {
     let temporary = !service.starts_with("state=active;");
-    let mut lines = vec![format!("Observed managed service: {service}"), "Read complete pinned public pre-state through the sole authenticated daemon. No flash, lifecycle mutation or pin replacement is requested.".into()];
+    let mut lines = vec![
+        format!("Observed managed service: {service}"),
+        "Reads complete pinned public pre-state through the sole authenticated daemon (no flash, lifecycle mutation, or pin replacement)."
+            .into(),
+    ];
     if temporary {
-        lines.push("The service is stopped: explicitly permit temporary normal-service start for observation, then restore stopped state. Failure to restore remains an uncertain original record.".into());
+        lines.push(
+            "Service is currently stopped: this step temporarily starts the normal service for pre-state observation and restores its stopped state afterward."
+                .into(),
+        );
     }
-    if !review(
+    if !review_mode(
         terminal,
-        "Protected maintenance pre-state",
+        "Capture protected maintenance pre-state",
         lines,
-        Some(if temporary {
-            "TEMPORARY AGENT VALIDATION"
+        ConfirmMode::Enter(if temporary {
+            "permit temporary service start & capture pre-state"
         } else {
-            "READ PINNED PRESTATE"
+            "capture pinned pre-state via helper"
         }),
     )? {
         return Ok(None);
@@ -760,18 +1186,23 @@ fn capture_firmware_review(
     }
     let path = Path::new("/var/lib/p2kesup/reviews").join(format!("{id}.json"));
     let preview: host::FirmwareReview = root_json(&path)?;
-    let mut lines = vec![format!("Protected review: {}", path.display())];
+    let mut lines = vec![
+        format!("Protected review : {}", path.display()),
+        format!("Pinned device ID : {}", preview.device_id),
+        format!("Pinned serial    : {}", preview.serial),
+        String::new(),
+    ];
     lines.extend(
         serde_json::to_string_pretty(&preview)
             .map_err(io::Error::other)?
             .lines()
             .map(str::to_owned),
     );
-    if !review(
+    if !review_mode(
         terminal,
-        "Exact pinned maintenance pre-state",
+        "Verify observed pinned pre-state",
         lines,
-        Some(&preview.serial),
+        ConfirmMode::Enter("confirm observed device & pre-state"),
     )? {
         return Ok(None);
     }
@@ -837,7 +1268,7 @@ pub(super) fn firmware_update(
         .any(|component| component.component == "tool" && component.digest == selected_tool.digest)
     {
         return Err(io::Error::other(
-            "update the authenticated tool separately using an authorized intermediate tuple before firmware transfer",
+            "update the authenticated tool separately (or use Upgrade complete release tuple) before firmware-only transfer",
         ));
     }
     let Some(preview) = capture_firmware_review(
@@ -853,12 +1284,24 @@ pub(super) fn firmware_update(
     };
     let temporary_validation = !preview.service_state.starts_with("state=active;");
     let record = Path::new("/var/lib/p2kesup/firmware").join(format!("{}.json", new_id()?));
-    let lines = vec![format!("Target selection: {}", serde_json::to_string(&target_selection).map_err(io::Error::other)?), format!("Original transfer record: {}", record.display()), "Approve stopping the managed daemon and direct attended firmware-only transfer. Required hardware/tool/image qualification is checked by the foreground tool. No erase, OTP, re-pin or recommission.".into(), "Copy/flush is not completion: same pin, selected live build/storage and explained forward state are required. Interrupted work reopens its original record; never reflash under a new identity.".into(), format!("Restore prior service state: {}; temporary validation approved: {temporary_validation}", preview.service_state)];
-    if !review(
+    let lines = vec![
+        format!("Target release    : {}", target_selection.tag),
+        format!("Pinned USB serial : {}", preview.serial),
+        format!("Pinned device ID  : {}", preview.device_id),
+        format!("Transfer record   : {}", record.display()),
+        format!(
+            "Prior service     : {} (temporary validation={temporary_validation})",
+            preview.service_state
+        ),
+        String::new(),
+        "Stops pico2-kes-agentd for attended firmware-only transfer and verifies identical pin, live build, storage, and forward state afterward. Interrupted work reconciles in Activity (6)."
+            .into(),
+    ];
+    if !review_mode(
         terminal,
         "Attended existing-device firmware update",
         lines,
-        Some(&format!("UPDATE {}", preview.serial)),
+        ConfirmMode::Enter("approve firmware update & stage host plan"),
     )? {
         return Ok(());
     }
@@ -886,19 +1329,40 @@ pub(super) fn firmware_update(
 
 fn original_record(
     terminal: &mut TerminalOwner,
-) -> io::Result<Option<crate::manager::model::MaintenanceRecord>> {
-    let Some(values) = public_fields(
-        terminal,
-        "Reopen original maintenance",
-        &[("Original operation ID (32 lowercase hex)", "")],
-    )?
+    expected_action: &str,
+) -> io::Result<Option<MaintenanceRecord>> {
+    let hint = RecordStore::list_host_readonly()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| match r {
+            Record::Supported(rec) if rec.action == expected_action => Some(*rec),
+            _ => None,
+        })
+        .max_by_key(|r| {
+            (
+                !host::maintenance_outcome_allows_new_action(&r.outcome),
+                r.checkpoints.last().map_or(0, |c| c.observed_at_unix_us),
+            )
+        })
+        .map(|r| r.operation_id.to_string())
+        .unwrap_or_default();
+    let specs = [FieldSpec::text(
+        "Original operation ID (32 lowercase hex)",
+        &hint,
+    )];
+    let Some(id) = form_validated(terminal, "Reopen original maintenance", &specs, |values| {
+        kes_core::identity::OperationId::parse_hex(values[0].trim()).map_err(|_| {
+            (
+                Some(0),
+                "Operation ID must be 32 lowercase hex characters".into(),
+            )
+        })
+    })?
     else {
         return Ok(None);
     };
-    let id = kes_core::identity::OperationId::parse_hex(&values[0])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid operation ID"))?;
     let path = Path::new("/var/lib/p2kesup/records").join(format!("{id}.json"));
-    let record: crate::manager::model::MaintenanceRecord = root_json(&path)?;
+    let record: MaintenanceRecord = root_json(&path)?;
     crate::manager::model::require_supported_schema(record.schema_version)
         .map_err(io::Error::other)?;
     if record.operation_id != id {
@@ -917,39 +1381,66 @@ fn original_record(
     Ok(Some(record))
 }
 
-pub(super) fn recover_firmware(
+pub(super) fn recover_firmware_record(
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
     socket: &Path,
+    record: &MaintenanceRecord,
 ) -> io::Result<()> {
-    let Some(record) = original_record(terminal)? else {
-        return Ok(());
-    };
     if record.action != "firmware-update" {
         return Err(io::Error::other("original record is not a firmware update"));
     }
-    let Some(values) = public_fields(
+    let specs = [FieldSpec::text_hint(
+        "Accounted CLI receipt paths (semicolon-separated, optional)",
+        "",
+        "Include only if lifecycle mutations occurred after the firmware transfer",
+    )];
+    let Some(receipts) = form_validated(
         terminal,
         "Accounted lifecycle transitions",
-        &[(
-            "Original reconciliable receipt paths, separated by semicolons (optional)",
-            "",
-        )],
+        &specs,
+        |values| {
+            let mut list = Vec::new();
+            for item in values[0]
+                .split(';')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let p = absolute(item).map_err(|e| (Some(0), e.to_string()))?;
+                let input = crate::manager::setup::review_public_input(&p)
+                    .map_err(|e| (Some(0), e.to_string()))?;
+                list.push(input);
+            }
+            Ok(list)
+        },
     )?
     else {
         return Ok(());
     };
-    let receipts = values[0]
-        .split(';')
-        .filter(|value| !value.is_empty())
-        .map(|value| crate::manager::setup::review_public_input(&absolute(value)?))
-        .collect::<io::Result<Vec<_>>>()?;
     let expected_service_state = host::observed_service_state(false)?;
     let temporary_validation = needs_temporary_service(
         &expected_service_state,
         record.previous_service_state.as_deref(),
     );
-    if !review(terminal, "Original firmware recovery observation", vec![format!("Original {} plan {}", record.operation_id, record.plan_digest), format!("Service now: {expected_service_state}; original: {:?}", record.previous_service_state), format!("Temporary startup or restoration to original stopped state approved: {temporary_validation}"), "Reconcile only this original record using current pin/build/storage and accounted public forward transitions. Receipt outcomes are independently checked; missing context remains uncertain. No transfer, flash reset, re-pin, recommission or OTP.".into()], Some(&format!("RECONCILE {}", record.operation_id)))? { return Ok(()); }
+    if !review_mode(
+        terminal,
+        "Original firmware recovery observation",
+        vec![
+            format!("Original operation : {}", record.operation_id),
+            format!("Original plan SHA  : {}", record.plan_digest),
+            format!(
+                "Service now        : {expected_service_state} (original: {:?})",
+                record.previous_service_state
+            ),
+            format!("Temporary startup  : {temporary_validation}"),
+            String::new(),
+            "Reconciles only this original record using current pin/build/storage and accounted public forward transitions (no flash writes, reset, re-pin, or OTP)."
+                .into(),
+        ],
+        ConfirmMode::Enter("stage firmware recovery plan"),
+    )? {
+        return Ok(());
+    }
     setup::apply(
         terminal,
         worker,
@@ -965,14 +1456,23 @@ pub(super) fn recover_firmware(
     )
 }
 
-pub(super) fn fallback(
+pub(super) fn recover_firmware(
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
     socket: &Path,
 ) -> io::Result<()> {
-    let Some(record) = original_record(terminal)? else {
+    let Some(record) = original_record(terminal, "firmware-update")? else {
         return Ok(());
     };
+    recover_firmware_record(terminal, worker, socket, &record)
+}
+
+pub(super) fn recover_update_record(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    record: &MaintenanceRecord,
+) -> io::Result<()> {
     if record.action != "update" {
         return Err(io::Error::other("original record is not a host update"));
     }
@@ -988,13 +1488,60 @@ pub(super) fn fallback(
         ..
     } = &mut action
     {
-        *stop_service = review(terminal, "Original update recovery disruption", vec![format!("Service: {service}"), "Approve stopping the managed daemon only if an independently compatible binary fallback requires it. Missing current-data readability or incompatible state blocks fallback. No config, journal, period or flash snapshot is restored.".into()], Some("ALLOW RECOVERY STOP"))?;
-        if needs_temporary_service(service, record.previous_service_state.as_deref()) {
-            *temporary_validation = review(terminal, "Temporary original-operation validation", vec![format!("Current service: {service}; original: {:?}", record.previous_service_state), "Allow the original authenticated daemon to run temporarily through the finite recovery unit, then restore the original running/stopped state. This belongs to the original update, not a replacement operation.".into()], Some("ALLOW TEMPORARY RECOVERY"))?;
+        let need_temp = needs_temporary_service(service, record.previous_service_state.as_deref());
+        let yes_no = [
+            ("yes", "Approve if required for compatible recovery"),
+            ("no", "Decline"),
+        ];
+        let mut specs = vec![
+            FieldSpec::readonly("Current service state", service),
+            FieldSpec::select(
+                "Allow stopping pico2-kes-agentd for compatible binary fallback",
+                "yes",
+                &yes_no,
+            ),
+            FieldSpec::select(
+                "Restore release-owned deployment units/rules if changed",
+                "yes",
+                &yes_no,
+            ),
+        ];
+        if need_temp {
+            specs.push(FieldSpec::select(
+                "Allow temporary service run for validation",
+                "yes",
+                &yes_no,
+            ));
         }
-        *restore_deployment = review(terminal, "Restore authenticated release-owned deployment assets", vec!["If the original and selected deployment differ, restore only the authenticated prior /usr/lib/systemd/system/pico2-kes-agentd.service, /usr/libexec/pico2-kes-agent-host-check and /usr/lib/udev/rules.d/70-pico2-kes-agent.rules, with systemd/udev reloads.".into(), "Original or signed target bytes are required; unrelated or modified third-party bytes block recovery. Operator configuration, journals, identities and all device state remain untouched.".into()], Some("RESTORE RELEASE DEPLOYMENT"))?;
+        let Some(choices) =
+            form_validated(terminal, "Host update recovery options", &specs, |v| {
+                Ok((
+                    v[1] == "yes",
+                    v[2] == "yes",
+                    need_temp && v.get(3).is_some_and(|s| s == "yes"),
+                ))
+            })?
+        else {
+            return Ok(());
+        };
+        *stop_service = choices.0;
+        *restore_deployment = choices.1;
+        if need_temp {
+            *temporary_validation = choices.2;
+        }
     }
     setup::apply(terminal, worker, socket, action, None)
+}
+
+pub(super) fn fallback(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+) -> io::Result<()> {
+    let Some(record) = original_record(terminal, "update")? else {
+        return Ok(());
+    };
+    recover_update_record(terminal, worker, socket, &record)
 }
 
 fn needs_temporary_service(current: &str, original: Option<&str>) -> bool {

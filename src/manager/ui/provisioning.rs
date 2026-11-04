@@ -1,8 +1,10 @@
 use super::{
-    public_fields, review,
+    review,
     setup::{apply, bundle},
+    widgets::{FieldSpec, form_validated},
 };
 use crate::manager::{
+    config_builder::candidate_usb_serial,
     host::{self, HostAction},
     observe,
     provisioning::{Action as ProvisionAction, Request},
@@ -54,32 +56,27 @@ pub(super) fn run(
         return Ok(());
     };
     let recovery = matches!(action, Action::Reopen | Action::Resume | Action::Reconcile);
-    let Some(values) = public_fields(
-        terminal,
-        "Device security target and evidence",
-        &[
-            ("Exact 16-character lowercase application serial", ""),
-            (
-                "Public qualification evidence file (required for applying stages)",
-                "",
-            ),
-            ("Original manager operation ID (recovery only)", ""),
-        ],
-    )?
-    else {
-        return Ok(());
-    };
-    if !recovery && !values[2].is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "original operation is only for recovery",
-        ));
-    }
-    let evidence = if values[1].is_empty() {
-        None
-    } else {
-        Some(setup::review_public_input(Path::new(&values[1]))?)
-    };
+    let serial_default = candidate_usb_serial().unwrap_or_default();
+    let specs = [
+        FieldSpec::text(
+            "Exact 16-character lowercase application serial",
+            &serial_default,
+        ),
+        FieldSpec::text_hint(
+            "Public qualification evidence file (required for applying stages)",
+            "",
+            "Absolute path to qualification JSON when preparing/enabling/locking",
+        ),
+        FieldSpec::text_hint(
+            "Original manager operation ID (recovery only)",
+            "",
+            if recovery {
+                "32 lowercase hex operation ID"
+            } else {
+                "Leave empty unless recovering an interrupted stage"
+            },
+        ),
+    ];
     let normal = host::observed_service_state(false)?;
     let commission = host::observed_service_state(true)?;
     let resume = matches!(action, Action::Resume);
@@ -102,35 +99,66 @@ pub(super) fn run(
         Action::Resume => ProvisionAction::Resume,
         Action::Reconcile => ProvisionAction::Reconcile,
     };
-    let request = Request {
-        action: provision_action,
-        bundle: source,
-        manifest_digest: verified.selection().manifest_digest.to_string(),
-        candidate_accepted: candidate,
-        original_operation: recovery.then(|| values[2].clone()),
-        serial: values[0].clone(),
-        evidence,
-        normal_state: normal,
-        commissioning_state: commission,
-        stop_normal,
-        stop_commissioning,
+    let manifest_digest = verified.selection().manifest_digest.to_string();
+    let Some(request) = form_validated(
+        terminal,
+        "Device security target and evidence",
+        &specs,
+        |values| {
+            if !recovery && !values[2].trim().is_empty() {
+                return Err((Some(2), "Original operation ID is only for recovery".into()));
+            }
+            let evidence = if values[1].trim().is_empty() {
+                None
+            } else {
+                Some(
+                    setup::review_public_input(Path::new(values[1].trim()))
+                        .map_err(|e| (Some(1), e.to_string()))?,
+                )
+            };
+            let req = Request {
+                action: provision_action,
+                bundle: source.clone(),
+                manifest_digest: manifest_digest.clone(),
+                candidate_accepted: candidate,
+                original_operation: recovery.then(|| values[2].trim().to_owned()),
+                serial: values[0].trim().to_owned(),
+                evidence,
+                normal_state: normal.clone(),
+                commissioning_state: commission.clone(),
+                stop_normal,
+                stop_commissioning,
+            };
+            req.validate().map_err(|e| (Some(0), e.to_string()))?;
+            Ok(req)
+        },
+    )?
+    else {
+        return Ok(());
     };
-    request.validate()?;
+
     let lines = vec![
         format!("Stage: {:?}; exact serial: {}", request.action, request.serial),
-        format!("Authenticated distribution: {}; qualification evidence: {:?}", request.manifest_digest, request.evidence),
-        format!("Normal service: {}; commissioning service: {}", request.normal_state, request.commissioning_state),
-        format!("Approved service stops: normal {}; commissioning {}. No automatic restart or commissioning.", stop_normal, stop_commissioning),
-        "Optional and irreversible. Unsupported hardware, nonblank storage, mismatched evidence or unexpected OTP must stop; no erase or reset is offered. Unlocked use remains supported.".into(),
-        "Enable and lock require the sole restricted commissioning service already running; fresh blank/uncommissioned observations are checked before its separately approved stop and BOOTSEL handoff.".into(),
-        "Preparation may install the authenticated transient commissioning unit without starting it; approved stops retain that unit for attended second-terminal transitions.".into(),
-        "Review the applicable physical, tool and image qualification evidence yourself. BOOTSEL preview does not prove fitted flash or blank storage; application reports are not independent attestation.".into(),
-        "One stage only. The existing firmware tool owns prompts, physical transitions, observations and the original protected record. Never answer its prompts automatically. A pending write blocks advancement; only the admitted pre-OTP resume or read-only permission reconciliation is offered.".into(),
-        "Use a second terminal to run sudo systemctl start/stop pico2-kes-agent-commission.service only when the tool requests it, and perform its physical transitions; do not start another USB owner. No signing key is requested.".into(),
+        format!(
+            "Authenticated distribution: {}; qualification evidence: {:?}",
+            request.manifest_digest, request.evidence
+        ),
+        format!(
+            "Normal service: {}; commissioning service: {}",
+            request.normal_state, request.commissioning_state
+        ),
+        format!(
+            "Approved service stops: normal {}; commissioning {}. No automatic restart or commissioning.",
+            stop_normal, stop_commissioning
+        ),
+        "WARNING: OTP stages are optional and hardware-irreversible. Unlocked use remains fully supported."
+            .into(),
+        "The foreground firmware tool owns interactive prompts, physical transitions, and the protected record."
+            .into(),
     ];
     if !review(
         terminal,
-        "Review optional device security",
+        "Review optional irreversible device security",
         lines,
         Some(&request.serial),
     )? {

@@ -149,6 +149,7 @@ fn verify_generation(path: &Path, selection: &ReleaseSelection) -> io::Result<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn activate_prepared(
     plan: &HostPlan,
     bundle: &VerifiedBundle,
@@ -510,6 +511,7 @@ fn check_files(prior: &InstallationRegistry, target: &InstallationRegistry) -> i
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish(
     plan: &HostPlan,
     original: &HostAction,

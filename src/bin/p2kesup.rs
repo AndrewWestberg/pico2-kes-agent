@@ -91,7 +91,10 @@ fn run(args: Vec<OsString>) -> i32 {
         {
             return invalid();
         }
-        let caller = match caller_identity(std::env::var("SUDO_UID"), rustix::process::getuid().as_raw()) {
+        let caller = match caller_identity(
+            std::env::var("SUDO_UID"),
+            rustix::process::getuid().as_raw(),
+        ) {
             Ok(uid) => uid,
             Err(error) => return host_result(Err(error)),
         };
@@ -159,18 +162,27 @@ fn run(args: Vec<OsString>) -> i32 {
                 return invalid();
             };
             if arg == "--version" && version.is_none() && bundle.is_none() && resume.is_none() {
-                let Some(tag) = value.to_str() else { return invalid() };
-                if tag.len() > 128 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) || tag.starts_with('-') {
+                let Some(tag) = value.to_str() else {
+                    return invalid();
+                };
+                if tag.len() > 128
+                    || !tag
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+                    || tag.starts_with('-')
+                {
                     return invalid();
                 }
                 version = Some(tag.to_owned());
-            } else if arg == "--bundle" && bundle.is_none() && version.is_none() && resume.is_none() {
+            } else if arg == "--bundle" && bundle.is_none() && version.is_none() && resume.is_none()
+            {
                 let path = PathBuf::from(value);
                 if !path.is_absolute() {
                     return invalid();
                 }
                 bundle = Some(path);
-            } else if arg == "--resume" && resume.is_none() && version.is_none() && bundle.is_none() {
+            } else if arg == "--resume" && resume.is_none() && version.is_none() && bundle.is_none()
+            {
                 let path = PathBuf::from(value);
                 if !path.is_absolute() {
                     return invalid();
@@ -220,10 +232,12 @@ fn run(args: Vec<OsString>) -> i32 {
 
 fn caller_identity(value: Result<String, std::env::VarError>, direct_uid: u32) -> io::Result<u32> {
     match value {
-        Ok(value) => value.parse().map_err(|_| io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "invalid privilege caller identity",
-        )),
+        Ok(value) => value.parse().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "invalid privilege caller identity",
+            )
+        }),
         Err(std::env::VarError::NotPresent) => Ok(direct_uid),
         Err(_) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -268,7 +282,10 @@ mod tests {
             Ok("4294967296".into()),
             Err(VarError::NotUnicode(OsString::from_vec(vec![0xff]))),
         ] {
-            assert_eq!(caller_identity(value, 0).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(
+                caller_identity(value, 0).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
         }
     }
 }

@@ -1,10 +1,10 @@
 use std::{io, time::Duration};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
@@ -20,6 +20,75 @@ pub(super) fn tone(color: Color) -> Style {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum FieldKind<'a> {
+    Text,
+    Select(&'a [(&'a str, &'a str)]),
+    ReadOnly,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FieldSpec<'a> {
+    pub label: &'a str,
+    pub initial: &'a str,
+    pub hint: Option<&'a str>,
+    pub kind: FieldKind<'a>,
+}
+
+impl<'a> FieldSpec<'a> {
+    pub const fn text(label: &'a str, initial: &'a str) -> Self {
+        Self {
+            label,
+            initial,
+            hint: None,
+            kind: FieldKind::Text,
+        }
+    }
+
+    pub const fn text_hint(label: &'a str, initial: &'a str, hint: &'a str) -> Self {
+        Self {
+            label,
+            initial,
+            hint: Some(hint),
+            kind: FieldKind::Text,
+        }
+    }
+
+    pub const fn select(
+        label: &'a str,
+        initial: &'a str,
+        options: &'a [(&'a str, &'a str)],
+    ) -> Self {
+        Self {
+            label,
+            initial,
+            hint: None,
+            kind: FieldKind::Select(options),
+        }
+    }
+
+    pub const fn readonly(label: &'a str, value: &'a str) -> Self {
+        Self {
+            label,
+            initial: value,
+            hint: None,
+            kind: FieldKind::ReadOnly,
+        }
+    }
+
+    fn editable(&self) -> bool {
+        !matches!(self.kind, FieldKind::ReadOnly)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ConfirmMode<'a> {
+    None,
+    Enter(&'a str),
+    Phrase(&'a str),
+}
+
+#[cfg(test)]
 fn value_tail(value: &str, width: u16) -> String {
     let value = safe(value);
     let width = usize::from(width);
@@ -59,56 +128,393 @@ fn label_lines(label: &str, width: u16, style: Style) -> Vec<Line<'static>> {
     lines
 }
 
-pub(super) fn public_fields(
+fn prev_char_boundary(s: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(s.len());
+    s[..cursor]
+        .char_indices()
+        .next_back()
+        .map(|(idx, _)| idx)
+        .unwrap_or(0)
+}
+
+fn next_char_boundary(s: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(s.len());
+    let mut iter = s[cursor..].char_indices();
+    let _ = iter.next();
+    iter.next()
+        .map(|(offset, _)| cursor + offset)
+        .unwrap_or(s.len())
+}
+
+fn prev_word_or_segment(s: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(s.len());
+    let mut idx = cursor;
+    while idx > 0 {
+        let prev = prev_char_boundary(s, idx);
+        let ch = s[prev..idx].chars().next().unwrap_or(' ');
+        if ch.is_alphanumeric() {
+            break;
+        }
+        idx = prev;
+    }
+    while idx > 0 {
+        let prev = prev_char_boundary(s, idx);
+        let ch = s[prev..idx].chars().next().unwrap_or(' ');
+        if !ch.is_alphanumeric() {
+            break;
+        }
+        idx = prev;
+    }
+    idx
+}
+
+pub(super) fn edit_text_key(value: &mut String, cursor: &mut usize, key: KeyEvent) -> bool {
+    *cursor = (*cursor).min(value.len());
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Left => {
+            *cursor = prev_char_boundary(value, *cursor);
+            true
+        }
+        KeyCode::Right => {
+            *cursor = next_char_boundary(value, *cursor);
+            true
+        }
+        KeyCode::Home => {
+            *cursor = 0;
+            true
+        }
+        KeyCode::End => {
+            *cursor = value.len();
+            true
+        }
+        KeyCode::Char('a') if ctrl => {
+            *cursor = 0;
+            true
+        }
+        KeyCode::Char('e') if ctrl => {
+            *cursor = value.len();
+            true
+        }
+        KeyCode::Char('b') if ctrl => {
+            *cursor = prev_char_boundary(value, *cursor);
+            true
+        }
+        KeyCode::Char('f') if ctrl => {
+            *cursor = next_char_boundary(value, *cursor);
+            true
+        }
+        KeyCode::Char('u') if ctrl => {
+            if *cursor > 0 {
+                value.replace_range(..*cursor, "");
+                *cursor = 0;
+            }
+            true
+        }
+        KeyCode::Char('k') if ctrl => {
+            if *cursor < value.len() {
+                value.truncate(*cursor);
+            }
+            true
+        }
+        KeyCode::Char('w') if ctrl => {
+            let start = prev_word_or_segment(value, *cursor);
+            if start < *cursor {
+                value.replace_range(start..*cursor, "");
+                *cursor = start;
+            }
+            true
+        }
+        KeyCode::Backspace => {
+            if *cursor > 0 {
+                let prev = prev_char_boundary(value, *cursor);
+                value.replace_range(prev..*cursor, "");
+                *cursor = prev;
+            }
+            true
+        }
+        KeyCode::Delete => {
+            if *cursor < value.len() {
+                let next = next_char_boundary(value, *cursor);
+                value.replace_range(*cursor..next, "");
+            }
+            true
+        }
+        KeyCode::Char(c)
+            if !c.is_control()
+                && value.len() + c.len_utf8() <= 4096
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            value.insert(*cursor, c);
+            *cursor += c.len_utf8();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn render_cursor_line(value: &str, cursor: usize, active: bool, width: u16) -> Line<'static> {
+    let avail = usize::from(width).saturating_sub(4);
+    if avail == 0 {
+        return Line::default();
+    }
+    let cursor = cursor.min(value.len());
+    if !active {
+        let escaped = safe(value);
+        if escaped.is_empty() {
+            return Line::from(vec![
+                Span::raw("  "),
+                Span::styled("(empty)", tone(Color::DarkGray)),
+            ]);
+        }
+        if Line::from(escaped.as_str()).width() <= avail {
+            return Line::from(format!("  {escaped}"));
+        }
+        let mut end = 0;
+        for (i, ch) in escaped.char_indices() {
+            let next = i + ch.len_utf8();
+            if Line::from(&escaped[..next]).width() + 1 > avail {
+                break;
+            }
+            end = next;
+        }
+        return Line::from(format!("  {}…", &escaped[..end]));
+    }
+
+    let before = safe(&value[..cursor]);
+    let (at_char, after) = if cursor < value.len() {
+        let next = next_char_boundary(value, cursor);
+        (safe(&value[cursor..next]), safe(&value[next..]))
+    } else {
+        (" ".to_owned(), String::new())
+    };
+
+    let before_chars: Vec<char> = before.chars().collect();
+    let after_chars: Vec<char> = after.chars().collect();
+    let cursor_w = Line::from(at_char.as_str()).width().max(1);
+    let budget = avail.saturating_sub(cursor_w + 2);
+    let target_left = (budget * 2) / 3;
+
+    let mut left_start = before_chars.len();
+    let mut left_w = 0usize;
+    while left_start > 0 {
+        let ch_s = before_chars[left_start - 1].to_string();
+        let w = Line::from(ch_s.as_str()).width();
+        if left_w + w > target_left && left_start < before_chars.len() {
+            break;
+        }
+        if left_w + w > budget {
+            break;
+        }
+        left_w += w;
+        left_start -= 1;
+    }
+    let rem_right = budget.saturating_sub(left_w);
+    let mut right_end = 0usize;
+    let mut right_w = 0usize;
+    while right_end < after_chars.len() {
+        let ch_s = after_chars[right_end].to_string();
+        let w = Line::from(ch_s.as_str()).width();
+        if right_w + w > rem_right {
+            break;
+        }
+        right_w += w;
+        right_end += 1;
+    }
+    while left_start > 0 {
+        let ch_s = before_chars[left_start - 1].to_string();
+        let w = Line::from(ch_s.as_str()).width();
+        if left_w + right_w + w > budget {
+            break;
+        }
+        left_w += w;
+        left_start -= 1;
+    }
+
+    let left_ellipsis = if left_start > 0 { "…" } else { "" };
+    let right_ellipsis = if right_end < after_chars.len() {
+        "…"
+    } else {
+        ""
+    };
+    let visible_left: String = before_chars[left_start..].iter().collect();
+    let visible_right: String = after_chars[..right_end].iter().collect();
+
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(left_ellipsis, tone(Color::DarkGray)),
+        Span::raw(visible_left),
+        Span::styled(
+            at_char,
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::UNDERLINED),
+        ),
+        Span::raw(visible_right),
+        Span::styled(right_ellipsis, tone(Color::DarkGray)),
+    ])
+}
+
+fn step_editable(specs: &[FieldSpec<'_>], current: usize, forward: bool) -> usize {
+    if specs.is_empty() {
+        return 0;
+    }
+    let len = specs.len();
+    for offset in 1..=len {
+        let candidate = if forward {
+            (current + offset) % len
+        } else {
+            (current + len - (offset % len)) % len
+        };
+        if specs[candidate].editable() {
+            return candidate;
+        }
+    }
+    current
+}
+
+fn last_editable(specs: &[FieldSpec<'_>]) -> Option<usize> {
+    specs.iter().rposition(FieldSpec::editable)
+}
+
+pub(super) fn form_validated<T>(
     terminal: &mut TerminalOwner,
     title: &str,
-    fields: &[(&str, &str)],
-) -> io::Result<Option<Vec<String>>> {
-    let mut values: Vec<String> = fields
+    specs: &[FieldSpec<'_>],
+    mut validate: impl FnMut(&[String]) -> Result<T, (Option<usize>, String)>,
+) -> io::Result<Option<T>> {
+    let mut values: Vec<String> = specs
         .iter()
-        .map(|(_, value)| (*value).to_owned())
+        .map(|spec| match spec.kind {
+            FieldKind::Select(options) if spec.initial.is_empty() && !options.is_empty() => {
+                options[0].0.to_owned()
+            }
+            _ => spec.initial.to_owned(),
+        })
         .collect();
-    if fields.is_empty() {
-        return Ok(Some(values));
+    if specs.is_empty() {
+        return validate(&values)
+            .map(Some)
+            .map_err(|(_, msg)| io::Error::new(io::ErrorKind::InvalidInput, msg));
     }
-    let mut selected = 0;
+    let mut cursors: Vec<usize> = values.iter().map(String::len).collect();
+    let mut selected = specs.iter().position(FieldSpec::editable).unwrap_or(0);
+    let mut error_banner: Option<String> = None;
     let mut state = ListState::default();
     let mut redraw = true;
+
     loop {
         let size = terminal.terminal()?.size()?;
         let small = size.width < 80 || size.height < 24;
         if redraw {
             terminal.terminal()?.draw(|frame| {
                 if small {
-                    frame.render_widget(Paragraph::new("Resize to 80×24 · Esc/q cancel"), frame.area());
+                    frame.render_widget(
+                        Paragraph::new("Resize to 80×24 · Esc/q cancel"),
+                        frame.area(),
+                    );
                 } else {
-                    let areas = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(frame.area());
-                    let items: Vec<ListItem> = fields.iter().enumerate().map(|(i, (label, _))| {
-                        let active = i == selected;
-                        let marker = if active { ">" } else { " " };
-                        let style = if active {
-                            tone(Color::Cyan).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        };
-                        let mut lines = label_lines(
-                            &format!("{marker} {}", safe(label)), areas[0].width.saturating_sub(2), style,
-                        );
-                        lines.push(Line::from(format!("  {}", value_tail(&values[i], areas[0].width.saturating_sub(4)))));
-                        ListItem::new(lines)
-                    }).collect();
+                    let footer_len = if error_banner.is_some() { 3 } else { 2 };
+                    let areas = Layout::vertical([Constraint::Min(1), Constraint::Length(footer_len)])
+                        .split(frame.area());
+                    let inner_w = areas[0].width.saturating_sub(2);
+                    let items: Vec<ListItem> = specs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, spec)| {
+                            let active = i == selected && spec.editable();
+                            let marker = if active { ">" } else { " " };
+                            let style = if active {
+                                tone(Color::Cyan).add_modifier(Modifier::BOLD)
+                            } else if !spec.editable() {
+                                tone(Color::DarkGray)
+                            } else {
+                                Style::default()
+                            };
+                            let mut lines = label_lines(
+                                &format!("{marker} {}", safe(spec.label)),
+                                inner_w,
+                                style,
+                            );
+                            match spec.kind {
+                                FieldKind::Text => {
+                                    lines.push(render_cursor_line(
+                                        &values[i],
+                                        cursors[i],
+                                        active,
+                                        inner_w,
+                                    ));
+                                }
+                                FieldKind::Select(options) => {
+                                    let desc = options
+                                        .iter()
+                                        .find(|(val, _)| *val == values[i])
+                                        .map(|(_, d)| *d)
+                                        .unwrap_or("");
+                                    let val_disp = safe(&values[i]);
+                                    let detail = if desc.is_empty() {
+                                        format!("  ◀ {val_disp} ▶")
+                                    } else {
+                                        format!("  ◀ {val_disp} ▶  ({})", safe(desc))
+                                    };
+                                    let line_style = if active {
+                                        Style::default().add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default()
+                                    };
+                                    lines.push(Line::from(detail).style(line_style));
+                                }
+                                FieldKind::ReadOnly => {
+                                    lines.push(
+                                        Line::from(format!("  {}", safe(&values[i])))
+                                            .style(tone(Color::DarkGray)),
+                                    );
+                                }
+                            }
+                            if let Some(hint) = spec.hint
+                                && active
+                            {
+                                lines.push(
+                                    Line::from(format!("  hint: {}", safe(hint)))
+                                        .style(tone(Color::DarkGray)),
+                                );
+                            }
+                            ListItem::new(lines)
+                        })
+                        .collect();
                     state.select(Some(selected));
                     frame.render_stateful_widget(
-                        List::new(items).block(Block::default().borders(Borders::ALL)
-                            .title(safe(title)).title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))),
-                        areas[0], &mut state,
+                        List::new(items).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!(" {} ", safe(title)))
+                                .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        ),
+                        areas[0],
+                        &mut state,
                     );
-                    frame.render_widget(
-                        Paragraph::new(vec![
-                            Line::from("Public inputs only · No private keys or passphrases").style(tone(Color::Yellow)),
-                            Line::from("Tab/Shift-Tab field · Enter next/review · Backspace edit · Esc cancel"),
-                        ]), areas[1],
-                    );
+                    let mut footer = Vec::new();
+                    if let Some(err) = &error_banner {
+                        footer.push(
+                            Line::from(format!("[!] {}", safe(err)))
+                                .style(tone(Color::Red).add_modifier(Modifier::BOLD)),
+                        );
+                    } else {
+                        footer.push(
+                            Line::from("Public inputs only · Never enter private keys or passphrases")
+                                .style(tone(Color::Yellow)),
+                        );
+                    }
+                    let key_help = match specs[selected].kind {
+                        FieldKind::Select(_) => {
+                            "←/→/Space choose · ↑/↓/Tab field · Enter next/submit · Esc cancel"
+                        }
+                        _ => {
+                            "←/→/Home/End/Ctrl+W edit · ↑/↓/Tab field · Enter next/submit · Esc cancel"
+                        }
+                    };
+                    footer.push(Line::from(key_help));
+                    frame.render_widget(Paragraph::new(footer), areas[1]);
                 }
             })?;
             redraw = false;
@@ -129,26 +535,73 @@ pub(super) fn public_fields(
         if small {
             continue;
         }
-        match key.code {
-            KeyCode::Tab => selected = (selected + 1) % fields.len(),
-            KeyCode::BackTab => selected = (selected + fields.len() - 1) % fields.len(),
-            KeyCode::Enter if selected + 1 == fields.len() => return Ok(Some(values)),
-            KeyCode::Enter => selected += 1,
-            KeyCode::Backspace => {
-                values[selected].pop();
+        let submit_now = (key.code == KeyCode::Char('s')
+            && key.modifiers.contains(KeyModifiers::CONTROL))
+            || (key.code == KeyCode::Enter && Some(selected) == last_editable(specs));
+        if submit_now {
+            match validate(&values) {
+                Ok(parsed) => return Ok(Some(parsed)),
+                Err((bad_idx, msg)) => {
+                    if let Some(idx) = bad_idx.filter(|&i| i < specs.len() && specs[i].editable()) {
+                        selected = idx;
+                    }
+                    error_banner = Some(msg);
+                    continue;
+                }
             }
-            KeyCode::Char(c)
-                if !c.is_control()
-                    && values[selected].len() + c.len_utf8() <= 4096
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                values[selected].push(c);
+        }
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => {
+                selected = step_editable(specs, selected, true);
+                continue;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                selected = step_editable(specs, selected, false);
+                continue;
+            }
+            KeyCode::Enter => {
+                selected = step_editable(specs, selected, true);
+                continue;
             }
             _ => {}
         }
+        match specs[selected].kind {
+            FieldKind::Text => {
+                if edit_text_key(&mut values[selected], &mut cursors[selected], key) {
+                    error_banner = None;
+                }
+            }
+            FieldKind::Select(options) if !options.is_empty() => {
+                let cur_pos = options
+                    .iter()
+                    .position(|(val, _)| *val == values[selected])
+                    .unwrap_or(0);
+                let next_pos = match key.code {
+                    KeyCode::Right | KeyCode::Char(' ') => Some((cur_pos + 1) % options.len()),
+                    KeyCode::Left => Some((cur_pos + options.len() - 1) % options.len()),
+                    _ => None,
+                };
+                if let Some(pos) = next_pos {
+                    values[selected] = options[pos].0.to_owned();
+                    cursors[selected] = values[selected].len();
+                    error_banner = None;
+                }
+            }
+            FieldKind::Select(_) | FieldKind::ReadOnly => {}
+        }
     }
+}
+
+pub(super) fn public_fields(
+    terminal: &mut TerminalOwner,
+    title: &str,
+    fields: &[(&str, &str)],
+) -> io::Result<Option<Vec<String>>> {
+    let specs: Vec<FieldSpec<'_>> = fields
+        .iter()
+        .map(|(label, initial)| FieldSpec::text(label, initial))
+        .collect();
+    form_validated(terminal, title, &specs, |values| Ok(values.to_vec()))
 }
 
 pub(super) fn review_paragraph(title: &str, lines: Vec<String>) -> io::Result<Paragraph<'_>> {
@@ -171,6 +624,7 @@ pub(super) fn review_paragraph(title: &str, lines: Vec<String>) -> io::Result<Pa
     Ok(paragraph)
 }
 
+#[cfg(test)]
 fn max_scroll(paragraph: &Paragraph<'_>, width: u16, height: u16) -> u16 {
     paragraph
         .line_count(width.saturating_sub(2))
@@ -178,44 +632,81 @@ fn max_scroll(paragraph: &Paragraph<'_>, width: u16, height: u16) -> u16 {
         .min(usize::from(u16::MAX)) as u16
 }
 
-pub(super) fn review(
+pub(super) fn review_mode(
     terminal: &mut TerminalOwner,
     title: &str,
     lines: Vec<String>,
-    confirmation: Option<&str>,
+    mode: ConfirmMode<'_>,
 ) -> io::Result<bool> {
-    let mut paragraph = review_paragraph(title, lines)?;
+    let base_paragraph = review_paragraph(title, lines.clone())?;
+    let _ = base_paragraph;
+    let safe_lines: Vec<Line<'static>> = lines
+        .into_iter()
+        .map(|line| Line::from(safe(&line)))
+        .collect();
     let mut scroll = 0u16;
     let mut redraw = true;
     loop {
         let size = terminal.terminal()?.size()?;
         let small = size.width < 80 || size.height < 24;
+        let pane_h = size.height.saturating_sub(2);
+        let content_h = pane_h.saturating_sub(2).max(1);
+        let temp = Paragraph::new(safe_lines.clone()).wrap(Wrap { trim: false });
+        let total_lines = temp.line_count(size.width.saturating_sub(2)).max(1);
+        let limit = total_lines
+            .saturating_sub(usize::from(content_h))
+            .min(usize::from(u16::MAX)) as u16;
         if !small {
-            scroll = scroll.min(max_scroll(
-                &paragraph,
-                size.width,
-                size.height.saturating_sub(2),
-            ));
+            scroll = scroll.min(limit);
         }
         if redraw {
-            paragraph = paragraph.scroll((scroll, 0));
+            let start_line = usize::from(scroll) + 1;
+            let end_line = (usize::from(scroll) + usize::from(content_h)).min(total_lines);
+            let title_with_pos = if total_lines > usize::from(content_h) {
+                format!(
+                    " {} [lines {start_line}-{end_line} of {total_lines}] ",
+                    safe(title)
+                )
+            } else {
+                format!(" {} ", safe(title))
+            };
+            let paragraph = Paragraph::new(safe_lines.clone())
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(title_with_pos)
+                        .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                )
+                .scroll((scroll, 0));
             terminal.terminal()?.draw(|frame| {
                 let areas = Layout::vertical([Constraint::Min(1), Constraint::Length(2)])
                     .split(frame.area());
                 if small {
                     frame.render_widget(Paragraph::new("Resize to 80×24 · Esc/q cancel"), areas[0]);
                 } else {
-                    frame.render_widget(&paragraph, areas[0]);
+                    frame.render_widget(paragraph, areas[0]);
                 }
-                let (footer, style) = if confirmation.is_some() {
-                    (
-                        "↑↓/j k scroll · Enter confirm · Esc/q cancel",
-                        tone(Color::Yellow).add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    ("↑↓/j k scroll · Esc/q return", tone(Color::DarkGray))
+                let footer = match mode {
+                    ConfirmMode::None => vec![
+                        Line::from("↑↓/PgUp/PgDn/Home/End scroll · Enter/Esc/q return")
+                            .style(tone(Color::DarkGray)),
+                    ],
+                    ConfirmMode::Enter(action_label) => vec![
+                        Line::from(format!("Enter: {} · Esc/q: cancel", safe(action_label)))
+                            .style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        Line::from("↑↓/j k/PgUp/PgDn/g/G scroll").style(tone(Color::DarkGray)),
+                    ],
+                    ConfirmMode::Phrase(expected) => vec![
+                        Line::from(format!(
+                            "Enter: open confirmation ({}) · Esc/q: cancel",
+                            safe(expected)
+                        ))
+                        .style(tone(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        Line::from("↑↓/j k/PgUp/PgDn/g/G scroll").style(tone(Color::DarkGray)),
+                    ],
                 };
-                frame.render_widget(Paragraph::new(footer).style(style), areas[1]);
+                frame.render_widget(Paragraph::new(footer), areas[1]);
             })?;
             redraw = false;
         }
@@ -235,29 +726,78 @@ pub(super) fn review(
         if small {
             continue;
         }
+        let page = content_h.saturating_sub(1).max(1);
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
-                scroll = scroll.saturating_add(1).min(max_scroll(
-                    &paragraph,
-                    size.width,
-                    size.height.saturating_sub(2),
-                ));
+                scroll = scroll.saturating_add(1).min(limit);
             }
-            KeyCode::Up | KeyCode::Char('k') => scroll = scroll.saturating_sub(1),
-            KeyCode::Enter if confirmation.is_some() => {
-                let expected = confirmation.expect("checked confirmation");
-                let label = format!("Type exactly {expected}");
-                return Ok(public_fields(terminal, title, &[(&label, "")])?
-                    .is_some_and(|values| values[0] == expected));
+            KeyCode::Up | KeyCode::Char('k') => {
+                scroll = scroll.saturating_sub(1);
             }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                scroll = scroll.saturating_add(page).min(limit);
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll = scroll.saturating_add(page).min(limit);
+            }
+            KeyCode::PageUp => {
+                scroll = scroll.saturating_sub(page);
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll = scroll.saturating_sub(page);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                scroll = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                scroll = limit;
+            }
+            KeyCode::Enter => match mode {
+                ConfirmMode::None => return Ok(false),
+                ConfirmMode::Enter(_) => return Ok(true),
+                ConfirmMode::Phrase(expected) => {
+                    let label = format!("Type exactly: {expected}");
+                    let specs = [FieldSpec::text(&label, "")];
+                    let confirmed = form_validated(terminal, title, &specs, |values| {
+                        if values[0].trim() == expected {
+                            Ok(())
+                        } else {
+                            Err((
+                                Some(0),
+                                format!(
+                                    "Confirmation must match '{expected}' (or press Esc to cancel)"
+                                ),
+                            ))
+                        }
+                    })?;
+                    return Ok(confirmed.is_some());
+                }
+            },
             _ => {}
         }
     }
 }
 
+pub(super) fn review(
+    terminal: &mut TerminalOwner,
+    title: &str,
+    lines: Vec<String>,
+    confirmation: Option<&str>,
+) -> io::Result<bool> {
+    let mode = match confirmation {
+        None => ConfirmMode::None,
+        Some(phrase) => ConfirmMode::Phrase(phrase),
+    };
+    review_mode(terminal, title, lines, mode)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{label_lines, max_scroll, review_paragraph, value_tail};
+    use super::{
+        FieldSpec, edit_text_key, label_lines, max_scroll, render_cursor_line, review_paragraph,
+        step_editable, value_tail,
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Style;
 
     #[test]
@@ -286,5 +826,69 @@ mod tests {
         let paragraph = review_paragraph("Review", vec!["x".into(); 30]).unwrap();
         assert_eq!(max_scroll(&paragraph, 80, 22), 10);
         assert_eq!(max_scroll(&paragraph, 80, 40), 0);
+    }
+
+    #[test]
+    fn text_editor_supports_cursor_navigation_and_segment_deletion() {
+        let mut text = "/var/lib/p2kesup/exports/pool.vkey".to_owned();
+        let mut cursor = text.len();
+
+        // Ctrl+W deletes "vkey", then "pool"
+        assert!(edit_text_key(
+            &mut text,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        ));
+        assert_eq!(text, "/var/lib/p2kesup/exports/pool.");
+        assert!(edit_text_key(
+            &mut text,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        ));
+        assert_eq!(text, "/var/lib/p2kesup/exports/");
+
+        // Home, Right x4 ("/var"), insert "-test"
+        edit_text_key(
+            &mut text,
+            &mut cursor,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+        );
+        for _ in 0..4 {
+            edit_text_key(
+                &mut text,
+                &mut cursor,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            );
+        }
+        for c in "-test".chars() {
+            edit_text_key(
+                &mut text,
+                &mut cursor,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(text, "/var-test/lib/p2kesup/exports/");
+    }
+
+    #[test]
+    fn cursor_viewport_stays_within_terminal_width() {
+        let long_path = format!("/home/operator/{}/artifact.kes-backup", "sub".repeat(30));
+        for pos in [0, long_path.len() / 2, long_path.len()] {
+            let line = render_cursor_line(&long_path, pos, true, 78);
+            assert!(line.width() <= 78);
+        }
+    }
+
+    #[test]
+    fn step_editable_skips_readonly_fields() {
+        let specs = [
+            FieldSpec::readonly("Pool", "abc"),
+            FieldSpec::text("Output", "/tmp/out"),
+            FieldSpec::readonly("Revision", "3"),
+            FieldSpec::text("Receipt", "/tmp/rec"),
+        ];
+        assert_eq!(step_editable(&specs, 1, true), 3);
+        assert_eq!(step_editable(&specs, 3, true), 1);
+        assert_eq!(step_editable(&specs, 1, false), 3);
     }
 }

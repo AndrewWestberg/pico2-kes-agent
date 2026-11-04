@@ -45,7 +45,7 @@ impl SlotTiming {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkConfig {
     pub binding: NetworkBinding,
     pub timing: SlotTiming,
