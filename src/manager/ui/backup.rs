@@ -1,9 +1,11 @@
 use super::{
     review,
-    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
+    widgets::{ConfirmMode, pick_file, review_mode},
 };
 use crate::manager::{
-    backup, host,
+    backup,
+    discovery::files::FileKind,
+    host,
     observe::Worker,
     terminal::TerminalOwner,
     workspace::{self, WorkspaceKind},
@@ -50,19 +52,14 @@ pub(super) fn run(
     }
     backup::admit_local(socket)?;
     if matches!(action, Action::Transfer) {
-        review(
-            terminal,
-            "Public recipient transfer guidance",
-            vec![
-                "1. Transfer ONLY the public recipient file (.json) to the primary host through your independently authenticated channel, then install it under Pools -> Install or rotate HPKE backup recipient."
-                    .into(),
-                "2. NEVER transfer the private recipient file (.key) or passphrase to the primary host. Retain old private recipient files securely: existing .kes-backup artifacts remain encrypted to the recipient active when they were created."
-                    .into(),
-                "3. Local role admission checks active processes and sockets, but cannot prove historical host separation—maintain physical/operational separation."
-                    .into(),
-            ],
-            None,
-        )?;
+        review(terminal, "Public recipient transfer guidance", vec![
+            "1. Transfer ONLY the public recipient file (.json) to the primary host through your independently authenticated channel, then install it under Pools -> Install or rotate HPKE backup recipient."
+                .into(),
+            "2. NEVER transfer the private recipient file (.key) or passphrase to the primary host. Retain old private recipient files securely: existing .kes-backup artifacts remain encrypted to the recipient active when they were created."
+                .into(),
+            "3. Local role admission checks active processes and sockets, but cannot prove historical host separation—maintain physical/operational separation."
+                .into(),
+        ])?;
         return Ok(());
     }
     // The installed executable is accepted only through the host's authenticated registry.
@@ -88,57 +85,18 @@ pub(super) fn run(
         return Ok(());
     }
     privileged_admission(terminal, socket)?;
-    let (request, lines, confirm_phrase) = match action {
+    let (request, lines, danger) = match action {
         Action::Create => {
-            let priv_default =
+            let priv_path =
                 workspace::next_path(WorkspaceKind::Exports, "recipient-secret", "key")?
                     .to_string_lossy()
                     .into_owned();
-            let pub_default =
+            let pub_path =
                 workspace::next_path(WorkspaceKind::Exports, "recipient-public", "json")?
                     .to_string_lossy()
                     .into_owned();
-            let specs = [
-                FieldSpec::text_hint(
-                    "Private recipient key destination (0600, keep on backup host)",
-                    &priv_default,
-                    "Never copy this file to the primary host",
-                ),
-                FieldSpec::text_hint(
-                    "Public recipient record destination (0600, safe to transfer)",
-                    &pub_default,
-                    "Copy only this public JSON file to the primary host",
-                ),
-            ];
-            let Some((priv_path, pub_path)) =
-                form_validated(terminal, "Create HPKE backup recipient", &specs, |values| {
-                    let pr = values[0].trim();
-                    let pu = values[1].trim();
-                    if !Path::new(pr).is_absolute() {
-                        return Err((
-                            Some(0),
-                            "Private recipient destination must be an absolute path".into(),
-                        ));
-                    }
-                    if !Path::new(pu).is_absolute() {
-                        return Err((
-                            Some(1),
-                            "Public recipient destination must be an absolute path".into(),
-                        ));
-                    }
-                    if pr == pu {
-                        return Err((
-                            Some(1),
-                            "Private and public recipient destinations must differ".into(),
-                        ));
-                    }
-                    ensure_absent(pr, 0)?;
-                    ensure_absent(pu, 1)?;
-                    Ok((pr.to_owned(), pu.to_owned()))
-                })?
-            else {
-                return Ok(());
-            };
+            ensure_absent(&priv_path, 0).map_err(|(_, e)| io::Error::other(e))?;
+            ensure_absent(&pub_path, 1).map_err(|(_, e)| io::Error::other(e))?;
             let lines = vec![
                 format!("Private recipient key (keep off-primary) : {priv_path}"),
                 format!("Public recipient record (transferable)   : {pub_path}"),
@@ -154,106 +112,120 @@ pub(super) fn run(
                     public: pub_path,
                 },
                 lines,
-                None,
+                false,
             )
         }
         Action::Restore => {
-            let out_default = workspace::next_path(WorkspaceKind::Exports, "restored-kes", "skey")?
-                .to_string_lossy()
-                .into_owned();
-            let specs = [
-                FieldSpec::text_hint(
-                    "Export metadata JSON (.kes-backup.metadata.json, optional helper)",
-                    "",
-                    "Optional: pre-populates any blank ID fields below for your review",
-                ),
-                FieldSpec::text("Independently trusted device ID (32 lowercase hex)", ""),
-                FieldSpec::text("Pool ID (56 lowercase hex)", ""),
-                FieldSpec::text("Incarnation ID (32 lowercase hex)", ""),
-                FieldSpec::text("Generation ID (32 lowercase hex)", ""),
-                FieldSpec::text("Independent verification-key file (.vkey, absolute)", ""),
-                FieldSpec::text("Trusted device identity file (device.json, absolute)", ""),
-                FieldSpec::text("Encrypted artifact file (.kes-backup, absolute)", ""),
-                FieldSpec::text("Private recipient key file (.key, absolute)", ""),
-                FieldSpec::text_hint(
-                    "Plaintext KES output destination (0600, no overwrite)",
-                    &out_default,
-                    "Protect custody and fence producers before using restored key",
-                ),
-            ];
-            let Some(resolved) = form_validated(
+            let Some(artifact) =
+                pick_file(terminal, "Select encrypted KES backup", &[FileKind::Backup])?
+            else {
+                return Ok(());
+            };
+            let Some(identity) = pick_file(
                 terminal,
-                "Emergency plaintext KES restore",
-                &specs,
-                |values| {
-                    let meta_str = values[0].trim();
-                    let mut dev = values[1].trim().to_owned();
-                    let mut pool = values[2].trim().to_owned();
-                    let mut inc = values[3].trim().to_owned();
-                    let mut gn = values[4].trim().to_owned();
-                    if !meta_str.is_empty() {
-                        if !Path::new(meta_str).is_absolute() {
-                            return Err((
-                                Some(0),
-                                "Metadata helper path must be absolute (or leave blank)".into(),
-                            ));
-                        }
-                        let meta = load_export_metadata(Path::new(meta_str))
-                            .map_err(|e| (Some(0), format!("Cannot read metadata JSON: {e}")))?;
-                        if dev.is_empty()
-                            && let Some(s) = meta.get("device_id").and_then(Value::as_str)
-                        {
-                            dev = s.to_owned();
-                        }
-                        if pool.is_empty()
-                            && let Some(s) = meta.get("pool_id").and_then(Value::as_str)
-                        {
-                            pool = s.to_owned();
-                        }
-                        if inc.is_empty()
-                            && let Some(s) = meta.get("incarnation_id").and_then(Value::as_str)
-                        {
-                            inc = s.to_owned();
-                        }
-                        if gn.is_empty()
-                            && let Some(s) = meta.get("generation_id").and_then(Value::as_str)
-                        {
-                            gn = s.to_owned();
-                        }
-                    }
-                    check_hex(&dev, 32, 1, "Device ID")?;
-                    check_hex(&pool, 56, 2, "Pool ID")?;
-                    check_hex(&inc, 32, 3, "Incarnation ID")?;
-                    check_hex(&gn, 32, 4, "Generation ID")?;
-                    for (idx, label) in [
-                        (5, "Verification-key file"),
-                        (6, "Device identity file"),
-                        (7, "Encrypted artifact file"),
-                        (8, "Private recipient file"),
-                        (9, "Plaintext output destination"),
-                    ] {
-                        let p = values[idx].trim();
-                        if !Path::new(p).is_absolute() {
-                            return Err((Some(idx), format!("{label} must be an absolute path")));
-                        }
-                    }
-                    ensure_absent(values[9].trim(), 9)?;
-                    Ok([
-                        dev,
-                        pool,
-                        inc,
-                        gn,
-                        values[5].trim().to_owned(),
-                        values[6].trim().to_owned(),
-                        values[7].trim().to_owned(),
-                        values[8].trim().to_owned(),
-                        values[9].trim().to_owned(),
-                    ])
-                },
+                "Select independently trusted device.json",
+                &[FileKind::DeviceJson],
             )?
             else {
                 return Ok(());
             };
+            let metadata =
+                load_export_metadata(Path::new(&format!("{}.metadata.json", artifact.display())))?;
+            let device = load_export_metadata(&identity)?;
+            let get = |value: &Value, key: &str| -> io::Result<String> {
+                value
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, format!("Missing {key}"))
+                    })
+            };
+            let dev = get(&device, "device_id")?;
+            let pool = get(&metadata, "pool_id")?;
+            let inc = get(&metadata, "incarnation_id")?;
+            let generation = get(&metadata, "generation_id")?;
+            if metadata.get("device_id").and_then(Value::as_str) != Some(dev.as_str()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Backup metadata does not match trusted device.json",
+                ));
+            }
+            for (value, len, label) in [
+                (&dev, 32, "Device ID"),
+                (&pool, 56, "Pool ID"),
+                (&inc, 32, "Incarnation ID"),
+                (&generation, 32, "Generation ID"),
+            ] {
+                check_hex(value, len, 0, label)
+                    .map_err(|(_, e)| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            }
+            let sibling = artifact.parent().unwrap_or(Path::new("/"));
+            let exports = workspace::list_files(WorkspaceKind::Exports)?;
+            let sibling_files: Vec<PathBuf> = std::fs::read_dir(sibling)?
+                .take(1024)
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .collect();
+            let newest = |extension: &str| {
+                sibling_files
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|e| e == extension))
+                    .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                    .cloned()
+            };
+            let vkey = newest("vkey").or_else(|| {
+                exports
+                    .iter()
+                    .find(|p| p.extension().is_some_and(|e| e == "vkey"))
+                    .cloned()
+            });
+            let vkey = if let Some(p) = vkey {
+                p
+            } else {
+                let Some(p) = pick_file(terminal, "Select KES verification key", &[FileKind::Any])?
+                else {
+                    return Ok(());
+                };
+                p
+            };
+            let recipient = newest("key").or_else(|| {
+                exports
+                    .iter()
+                    .find(|p| p.extension().is_some_and(|e| e == "key"))
+                    .cloned()
+            });
+            let recipient = if let Some(p) = recipient {
+                p
+            } else {
+                let Some(p) =
+                    pick_file(terminal, "Select private recipient key", &[FileKind::Any])?
+                else {
+                    return Ok(());
+                };
+                p
+            };
+            let output = workspace::next_path(WorkspaceKind::Exports, "restored-kes", "skey")?;
+            let resolved = [
+                dev,
+                pool,
+                inc,
+                generation,
+                vkey.to_string_lossy().into_owned(),
+                identity.to_string_lossy().into_owned(),
+                artifact.to_string_lossy().into_owned(),
+                recipient.to_string_lossy().into_owned(),
+                output.to_string_lossy().into_owned(),
+            ];
+            for path in &resolved[4..] {
+                if !Path::new(path).is_absolute() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Restore paths must be absolute",
+                    ));
+                }
+            }
+            ensure_absent(&resolved[8], 0).map_err(|(_, e)| io::Error::other(e))?;
             let labels = [
                 "Device ID",
                 "Pool ID",
@@ -280,7 +252,6 @@ pub(super) fn run(
                 "The CLI authenticates every binding and refuses existing outputs, unsafe host memory (active swap), or invalid credentials; no plaintext is published on failure."
                     .into(),
             );
-            let phrase = format!("RESTORE {}", workspace::short_id(&resolved[1]));
             (
                 backup::Action::Restore {
                     device: resolved[0].clone(),
@@ -294,15 +265,12 @@ pub(super) fn run(
                     output: resolved[8].clone(),
                 },
                 lines,
-                Some(phrase),
+                true,
             )
         }
         Action::Transfer => unreachable!(),
     };
-    let confirm_mode = match &confirm_phrase {
-        Some(phrase) => ConfirmMode::Phrase(phrase),
-        None => ConfirmMode::Enter("hand off terminal to pico2-kes-agent"),
-    };
+    let confirm_mode = ConfirmMode::YesNo { danger };
     if !review_mode(
         terminal,
         "Review exact backup operation",
@@ -367,12 +335,15 @@ pub(super) fn run(
         )
     };
     outcome.push(String::new());
+    if status.success() && matches!(action, Action::Create) {
+        outcome.push("Copy the public recipient JSON to the primary host; keep the private key and passphrase on this backup host.".into());
+    }
     outcome.push(summary);
     outcome.push(format!(
         "Protected backup-local public record: {}",
         record.operation_id
     ));
-    review(terminal, "Backup operation outcome", outcome, None)?;
+    review(terminal, "Backup operation outcome", outcome)?;
     Ok(())
 }
 
@@ -439,4 +410,16 @@ fn load_export_metadata(path: &Path) -> io::Result<Value> {
         ));
     }
     serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_hex;
+
+    #[test]
+    fn restore_ids_require_exact_lowercase_hex() {
+        assert!(check_hex(&"ab".repeat(16), 32, 0, "Device ID").is_ok());
+        assert!(check_hex(&"AB".repeat(16), 32, 0, "Device ID").is_err());
+        assert!(check_hex("abc", 32, 0, "Device ID").is_err());
+    }
 }

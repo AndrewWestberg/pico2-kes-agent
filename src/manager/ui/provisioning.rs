@@ -1,10 +1,9 @@
 use super::{
-    review,
     setup::{apply, bundle},
-    widgets::{FieldSpec, form_validated},
+    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
 };
 use crate::manager::{
-    config_builder::candidate_usb_serial,
+    discovery::{files::FileKind, usb},
     host::{self, HostAction},
     observe,
     provisioning::{Action as ProvisionAction, Request},
@@ -31,10 +30,37 @@ pub(super) const ACTIONS: &[(Action, &str)] = &[
     (Action::Prepare, "Prepare one stage"),
     (Action::Enable, "Enable one stage"),
     (Action::Lock, "Lock one stage"),
-    (Action::Reopen, "Reopen original record"),
-    (Action::Resume, "Admitted pre-OTP prepare resume"),
-    (Action::Reconcile, "Read-only permission reconciliation"),
 ];
+
+pub(super) fn recover_record(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<observe::Worker>,
+    socket: &Path,
+    selected: Option<&PathBuf>,
+    record: &crate::manager::model::MaintenanceRecord,
+) -> io::Result<()> {
+    if record.action != "provisioning" {
+        return Err(io::Error::other("Not a provisioning record"));
+    }
+    let choices = [
+        ("reopen", "Read original record"),
+        ("resume", "Resume admitted preparation"),
+        ("reconcile", "Reconcile permission uncertainty"),
+    ];
+    let specs = [FieldSpec::select("Recovery action", "reopen", &choices)];
+    let Some(choice) = form_validated(terminal, "Provisioning recovery", &specs, |v| {
+        Ok(v[0].clone())
+    })?
+    else {
+        return Ok(());
+    };
+    let action = match choice.as_str() {
+        "resume" => Action::Resume,
+        "reconcile" => Action::Reconcile,
+        _ => Action::Reopen,
+    };
+    run_action(action, terminal, worker, socket, selected, Some(record))
+}
 
 pub(super) fn run(
     action: usize,
@@ -52,31 +78,83 @@ pub(super) fn run(
             )
         })?
         .0;
+    run_action(action, terminal, worker, socket, selected, None)
+}
+
+fn run_action(
+    action: Action,
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<observe::Worker>,
+    socket: &Path,
+    selected: Option<&PathBuf>,
+    record: Option<&crate::manager::model::MaintenanceRecord>,
+) -> io::Result<()> {
     let Some((source, verified, candidate)) = bundle(terminal, selected)? else {
         return Ok(());
     };
-    let recovery = matches!(action, Action::Reopen | Action::Resume | Action::Reconcile);
-    let serial_default = candidate_usb_serial().unwrap_or_default();
-    let specs = [
-        FieldSpec::text(
-            "Exact 16-character lowercase application serial",
-            &serial_default,
-        ),
-        FieldSpec::text_hint(
-            "Public qualification evidence file (required for applying stages)",
+    let serial = if let Some(record) = record {
+        let checkpoint = record
+            .checkpoints
+            .iter()
+            .find(|c| c.name == "provisioning-original")
+            .ok_or_else(|| io::Error::other("Original provisioning identity unavailable"))?;
+        let path = checkpoint.evidence.split(';').next().unwrap_or("");
+        Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| io::Error::other("Invalid provisioning identity"))?
+            .to_owned()
+    } else {
+        let boards: Vec<_> = usb::list_pico2()?
+            .into_iter()
+            .filter_map(|b| b.serial.map(|s| (s, b.port)))
+            .collect();
+        if boards.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No Pico 2 application board found",
+            ));
+        }
+        if boards.len() == 1 {
+            boards[0].0.clone()
+        } else {
+            let options: Vec<(&str, &str)> = boards
+                .iter()
+                .map(|(s, p)| (s.as_str(), p.as_str()))
+                .collect();
+            let specs = [FieldSpec::select("Pico 2 board", "", &options)];
+            let Some(serial) =
+                form_validated(terminal, "Select board", &specs, |v| Ok(v[0].clone()))?
+            else {
+                return Ok(());
+            };
+            serial
+        }
+    };
+    let evidence = if matches!(
+        action,
+        Action::Prepare | Action::Enable | Action::Lock | Action::Resume
+    ) {
+        let kinds = [FileKind::Any];
+        let specs = [FieldSpec::file(
+            "Qualification evidence (Space to choose)",
             "",
-            "Absolute path to qualification JSON when preparing/enabling/locking",
-        ),
-        FieldSpec::text_hint(
-            "Original manager operation ID (recovery only)",
-            "",
-            if recovery {
-                "32 lowercase hex operation ID"
+            &kinds,
+        )];
+        let Some(path) = form_validated(terminal, "Select qualification evidence", &specs, |v| {
+            if v[0].is_empty() {
+                Err((Some(0), "Choose a qualification evidence file".into()))
             } else {
-                "Leave empty unless recovering an interrupted stage"
-            },
-        ),
-    ];
+                Ok(PathBuf::from(&v[0]))
+            }
+        })?
+        else {
+            return Ok(());
+        };
+        Some(setup::review_public_input(&path)?)
+    } else {
+        None
+    };
     let normal = host::observed_service_state(false)?;
     let commission = host::observed_service_state(true)?;
     let resume = matches!(action, Action::Resume);
@@ -99,43 +177,20 @@ pub(super) fn run(
         Action::Resume => ProvisionAction::Resume,
         Action::Reconcile => ProvisionAction::Reconcile,
     };
-    let manifest_digest = verified.selection().manifest_digest.to_string();
-    let Some(request) = form_validated(
-        terminal,
-        "Device security target and evidence",
-        &specs,
-        |values| {
-            if !recovery && !values[2].trim().is_empty() {
-                return Err((Some(2), "Original operation ID is only for recovery".into()));
-            }
-            let evidence = if values[1].trim().is_empty() {
-                None
-            } else {
-                Some(
-                    setup::review_public_input(Path::new(values[1].trim()))
-                        .map_err(|e| (Some(1), e.to_string()))?,
-                )
-            };
-            let req = Request {
-                action: provision_action,
-                bundle: source.clone(),
-                manifest_digest: manifest_digest.clone(),
-                candidate_accepted: candidate,
-                original_operation: recovery.then(|| values[2].trim().to_owned()),
-                serial: values[0].trim().to_owned(),
-                evidence,
-                normal_state: normal.clone(),
-                commissioning_state: commission.clone(),
-                stop_normal,
-                stop_commissioning,
-            };
-            req.validate().map_err(|e| (Some(0), e.to_string()))?;
-            Ok(req)
-        },
-    )?
-    else {
-        return Ok(());
+    let request = Request {
+        action: provision_action,
+        bundle: source,
+        manifest_digest: verified.selection().manifest_digest.to_string(),
+        candidate_accepted: candidate,
+        original_operation: record.map(|r| r.operation_id.to_string()),
+        serial,
+        evidence,
+        normal_state: normal,
+        commissioning_state: commission,
+        stop_normal,
+        stop_commissioning,
     };
+    request.validate()?;
 
     let lines = vec![
         format!("Stage: {:?}; exact serial: {}", request.action, request.serial),
@@ -156,11 +211,11 @@ pub(super) fn run(
         "The foreground firmware tool owns interactive prompts, physical transitions, and the protected record."
             .into(),
     ];
-    if !review(
+    if !review_mode(
         terminal,
         "Review optional irreversible device security",
         lines,
-        Some(&request.serial),
+        ConfirmMode::YesNo { danger: true },
     )? {
         return Ok(());
     }

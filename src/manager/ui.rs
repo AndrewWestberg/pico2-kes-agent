@@ -9,6 +9,7 @@ use std::{
 };
 mod activity;
 mod backup;
+mod host_security;
 mod lifecycle;
 mod navigation;
 mod producer;
@@ -19,11 +20,12 @@ mod setup;
 mod status;
 mod uninstall;
 mod widgets;
+mod wizard;
 
 use navigation::{Action, View};
 #[cfg(test)]
 use widgets::review_paragraph;
-use widgets::{FieldSpec, form_validated, public_fields, review, tone};
+use widgets::{FieldSpec, form_validated, review, tone};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
@@ -48,7 +50,7 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
         host::{self, HostAction, HostPlan},
         release::{self, Admission},
     };
-    use std::io::{IsTerminal, Write};
+    use std::io::IsTerminal;
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
@@ -64,9 +66,7 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
             println!(
                 "This signed bundle is a candidate, not a qualified release. Install only on a disposable host."
             );
-            print!("Type DISPOSABLE CANDIDATE to accept: ");
-            io::stdout().flush()?;
-            if host::read_confirmation(io::stdin().lock())?.trim() != "DISPOSABLE CANDIDATE" {
+            if !host::ask_yes_no("Proceed with this candidate installation?")? {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "candidate not accepted",
@@ -95,7 +95,7 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
         0o600,
     )?;
     println!(
-        "Installation plan retained at {}. The privileged helper will display the scope and standalone approval digest.",
+        "Installation plan retained at {}. The privileged helper will display the scope and plan digest for your records.",
         path.display()
     );
     let mut command = if rustix::process::geteuid().is_root() {
@@ -649,7 +649,7 @@ fn release_action(
             return releases::tuple_upgrade(terminal, worker, socket, bundle, state, role);
         }
         Action::Browse => {
-            review(terminal, "Release evidence", state.lines(), None)?;
+            review(terminal, "Release evidence", state.lines())?;
         }
         Action::Refresh => state.refresh(),
         Action::Prerelease => state.toggle_prerelease(),
@@ -661,9 +661,6 @@ fn release_action(
             releases::firmware_preview(terminal, worker, socket, bundle, snapshot)?
         }
         Action::FirmwareUpdate => releases::firmware_update(terminal, worker, socket, bundle)?,
-        Action::Inspect => setup::run(1, terminal, worker, role, socket, bundle)?,
-        Action::RecoverFirmware => releases::recover_firmware(terminal, worker, socket)?,
-        Action::Fallback => releases::fallback(terminal, worker, socket)?,
         Action::Reexec => return releases::reexec(terminal),
         Action::Remove => state.remove(terminal)?,
     }
@@ -915,13 +912,13 @@ fn event_loop(
                                 "  ↑↓ / j k / PgUp PgDn  : Move selection or scroll".into(),
                                 "  Enter                 : Open item or review action".into(),
                                 "  Esc                   : Return to previous screen (never mutates)".into(),
-                                "  s                     : Open Guided Setup (from Primary Overview)".into(),
+                                "  s                     : Set up my Pico 2 (from Primary Overview)".into(),
                                 "  d                     : Open structured read-only Evidence drawer".into(),
                                 "  r                     : Refresh host, daemon, device & activity state".into(),
                                 "  q                     : Quit p2kesup".into(),
                                 String::new(),
                                 "Pools Fleet Shortcuts (View 2)".into(),
-                                "  n : Enroll new pool      b : Bind selected unbound pool in config.json".into(),
+                                "  n : Add a pool          R : Rotate KES key       b : Repair pool binding".into(),
                                 "  a : Global pool actions  f : Toggle attention-only  o : Cycle sort  / : Filter".into(),
                                 String::new(),
                                 "Safety & Recovery Principles".into(),
@@ -982,18 +979,6 @@ fn event_loop(
                     }
                     _ => {
                         let hint = match view {
-                            View::Setup => {
-                                "Choose blank commissioning or connect an already-commissioned Pico 2 (missing config != blank)."
-                            }
-                            View::SetupExisting => {
-                                "Preserves existing Pico 2 keys & pin. Imports/builds normal config and starts agentd."
-                            }
-                            View::SetupNew => {
-                                "Guided blank Pico 2 setup. Each step checks live state; interrupted steps reconcile in 6 Activity."
-                            }
-                            View::ActivityManual => {
-                                "Manual recovery & diagnostics for external file paths or explicit operation IDs."
-                            }
                             View::DeviceSecurity => {
                                 "OTP security stages are irreversible; separate qualification evidence and confirmation apply."
                             }
@@ -1018,11 +1003,6 @@ fn event_loop(
                                 &release_state,
                                 bundle,
                             ));
-                        } else if matches!(view, View::SetupExisting | View::SetupNew) {
-                            summary.extend(status::setup_lines(
-                                snapshot.as_deref(),
-                                view == View::SetupNew,
-                            ));
                         }
                         let paragraph = Paragraph::new(summary).wrap(Wrap { trim: false });
                         let height = (paragraph.line_count(regions[1].width) + 1).min(6) as u16;
@@ -1035,19 +1015,19 @@ fn event_loop(
 
                 let keys = match view {
                     View::Overview if role == InstallationRole::Primary => {
-                        "↑↓ Action  Enter Go  s Guided Setup  u Software  d Evidence  r Refresh  q Quit"
+                        "↑↓ Action  Enter Go  s Set up Pico 2  R Rotate KES  u Software  d Details  r Refresh  q Quit"
                     }
                     View::Overview => {
                         "↑↓ Select Workflow   Enter Open   d Evidence   r Refresh   ? Help   q Quit"
                     }
                     View::Pools => {
-                        "↑↓/PgDn Select  Enter Detail  n Enroll  b Bind  a Global  f Attn  o Sort  / Filter"
+                        "↑↓/PgDn Select  Enter Detail  n Add pool  R Rotate KES  b Bind  a Actions  f Attn  o Sort  / Filter"
                     }
                     View::Details => {
-                        "↑↓ Select Action   Enter Review   b Bind Config   Esc Pools   d Evidence"
+                        "↑↓ Select Action   Enter Review   R Rotate KES   b Bind Config   Esc Pools   d Details"
                     }
                     View::Activity => {
-                        "↑↓ Select Record/Receipt/Plan   Enter Inspect & Reconcile   m Manual Menu   r Refresh"
+                        "↑↓ Select Record/Receipt/Plan   Enter Inspect & Reconcile   r Refresh"
                     }
                     View::Evidence => {
                         "←→ Switch Section   ↑↓/PgUp/PgDn Scroll   Esc Back   r Refresh   q Quit"
@@ -1083,6 +1063,71 @@ fn event_loop(
             return Ok(Exit::Quit);
         }
         if small {
+            continue;
+        }
+
+        let wizard_action = if role == InstallationRole::Primary {
+            match (view, key.code) {
+                (View::Overview, KeyCode::Char('s')) => Some(Action::SetupWizard),
+                (View::Pools, KeyCode::Char('n')) => Some(Action::AddPool),
+                (View::Overview | View::Pools | View::Details, KeyCode::Char('R')) => {
+                    Some(Action::RotateKes)
+                }
+                (View::Overview, KeyCode::Enter)
+                    if overview_selected == 2
+                        || (overview_selected == 0
+                            && status::next_step(
+                                snapshot.as_deref(),
+                                activity_inv.unresolved_count,
+                            ) == status::NextStep::Setup) =>
+                {
+                    Some(Action::SetupWizard)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(action) = wizard_action {
+            release_state.pause();
+            let target = if view == View::Overview {
+                snapshot
+                    .as_deref()
+                    .and_then(status::expiring_pool)
+                    .map(|pool| (pool.pool_id.as_str(), pool.incarnation_id.as_str()))
+            } else {
+                selected_identity
+                    .as_ref()
+                    .map(|(pool, incarnation)| (pool.as_str(), incarnation.as_str()))
+            };
+            let result = match action {
+                Action::SetupWizard => wizard::setup::run(terminal, worker, socket, bundle),
+                Action::AddPool => wizard::pool::run(terminal, worker, socket),
+                Action::RotateKes => match target {
+                    Some((pool, incarnation)) => {
+                        wizard::rotate::run(terminal, worker, socket, pool, incarnation)
+                    }
+                    None => Err(io::Error::other(
+                        "Select a pool in Pools to rotate its KES key.",
+                    )),
+                },
+                _ => unreachable!(),
+            };
+            if let Err(error) = result
+                && error.kind() != io::ErrorKind::Interrupted
+            {
+                review(terminal, "Blocked / incomplete", vec![
+                    error.to_string(),
+                    "Open Activity to resume any interrupted operation; do not create a replacement retry.".into(),
+                ])?;
+            }
+            activity_inv = activity::discover(role);
+            if activity_inv.unresolved_count > 0 {
+                history.push(view);
+                view = View::Activity;
+            }
+            release_state.resume();
+            last_snapshot = None;
             continue;
         }
 
@@ -1137,17 +1182,9 @@ fn event_loop(
             KeyCode::Esc => {
                 view = history.pop().unwrap_or(View::Overview);
             }
-            KeyCode::Char('s') if view == View::Overview && role == InstallationRole::Primary => {
-                history.push(view);
-                view = View::Setup;
-            }
             KeyCode::Char('u') if view == View::Overview => {
                 history.push(view);
                 view = View::Releases;
-            }
-            KeyCode::Char('m') if view == View::Activity => {
-                history.push(view);
-                view = View::ActivityManual;
             }
             KeyCode::Char('a') if view == View::Pools => {
                 history.push(view);
@@ -1177,27 +1214,6 @@ fn event_loop(
                     }
                 }
             }
-            KeyCode::Char('n') if view == View::Pools && role == InstallationRole::Primary => {
-                release_state.pause();
-                let idx = navigation::lifecycle_index(lifecycle::Action::Enroll);
-                if let Err(error) =
-                    lifecycle::run(idx, terminal, worker, socket, None, snapshot.as_deref())
-                {
-                    review(
-                        terminal,
-                        "Blocked / incomplete",
-                        vec![
-                            error.to_string(),
-                            "Recovery: open 6 Activity to inspect or reconcile original receipts/records."
-                                .into(),
-                        ],
-                        None,
-                    )?;
-                }
-                activity_inv = activity::discover(role);
-                release_state.resume();
-                last_snapshot = None;
-            }
             KeyCode::Char('b')
                 if matches!(view, View::Pools | View::Details)
                     && role == InstallationRole::Primary =>
@@ -1209,12 +1225,12 @@ fn event_loop(
                     socket,
                     snapshot.as_deref(),
                     selected_identity.as_ref(),
-                ) {
+                ) && error.kind() != io::ErrorKind::Interrupted
+                {
                     review(
                         terminal,
                         "Bind pool blocked / incomplete",
                         vec![error.to_string()],
-                        None,
                     )?;
                 }
                 activity_inv = activity::discover(role);
@@ -1350,7 +1366,6 @@ fn event_loop(
                                     terminal,
                                     "Backup action blocked / incomplete",
                                     vec![error.to_string()],
-                                    None,
                                 )?;
                             }
                             backup_local = Some(observe::local_snapshot());
@@ -1374,7 +1389,9 @@ fn event_loop(
                         match status::next_step(snapshot.as_deref(), activity_inv.unresolved_count)
                         {
                             status::NextStep::Activity => View::Activity,
-                            status::NextStep::Setup => View::Setup,
+                            status::NextStep::Setup => {
+                                unreachable!("setup wizard dispatched above")
+                            }
                             status::NextStep::Host => View::Host,
                             status::NextStep::Pools => View::Pools,
                             status::NextStep::Refresh => {
@@ -1388,7 +1405,7 @@ fn event_loop(
                         }
                     }
                     1 => View::Pools,
-                    2 => View::Setup,
+                    2 => unreachable!("setup wizard dispatched above"),
                     3 => View::Host,
                     4 => View::Device,
                     5 => View::Releases,
@@ -1408,21 +1425,20 @@ fn event_loop(
             }
             KeyCode::Enter if view == View::Activity => {
                 let Some(item) = activity_inv.items.get(activity_selected).cloned() else {
-                    history.push(view);
-                    view = View::ActivityManual;
                     continue;
                 };
                 release_state.pause();
-                if let Err(error) = activity::open_item(&item, terminal, worker, socket, bundle) {
+                if let Err(error) = activity::open_item(&item, terminal, worker, socket, bundle)
+                    && error.kind() != io::ErrorKind::Interrupted
+                {
                     review(
                         terminal,
                         "Reconciliation blocked / incomplete",
                         vec![
-                            error.to_string(),
-                            "Retain the original record/receipt; never submit a duplicate replacement."
-                                .into(),
-                        ],
-                        None,
+                        error.to_string(),
+                        "Retain the original record/receipt; never submit a duplicate replacement."
+                            .into(),
+                    ],
                     )?;
                 }
                 activity_inv = activity::discover(role);
@@ -1453,6 +1469,17 @@ fn event_loop(
                     None
                 };
                 let result = match entry.action {
+                    Action::SetupWizard => {
+                        wizard::setup::run(terminal, worker, socket, bundle).map(|()| None)
+                    }
+                    Action::AddPool => wizard::pool::run(terminal, worker, socket).map(|()| None),
+                    Action::RotateKes => match target {
+                        Some((pool, incarnation)) => {
+                            wizard::rotate::run(terminal, worker, socket, pool, incarnation)
+                                .map(|()| None)
+                        }
+                        None => Err(io::Error::other("Select a pool first.")),
+                    },
                     Action::Setup(index) => {
                         setup::run(index, terminal, worker, role, socket, bundle).map(|()| None)
                     }
@@ -1470,14 +1497,6 @@ fn event_loop(
                         lifecycle::run(index, terminal, worker, socket, target, snapshot.as_deref())
                             .map(|()| None)
                     }
-                    Action::BindSelectedPool => bind_selected_pool(
-                        terminal,
-                        worker,
-                        socket,
-                        snapshot.as_deref(),
-                        selected_identity.as_ref(),
-                    )
-                    .map(|()| None),
                     Action::Service(index) => {
                         service::run(index, terminal, worker, socket, &diagnostics).map(|()| None)
                     }
@@ -1498,17 +1517,13 @@ fn event_loop(
                 match result {
                     Ok(Some(path)) => return Ok(Exit::Reexec(path)),
                     Ok(None) => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => {
-                        review(
-                            terminal,
-                            "Blocked / incomplete",
-                            vec![
-                                error.to_string(),
-                                "Recovery: open 6 Activity to inspect or reconcile the original record/receipt (never create a replacement retry)."
-                                    .into(),
-                            ],
-                            None,
-                        )?;
+                        review(terminal, "Blocked / incomplete", vec![
+                            error.to_string(),
+                            "Recovery: open 6 Activity to inspect or reconcile the original record/receipt (never create a replacement retry)."
+                                .into(),
+                        ])?;
                     }
                 }
                 if role == InstallationRole::Backup {

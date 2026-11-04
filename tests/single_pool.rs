@@ -183,6 +183,14 @@ fn attended_commissioning_publishes_pin_and_normal_restart_authenticates_it() {
     assert_eq!(committed["result"]["commissioning_state"], "committed");
     assert!(committed["result"].get("device_id").is_some());
     assert!(committed["result"].get("revision").is_some());
+    let inventory = rig.inventory_cli();
+    assert_eq!(inventory.exit_code, 0);
+    let inventory: Value = serde_json::from_slice(&inventory.stdout).unwrap();
+    assert_eq!(
+        inventory["result"]["device_id"],
+        committed["result"]["device_id"]
+    );
+    assert_eq!(inventory["result"]["pools"], serde_json::json!([]));
     let pin_bytes = std::fs::read(rig.pin_record_path()).unwrap();
     let record: Value = serde_json::from_slice(&pin_bytes).unwrap();
     assert_eq!(record["version"], 1);

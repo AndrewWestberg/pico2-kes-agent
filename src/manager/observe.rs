@@ -357,7 +357,7 @@ fn local(config: Option<&Path>) -> LocalOverview {
                                 crate::config::RunMode::Commissioning
                             };
                             let (config_identity, validated_networks) =
-                                match crate::config::Config::from_bytes(&bytes, mode) {
+                                match crate::config::Config::inspect_bytes(&bytes, mode) {
                                     Ok(cfg) => (Some(cfg.identity_hex()), cfg.networks),
                                     Err(_) => (None, HashMap::new()),
                                 };

@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use kes_core::{
-    identity::{Digest32, GenerationId, IncarnationId, OperationId, PoolId},
+    identity::{DeviceId, Digest32, GenerationId, IncarnationId, OperationId, PoolId},
     operation::{
         Action as DeviceAction, Binding, CertificateBytes, CommittedResult, GenerationTarget,
         LiveTarget, Mutation, PoolTarget, UsbSerial,
@@ -228,6 +228,16 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 
     fn inventory(&mut self) -> Result<Value, Error> {
+        let expected_device = match self.config.mode {
+            RunMode::Normal => self
+                .config
+                .pin
+                .map(|pin| pin.device)
+                .ok_or(Error::Protocol)?,
+            RunMode::Commissioning => {
+                parse_id::<16, DeviceId>(&self.device_info()?, "device_id", DeviceId::from_bytes)?
+            }
+        };
         let reply = self.usb.request(&Request::PoolInventory)?;
         if reply.kind != wire::Kind::PoolInventory {
             return Err(Error::Protocol);
@@ -235,7 +245,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         let Response::PoolInventory(response) = reply.decode().map_err(|_| Error::Protocol)? else {
             return Err(Error::Protocol);
         };
-        if self.config.pin.map(|pin| pin.device) != Some(response.device) {
+        if expected_device != response.device {
             return Err(Error::Protocol);
         }
         let count = usize::from(response.inventory.count);
@@ -1129,6 +1139,7 @@ fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
             Action::DeviceStatus
                 | Action::DeviceSecurity
                 | Action::DeviceInfo
+                | Action::DeviceInventory
                 | Action::HostObserve
                 | Action::DeviceCommission
                 | Action::OperationReconcile

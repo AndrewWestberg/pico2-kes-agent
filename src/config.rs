@@ -215,6 +215,15 @@ impl Config {
     }
 
     pub(crate) fn from_bytes(bytes: &[u8], mode: RunMode) -> Result<Self, Error> {
+        Self::parse_bytes(bytes, mode, true)
+    }
+
+    /// Public UI inspection only; daemon admission must use `load`/`from_bytes`.
+    pub(crate) fn inspect_bytes(bytes: &[u8], mode: RunMode) -> Result<Self, Error> {
+        Self::parse_bytes(bytes, mode, false)
+    }
+
+    fn parse_bytes(bytes: &[u8], mode: RunMode, runtime: bool) -> Result<Self, Error> {
         if bytes.len() as u64 > MAX_CONFIG_BYTES {
             return Err(Error::Invalid("configuration exceeds 1 MiB"));
         }
@@ -231,8 +240,12 @@ impl Config {
                 reason: "must be exactly 0660",
             });
         }
-        validate_absolute_directory(&raw.socket_directory, false)?;
-        validate_absolute_directory(&raw.state_directory, true)?;
+        checked_absolute(&raw.socket_directory, "socket_directory")?;
+        checked_absolute(&raw.state_directory, "state_directory")?;
+        if runtime {
+            validate_absolute_directory(&raw.socket_directory, false)?;
+            validate_absolute_directory(&raw.state_directory, true)?;
+        }
         let management_socket = checked_socket_path(&raw.socket_directory, &raw.management_socket)?;
         let socket_gid = resolve_group(&raw.socket_group)?;
         let selected_serial =
@@ -410,8 +423,24 @@ fn load_network(raw: RawNetwork) -> Result<NetworkConfig, Error> {
             reason: "does not match Shelley genesis file",
         });
     }
-    let byron: ByronGenesis = serde_json::from_slice(&byron_bytes)?;
-    let shelley: ShelleyGenesis = serde_json::from_slice(&shelley_bytes)?;
+    network_from_genesis(
+        &byron_bytes,
+        &shelley_bytes,
+        raw.byron_to_shelley_epochs,
+        Duration::from_millis(raw.max_context_age_ms),
+    )
+}
+
+/// Build the same network timing and binding used by the daemon from public genesis bytes.
+pub fn network_from_genesis(
+    byron_bytes: &[u8],
+    shelley_bytes: &[u8],
+    byron_to_shelley_epochs: u64,
+    max_age: Duration,
+) -> Result<NetworkConfig, Error> {
+    let digest = Digest32::from_bytes(Sha256::digest(shelley_bytes).into());
+    let byron: ByronGenesis = serde_json::from_slice(byron_bytes)?;
+    let shelley: ShelleyGenesis = serde_json::from_slice(shelley_bytes)?;
     if byron.protocol_consts.protocol_magic != shelley.network_magic {
         return Err(Error::Invalid("genesis network magic mismatch"));
     }
@@ -433,7 +462,7 @@ fn load_network(raw: RawNetwork) -> Result<NetworkConfig, Error> {
         .protocol_consts
         .k
         .checked_mul(10)
-        .and_then(|slots| slots.checked_mul(raw.byron_to_shelley_epochs))
+        .and_then(|slots| slots.checked_mul(byron_to_shelley_epochs))
         .ok_or(Error::Invalid("genesis timing overflow"))?;
     let start_time_us = byron
         .start_time
@@ -460,7 +489,7 @@ fn load_network(raw: RawNetwork) -> Result<NetworkConfig, Error> {
             start_time_us,
             slot_length_us: decimal_microseconds(&shelley.slot_length)?,
         },
-        max_age: Duration::from_millis(raw.max_context_age_ms),
+        max_age,
     };
     validate_network_config(&network)
         .map_err(|_| Error::Invalid("invalid network timing or context lease"))?;
@@ -640,6 +669,46 @@ mod tests {
         let link = fixture.0.join("candidate-link.json");
         std::os::unix::fs::symlink(&fifo, &link).unwrap();
         assert!(crate::manager::setup::review_config(&link, RunMode::Normal).is_err());
+    }
+
+    #[test]
+    fn public_inspection_does_not_require_or_create_service_directories() {
+        let fixture = Fixture::new();
+        let socket = fixture.0.join("run");
+        let state = fixture.0.join("state");
+        let mut value = serde_json::json!({
+            "version": 1,
+            "device": {"usb_serial": "0123456789abcdef"},
+            "socket_directory": socket,
+            "socket_group": "root",
+            "socket_mode": "0660",
+            "management_socket": socket.join("management.sock"),
+            "state_directory": state,
+            "networks": {},
+            "pools": []
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(
+            Config::inspect_bytes(&bytes, RunMode::Commissioning)
+                .unwrap()
+                .state_directory,
+            state
+        );
+        assert!(
+            matches!(Config::from_bytes(&bytes, RunMode::Commissioning), Err(Error::Io(e)) if e.kind() == io::ErrorKind::NotFound)
+        );
+        assert!(!socket.exists() && !state.exists());
+        value["device"]["usb_serial"] = "bad".into();
+        assert!(
+            Config::inspect_bytes(&serde_json::to_vec(&value).unwrap(), RunMode::Commissioning)
+                .is_err()
+        );
+        value["device"]["usb_serial"] = "0123456789abcdef".into();
+        value["state_directory"] = "relative".into();
+        assert!(
+            Config::inspect_bytes(&serde_json::to_vec(&value).unwrap(), RunMode::Commissioning)
+                .is_err()
+        );
     }
 
     fn byron(start: &str, k: &str, magic: &str, duration: &str) -> String {

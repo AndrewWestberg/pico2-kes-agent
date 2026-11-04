@@ -1,4 +1,8 @@
-use std::{io, time::Duration};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -21,14 +25,16 @@ pub(super) fn tone(color: Color) -> Style {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum FieldKind<'a> {
+pub(crate) enum FieldKind<'a> {
     Text,
     Select(&'a [(&'a str, &'a str)]),
+    File(&'a [crate::manager::discovery::files::FileKind]),
+    MultiSelect(&'a [(&'a str, &'a str)]),
     ReadOnly,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct FieldSpec<'a> {
+pub(crate) struct FieldSpec<'a> {
     pub label: &'a str,
     pub initial: &'a str,
     pub hint: Option<&'a str>,
@@ -66,6 +72,31 @@ impl<'a> FieldSpec<'a> {
             kind: FieldKind::Select(options),
         }
     }
+    pub const fn file(
+        label: &'a str,
+        initial: &'a str,
+        kinds: &'a [crate::manager::discovery::files::FileKind],
+    ) -> Self {
+        Self {
+            label,
+            initial,
+            hint: None,
+            kind: FieldKind::File(kinds),
+        }
+    }
+
+    pub const fn multiselect(
+        label: &'a str,
+        initial: &'a str,
+        options: &'a [(&'a str, &'a str)],
+    ) -> Self {
+        Self {
+            label,
+            initial,
+            hint: None,
+            kind: FieldKind::MultiSelect(options),
+        }
+    }
 
     pub const fn readonly(label: &'a str, value: &'a str) -> Self {
         Self {
@@ -82,10 +113,10 @@ impl<'a> FieldSpec<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum ConfirmMode<'a> {
+pub(crate) enum ConfirmMode<'a> {
     None,
     Enter(&'a str),
-    Phrase(&'a str),
+    YesNo { danger: bool },
 }
 
 #[cfg(test)]
@@ -377,7 +408,7 @@ fn last_editable(specs: &[FieldSpec<'_>]) -> Option<usize> {
     specs.iter().rposition(FieldSpec::editable)
 }
 
-pub(super) fn form_validated<T>(
+pub(crate) fn form_validated<T>(
     terminal: &mut TerminalOwner,
     title: &str,
     specs: &[FieldSpec<'_>],
@@ -437,7 +468,7 @@ pub(super) fn form_validated<T>(
                                 style,
                             );
                             match spec.kind {
-                                FieldKind::Text => {
+                                FieldKind::Text | FieldKind::File(_) | FieldKind::MultiSelect(_) => {
                                     lines.push(render_cursor_line(
                                         &values[i],
                                         cursors[i],
@@ -509,6 +540,9 @@ pub(super) fn form_validated<T>(
                         FieldKind::Select(_) => {
                             "←/→/Space choose · ↑/↓/Tab field · Enter next/submit · Esc cancel"
                         }
+                        FieldKind::File(_) | FieldKind::MultiSelect(_) => {
+                            "Space opens picker · ↑/↓/Tab field · Enter next/submit · Esc cancel"
+                        }
                         _ => {
                             "←/→/Home/End/Ctrl+W edit · ↑/↓/Tab field · Enter next/submit · Esc cancel"
                         }
@@ -565,6 +599,22 @@ pub(super) fn form_validated<T>(
             }
             _ => {}
         }
+        if key.code == KeyCode::Char(' ') {
+            let picked = match specs[selected].kind {
+                FieldKind::File(kinds) => pick_file(terminal, specs[selected].label, kinds)?
+                    .map(|p| p.to_string_lossy().into_owned()),
+                FieldKind::MultiSelect(options) => {
+                    multi_select(terminal, specs[selected].label, options, &values[selected])?
+                }
+                _ => None,
+            };
+            if let Some(value) = picked {
+                values[selected] = value;
+                cursors[selected] = values[selected].len();
+                error_banner = None;
+                continue;
+            }
+        }
         match specs[selected].kind {
             FieldKind::Text => {
                 if edit_text_key(&mut values[selected], &mut cursors[selected], key) {
@@ -587,21 +637,160 @@ pub(super) fn form_validated<T>(
                     error_banner = None;
                 }
             }
-            FieldKind::Select(_) | FieldKind::ReadOnly => {}
+            FieldKind::Select(_)
+            | FieldKind::ReadOnly
+            | FieldKind::File(_)
+            | FieldKind::MultiSelect(_) => {}
         }
     }
 }
 
-pub(super) fn public_fields(
+pub(crate) fn progress_steps(labels: &[&str], current: usize) -> Vec<String> {
+    labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            format!(
+                "{} {label}",
+                if i < current {
+                    "✓"
+                } else if i == current {
+                    "▶"
+                } else {
+                    "·"
+                }
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn multi_select(
     terminal: &mut TerminalOwner,
     title: &str,
-    fields: &[(&str, &str)],
-) -> io::Result<Option<Vec<String>>> {
-    let specs: Vec<FieldSpec<'_>> = fields
-        .iter()
-        .map(|(label, initial)| FieldSpec::text(label, initial))
-        .collect();
-    form_validated(terminal, title, &specs, |values| Ok(values.to_vec()))
+    options: &[(&str, &str)],
+    initial: &str,
+) -> io::Result<Option<String>> {
+    let mut selected: Vec<&str> = initial.split(',').filter(|s| !s.is_empty()).collect();
+    loop {
+        let labels: Vec<String> = options
+            .iter()
+            .map(|(value, description)| {
+                format!(
+                    "[{}] {} {}",
+                    if selected.contains(value) { "x" } else { " " },
+                    value,
+                    description
+                )
+            })
+            .chain(std::iter::once("Done".to_owned()))
+            .collect();
+        let indices: Vec<String> = (0..labels.len()).map(|i| i.to_string()).collect();
+        let choices: Vec<(&str, &str)> = indices
+            .iter()
+            .zip(&labels)
+            .map(|(i, label)| (i.as_str(), label.as_str()))
+            .collect();
+        let specs = [FieldSpec::select(
+            "Toggle an item, or select Done",
+            "0",
+            &choices,
+        )];
+        let Some(index) = form_validated(terminal, title, &specs, |v| {
+            v[0].parse::<usize>()
+                .map_err(|_| (Some(0), "Invalid selection".into()))
+        })?
+        else {
+            return Ok(None);
+        };
+        if index == options.len() {
+            return Ok(Some(selected.join(",")));
+        }
+        let value = options[index].0;
+        if let Some(pos) = selected.iter().position(|v| *v == value) {
+            selected.remove(pos);
+        } else {
+            selected.push(value);
+        }
+    }
+}
+
+pub(crate) fn pick_file(
+    terminal: &mut TerminalOwner,
+    title: &str,
+    kinds: &[crate::manager::discovery::files::FileKind],
+) -> io::Result<Option<PathBuf>> {
+    use crate::manager::discovery::files::find_candidates;
+    let mut candidates = Vec::new();
+    for kind in kinds {
+        for path in find_candidates(*kind) {
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
+    }
+    let mut directory: Option<PathBuf> = None;
+    loop {
+        let mut paths = if let Some(dir) = &directory {
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .collect();
+            entries.sort();
+            entries
+        } else {
+            candidates.clone()
+        };
+        if let Some(dir) = &directory
+            && let Some(parent) = dir.parent()
+        {
+            paths.insert(0, parent.to_path_buf());
+        }
+        let mut labels: Vec<String> = paths
+            .iter()
+            .map(|p| format!("{}{}", p.display(), if p.is_dir() { "/" } else { "" }))
+            .collect();
+        labels.push("Browse…".into());
+        labels.push("Enter path…".into());
+        let indices: Vec<String> = (0..labels.len()).map(|i| i.to_string()).collect();
+        let choices: Vec<(&str, &str)> = indices
+            .iter()
+            .zip(&labels)
+            .map(|(i, label)| (i.as_str(), label.as_str()))
+            .collect();
+        let specs = [FieldSpec::select("Choose a file", "0", &choices)];
+        let Some(index) = form_validated(terminal, title, &specs, |v| {
+            v[0].parse::<usize>()
+                .map_err(|_| (Some(0), "Invalid selection".into()))
+        })?
+        else {
+            return Ok(None);
+        };
+        if index < paths.len() {
+            if paths[index].is_dir() {
+                directory = Some(paths[index].clone());
+                continue;
+            }
+            return Ok(Some(paths[index].clone()));
+        }
+        if index == paths.len() {
+            directory = Some(std::env::current_dir()?);
+            continue;
+        }
+        let specs = [FieldSpec::text("Path", "")];
+        return form_validated(terminal, title, &specs, |v| {
+            let path = Path::new(v[0].trim());
+            if path.as_os_str().is_empty() {
+                return Err((Some(0), "Enter a path".into()));
+            }
+            if path.is_absolute() {
+                Ok(path.to_path_buf())
+            } else {
+                std::env::current_dir()
+                    .map(|dir| dir.join(path))
+                    .map_err(|e| (Some(0), e.to_string()))
+            }
+        });
+    }
 }
 
 pub(super) fn review_paragraph(title: &str, lines: Vec<String>) -> io::Result<Paragraph<'_>> {
@@ -632,18 +821,51 @@ fn max_scroll(paragraph: &Paragraph<'_>, width: u16, height: u16) -> u16 {
         .min(usize::from(u16::MAX)) as u16
 }
 
-pub(super) fn review_mode(
+pub(crate) fn review_mode(
     terminal: &mut TerminalOwner,
     title: &str,
     lines: Vec<String>,
     mode: ConfirmMode<'_>,
 ) -> io::Result<bool> {
+    review_inner(terminal, title, lines, mode, None)
+}
+
+pub(crate) fn review_details(
+    terminal: &mut TerminalOwner,
+    title: &str,
+    summary: Vec<String>,
+    details: Vec<String>,
+) -> io::Result<bool> {
+    review_inner(
+        terminal,
+        title,
+        summary,
+        ConfirmMode::YesNo { danger: false },
+        Some(details),
+    )
+}
+
+fn review_inner(
+    terminal: &mut TerminalOwner,
+    title: &str,
+    lines: Vec<String>,
+    mode: ConfirmMode<'_>,
+    details: Option<Vec<String>>,
+) -> io::Result<bool> {
     let base_paragraph = review_paragraph(title, lines.clone())?;
     let _ = base_paragraph;
-    let safe_lines: Vec<Line<'static>> = lines
+    let mut safe_lines: Vec<Line<'static>> = lines
         .into_iter()
         .map(|line| Line::from(safe(&line)))
         .collect();
+    let detail_lines = details.map(|lines| {
+        lines
+            .into_iter()
+            .map(|line| Line::from(safe(&line)))
+            .collect::<Vec<_>>()
+    });
+    let summary_lines = safe_lines.clone();
+    let mut showing_details = false;
     let mut scroll = 0u16;
     let mut redraw = true;
     loop {
@@ -670,13 +892,21 @@ pub(super) fn review_mode(
             } else {
                 format!(" {} ", safe(title))
             };
+            let danger = matches!(mode, ConfirmMode::YesNo { danger: true });
             let paragraph = Paragraph::new(safe_lines.clone())
                 .wrap(Wrap { trim: false })
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(title_with_pos)
-                        .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        .title(if danger {
+                            format!(" DESTRUCTIVE — {title_with_pos}")
+                        } else {
+                            title_with_pos
+                        })
+                        .title_style(
+                            tone(if danger { Color::Red } else { Color::Cyan })
+                                .add_modifier(Modifier::BOLD),
+                        ),
                 )
                 .scroll((scroll, 0));
             terminal.terminal()?.draw(|frame| {
@@ -697,12 +927,16 @@ pub(super) fn review_mode(
                             .style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
                         Line::from("↑↓/j k/PgUp/PgDn/g/G scroll").style(tone(Color::DarkGray)),
                     ],
-                    ConfirmMode::Phrase(expected) => vec![
-                        Line::from(format!(
-                            "Enter: open confirmation ({}) · Esc/q: cancel",
-                            safe(expected)
-                        ))
-                        .style(tone(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    ConfirmMode::YesNo { danger } => vec![
+                        Line::from(if detail_lines.is_some() {
+                            "Proceed? [y/N] · d: details · Esc/q: cancel"
+                        } else {
+                            "Proceed? [y/N] · Esc/q: cancel"
+                        })
+                        .style(
+                            tone(if danger { Color::Red } else { Color::Yellow })
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Line::from("↑↓/j k/PgUp/PgDn/g/G scroll").style(tone(Color::DarkGray)),
                     ],
                 };
@@ -728,6 +962,15 @@ pub(super) fn review_mode(
         }
         let page = content_h.saturating_sub(1).max(1);
         match key.code {
+            KeyCode::Char('d') if detail_lines.is_some() => {
+                showing_details = !showing_details;
+                safe_lines = if showing_details {
+                    detail_lines.as_ref().unwrap().clone()
+                } else {
+                    summary_lines.clone()
+                };
+                scroll = 0;
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 scroll = scroll.saturating_add(1).min(limit);
             }
@@ -752,26 +995,16 @@ pub(super) fn review_mode(
             KeyCode::End | KeyCode::Char('G') => {
                 scroll = limit;
             }
+            KeyCode::Char('y' | 'Y') if matches!(mode, ConfirmMode::YesNo { .. }) => {
+                return Ok(true);
+            }
+            KeyCode::Char('n' | 'N') if matches!(mode, ConfirmMode::YesNo { .. }) => {
+                return Ok(false);
+            }
             KeyCode::Enter => match mode {
                 ConfirmMode::None => return Ok(false),
                 ConfirmMode::Enter(_) => return Ok(true),
-                ConfirmMode::Phrase(expected) => {
-                    let label = format!("Type exactly: {expected}");
-                    let specs = [FieldSpec::text(&label, "")];
-                    let confirmed = form_validated(terminal, title, &specs, |values| {
-                        if values[0].trim() == expected {
-                            Ok(())
-                        } else {
-                            Err((
-                                Some(0),
-                                format!(
-                                    "Confirmation must match '{expected}' (or press Esc to cancel)"
-                                ),
-                            ))
-                        }
-                    })?;
-                    return Ok(confirmed.is_some());
-                }
+                ConfirmMode::YesNo { .. } => {}
             },
             _ => {}
         }
@@ -782,13 +1015,8 @@ pub(super) fn review(
     terminal: &mut TerminalOwner,
     title: &str,
     lines: Vec<String>,
-    confirmation: Option<&str>,
 ) -> io::Result<bool> {
-    let mode = match confirmation {
-        None => ConfirmMode::None,
-        Some(phrase) => ConfirmMode::Phrase(phrase),
-    };
-    review_mode(terminal, title, lines, mode)
+    review_mode(terminal, title, lines, ConfirmMode::None)
 }
 
 #[cfg(test)]

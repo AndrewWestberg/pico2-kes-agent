@@ -3,7 +3,6 @@ use super::{
     widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
 };
 use crate::manager::{
-    config_builder::candidate_usb_serial,
     host::{self, HostAction},
     model::{InstallationRegistry, InstallationRole, MaintenanceRecord, Qualification},
     observe::{Snapshot, Worker},
@@ -30,9 +29,6 @@ pub(super) enum Action {
     Select,
     FirmwarePreview,
     FirmwareUpdate,
-    Inspect,
-    RecoverFirmware,
-    Fallback,
     Reexec,
     Remove,
 }
@@ -45,9 +41,6 @@ pub(super) const PRIMARY_ACTIONS: &[Action] = &[
     Action::Select,
     Action::FirmwarePreview,
     Action::FirmwareUpdate,
-    Action::Inspect,
-    Action::RecoverFirmware,
-    Action::Fallback,
     Action::Reexec,
     Action::Remove,
 ];
@@ -58,8 +51,6 @@ pub(super) const BACKUP_ACTIONS: &[Action] = &[
     Action::Prerelease,
     Action::Offline,
     Action::Select,
-    Action::Inspect,
-    Action::Fallback,
     Action::Reexec,
     Action::Remove,
 ];
@@ -74,9 +65,6 @@ impl Action {
             Self::Select => "Select independent host component versions (advanced)",
             Self::FirmwarePreview => "Preview authenticated firmware transfer (read-only)",
             Self::FirmwareUpdate => "Update pinned Pico 2 firmware only",
-            Self::Inspect => "Inspect original host plan (read-only)",
-            Self::RecoverFirmware => "Reconcile original firmware update",
-            Self::Fallback => "Recover original host update / compatible fallback",
             Self::Reexec => "Re-exec installed p2kesup manager",
             Self::Remove => "Remove cached release bundle (preserves records)",
         }
@@ -197,7 +185,6 @@ impl State {
                     "No cached release bundles are currently discovered.".into(),
                     "Refresh release inventory first if you expected cached bundles.".into(),
                 ],
-                None,
             )?;
             return Ok(());
         }
@@ -241,7 +228,7 @@ impl State {
                 "Offline installation/upgrade of this release will require reacquiring authenticated bundle bytes."
                     .into(),
             ],
-            ConfirmMode::Enter("remove selected cached bundle"),
+            ConfirmMode::YesNo { danger: true },
         )? {
             return Ok(());
         }
@@ -278,7 +265,7 @@ fn candidate_review(
     if launched.map(PathBuf::as_path) != Some(path) {
         return Ok(false);
     }
-    review(
+    review_mode(
         terminal,
         "Explicit disposable candidate acceptance",
         vec![
@@ -289,7 +276,7 @@ fn candidate_review(
             "Signature, exact tuple, persistent-state readability, hardware, and independent postchecks remain mandatory. Candidate is not qualified."
                 .into(),
         ],
-        Some("DISPOSABLE CANDIDATE"),
+        ConfirmMode::YesNo { danger: false },
     )
 }
 
@@ -404,7 +391,6 @@ pub(super) fn tuple_upgrade(
                 ),
                 "No host or firmware changes were staged.".into(),
             ],
-            None,
         )?;
         return Ok(None);
     }
@@ -494,7 +480,7 @@ fn resume_upgrade_with_worker(
         terminal,
         "Recover original upgrade",
         lines,
-        ConfirmMode::Enter("stage upgrade recovery plan & launch sudo host-apply"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -558,14 +544,14 @@ fn upgrade_direct_with_worker(
     let role = registry.role;
     let candidate = bundle.selection().qualification == Qualification::Candidate;
     if candidate
-        && !review(
+        && !review_mode(
             terminal,
             "Explicit candidate admission",
             vec![
                 "This signed candidate is not qualified. Proceed only on a disposable host; all state and hardware checks remain mandatory."
                     .into(),
             ],
-            Some("DISPOSABLE CANDIDATE"),
+            ConfirmMode::YesNo { danger: false },
         )?
     {
         return Err(io::Error::new(
@@ -664,7 +650,7 @@ fn upgrade_direct_with_worker(
         terminal,
         "Review complete tuple upgrade",
         lines,
-        ConfirmMode::Enter("stage upgrade plan & launch sudo host-apply"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -956,7 +942,7 @@ pub(super) fn component_update(
         terminal,
         "Review host component update",
         lines,
-        ConfirmMode::Enter("approve component tuple & continue"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }
@@ -1023,7 +1009,7 @@ pub(super) fn reexec(terminal: &mut TerminalOwner) -> io::Result<Option<PathBuf>
         terminal,
         "Re-exec installed p2kesup manager",
         lines,
-        ConfirmMode::Enter("re-exec installed p2kesup now"),
+        ConfirmMode::YesNo { danger: false },
     )?
     .then_some(path))
 }
@@ -1049,34 +1035,17 @@ pub(super) fn firmware_preview(
     let Some((_, bundle, _)) = setup::bundle(terminal, launched)? else {
         return Ok(());
     };
-    let serial_hint = snapshot
-        .and_then(|s| s.device.value.as_ref())
-        .and_then(|d| d.get("usb_serial"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| {
-            snapshot
-                .and_then(|s| s.local.value.as_ref())
-                .and_then(|l| l.config_summary.value.as_ref())
-                .and_then(|c| c.usb_serial.clone())
-        })
-        .or_else(candidate_usb_serial)
-        .unwrap_or_default();
-    let specs = [FieldSpec::text_hint(
-        "Pinned application USB serial (16 ASCII characters)",
-        &serial_hint,
-        "Read-only preview; no flash writes or service changes",
-    )];
-    let Some(serial) = form_validated(terminal, "Firmware transfer preview", &specs, |values| {
-        let ser = values[0].trim();
-        if ser.len() != 16 || !ser.is_ascii() {
-            return Err((Some(0), "USB serial must be 16 ASCII characters".into()));
-        }
-        Ok(ser.to_owned())
-    })?
-    else {
-        return Ok(());
-    };
+    let serial = snapshot
+        .and_then(|s| s.local.value.as_ref())
+        .and_then(|l| l.config_summary.value.as_ref())
+        .filter(|c| c.pinned_device_id.is_some())
+        .and_then(|c| c.usb_serial.clone())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Pinned device serial is unavailable",
+            )
+        })?;
     let record = std::env::temp_dir().join(format!("p2kesup-preview-{}.json", new_id()?));
     let mut command = Command::new("/usr/bin/python3");
     command
@@ -1103,7 +1072,6 @@ pub(super) fn firmware_preview(
             format!("Foreground preview exit: {status}"),
             "No transfer, service change, or new firmware record was requested.".into(),
         ],
-        None,
     )?;
     Ok(())
 }
@@ -1157,11 +1125,7 @@ fn capture_firmware_review(
         terminal,
         "Capture protected maintenance pre-state",
         lines,
-        ConfirmMode::Enter(if temporary {
-            "permit temporary service start & capture pre-state"
-        } else {
-            "capture pinned pre-state via helper"
-        }),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(None);
     }
@@ -1202,7 +1166,7 @@ fn capture_firmware_review(
         terminal,
         "Verify observed pinned pre-state",
         lines,
-        ConfirmMode::Enter("confirm observed device & pre-state"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(None);
     }
@@ -1301,7 +1265,7 @@ pub(super) fn firmware_update(
         terminal,
         "Attended existing-device firmware update",
         lines,
-        ConfirmMode::Enter("approve firmware update & stage host plan"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }
@@ -1327,60 +1291,6 @@ pub(super) fn firmware_update(
     )
 }
 
-fn original_record(
-    terminal: &mut TerminalOwner,
-    expected_action: &str,
-) -> io::Result<Option<MaintenanceRecord>> {
-    let hint = RecordStore::list_host_readonly()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|r| match r {
-            Record::Supported(rec) if rec.action == expected_action => Some(*rec),
-            _ => None,
-        })
-        .max_by_key(|r| {
-            (
-                !host::maintenance_outcome_allows_new_action(&r.outcome),
-                r.checkpoints.last().map_or(0, |c| c.observed_at_unix_us),
-            )
-        })
-        .map(|r| r.operation_id.to_string())
-        .unwrap_or_default();
-    let specs = [FieldSpec::text(
-        "Original operation ID (32 lowercase hex)",
-        &hint,
-    )];
-    let Some(id) = form_validated(terminal, "Reopen original maintenance", &specs, |values| {
-        kes_core::identity::OperationId::parse_hex(values[0].trim()).map_err(|_| {
-            (
-                Some(0),
-                "Operation ID must be 32 lowercase hex characters".into(),
-            )
-        })
-    })?
-    else {
-        return Ok(None);
-    };
-    let path = Path::new("/var/lib/p2kesup/records").join(format!("{id}.json"));
-    let record: MaintenanceRecord = root_json(&path)?;
-    crate::manager::model::require_supported_schema(record.schema_version)
-        .map_err(io::Error::other)?;
-    if record.operation_id != id {
-        return Err(io::Error::other("original record identity mismatch"));
-    }
-    review(
-        terminal,
-        "Original maintenance evidence",
-        serde_json::to_string_pretty(&record)
-            .map_err(io::Error::other)?
-            .lines()
-            .map(str::to_owned)
-            .collect(),
-        None,
-    )?;
-    Ok(Some(record))
-}
-
 pub(super) fn recover_firmware_record(
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
@@ -1390,10 +1300,16 @@ pub(super) fn recover_firmware_record(
     if record.action != "firmware-update" {
         return Err(io::Error::other("original record is not a firmware update"));
     }
-    let specs = [FieldSpec::text_hint(
-        "Accounted CLI receipt paths (semicolon-separated, optional)",
+    let paths = workspace::list_files(WorkspaceKind::Receipts)?;
+    let labels: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let options: Vec<(&str, &str)> = labels.iter().map(|p| (p.as_str(), "")).collect();
+    let specs = [FieldSpec::multiselect(
+        "Accounted lifecycle receipts",
         "",
-        "Include only if lifecycle mutations occurred after the firmware transfer",
+        &options,
     )];
     let Some(receipts) = form_validated(
         terminal,
@@ -1402,7 +1318,7 @@ pub(super) fn recover_firmware_record(
         |values| {
             let mut list = Vec::new();
             for item in values[0]
-                .split(';')
+                .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
@@ -1437,7 +1353,7 @@ pub(super) fn recover_firmware_record(
             "Reconciles only this original record using current pin/build/storage and accounted public forward transitions (no flash writes, reset, re-pin, or OTP)."
                 .into(),
         ],
-        ConfirmMode::Enter("stage firmware recovery plan"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }
@@ -1454,17 +1370,6 @@ pub(super) fn recover_firmware_record(
         },
         None,
     )
-}
-
-pub(super) fn recover_firmware(
-    terminal: &mut TerminalOwner,
-    worker: &mut Option<Worker>,
-    socket: &Path,
-) -> io::Result<()> {
-    let Some(record) = original_record(terminal, "firmware-update")? else {
-        return Ok(());
-    };
-    recover_firmware_record(terminal, worker, socket, &record)
 }
 
 pub(super) fn recover_update_record(
@@ -1531,17 +1436,6 @@ pub(super) fn recover_update_record(
         }
     }
     setup::apply(terminal, worker, socket, action, None)
-}
-
-pub(super) fn fallback(
-    terminal: &mut TerminalOwner,
-    worker: &mut Option<Worker>,
-    socket: &Path,
-) -> io::Result<()> {
-    let Some(record) = original_record(terminal, "update")? else {
-        return Ok(());
-    };
-    recover_update_record(terminal, worker, socket, &record)
 }
 
 fn needs_temporary_service(current: &str, original: Option<&str>) -> bool {

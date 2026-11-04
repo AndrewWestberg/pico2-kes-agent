@@ -2,6 +2,7 @@ import copy
 import contextlib
 import importlib.util
 import json
+import io
 from pathlib import Path
 import os
 import shutil
@@ -35,6 +36,36 @@ def process_adapter(complete):
             return self.returncode
     return Process
 
+
+
+class AttendedTests(unittest.TestCase):
+    def test_only_explicit_bounded_yes_confirms_displayed_serial(self):
+        serial = "0123456789abcdef"
+        for answer in ("y\n", "YES\n", " Yes \n", "\n", "n\n", "yes please\n",
+                       "yes", "y" + " " * 31 + "\n"):
+            with self.subTest(answer=answer):
+                stdin = mock.Mock()
+                stdin.isatty.return_value = True
+                stdin.readline.return_value = answer[:32]
+                output = io.StringIO()
+                with mock.patch.object(firmware.sys, "stdin", stdin), \
+                     contextlib.redirect_stdout(output), \
+                     mock.patch.object(output, "isatty", return_value=True):
+                    if answer in ("y\n", "YES\n", " Yes \n"):
+                        firmware.attended(serial, "Review board")
+                    else:
+                        with self.assertRaises(ValueError):
+                            firmware.attended(serial, "Review board")
+                stdin.readline.assert_called_once_with(32)
+                self.assertIn(serial, output.getvalue())
+
+    def test_confirmation_requires_both_terminal_streams(self):
+        for input_tty, output_tty in ((False, True), (True, False)):
+            with self.subTest(input_tty=input_tty, output_tty=output_tty), \
+                 mock.patch.object(firmware.sys.stdin, "isatty", return_value=input_tty), \
+                 mock.patch.object(firmware.sys.stdout, "isatty", return_value=output_tty):
+                with self.assertRaises(firmware.ToolError):
+                    firmware.attended("0123456789abcdef", "Review board")
 
 
 class PolicyTests(unittest.TestCase):
@@ -1049,6 +1080,24 @@ class ProvisionTests(unittest.TestCase):
     def snapshot(self):
         return {"stepping": "A2", "secure_boot": False,
                 "rows": {f"{row:04x}": 0 for row in firmware.PUBLIC_ROWS}}
+
+    def test_erase_rejects_secure_boot_and_any_programmed_key_or_critical_row(self):
+        for field in ("secure_boot", "0040", "0047", "0080", "0090", "00bf"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                snapshot = self.snapshot()
+                if field == "secure_boot":
+                    snapshot[field] = True
+                else:
+                    snapshot["rows"][field] = 1
+                board = mock.Mock()
+                board.snapshot.return_value = snapshot
+                record = Path(directory) / "erase.json"
+                with mock.patch.object(firmware, "attended"), \
+                     mock.patch.object(firmware, "Board", return_value=board):
+                    with self.assertRaises(ValueError):
+                        firmware.erase_state("0123456789abcdef", record, True)
+                board.command.assert_not_called()
+                self.assertFalse(record.exists())
 
     def test_public_admission_rejects_partial_or_conflicting_otp(self):
         original = self.snapshot()

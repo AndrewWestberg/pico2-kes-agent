@@ -642,23 +642,39 @@ fn pool_next_action(s: &Snapshot, pool: &JoinedPool) -> &'static str {
         == Some(true);
     if !active_ok {
         if staged_present && !staged_cert {
-            return "Export/OpCert";
+            return "Rotate KES (R)";
         }
         if !staged_present {
-            return "Create gen";
+            return "Rotate KES (R)";
         }
         return "Inspect cert";
     }
     if staged_present && !staged_cert {
-        return "Install OpCert";
+        return "Rotate KES (R)";
     }
     if let Some((rem, _)) = trusted_expiry_estimate(s, pool, "active")
         && rem <= EXPIRING_PERIOD_THRESHOLD
         && !staged_present
     {
-        return "Create gen!";
+        return "Rotate KES (R)";
     }
     "--"
+}
+
+pub(super) fn expiring_pool(snapshot: &Snapshot) -> Option<&JoinedPool> {
+    let elapsed = snapshot.captured_at.elapsed();
+    if !fresh(&snapshot.host, elapsed) || !fresh(&snapshot.membership, elapsed) {
+        return None;
+    }
+    snapshot
+        .pools
+        .iter()
+        .filter_map(|pool| {
+            let (remaining, _) = trusted_expiry_estimate(snapshot, pool, "active")?;
+            (remaining <= EXPIRING_PERIOD_THRESHOLD).then_some((pool, remaining))
+        })
+        .min_by_key(|(_, remaining)| *remaining)
+        .map(|(pool, _)| pool)
 }
 
 fn soonest_expiry_summary(snapshot: Option<&Snapshot>) -> (String, Color) {
@@ -677,7 +693,7 @@ fn soonest_expiry_summary(snapshot: Option<&Snapshot>) -> (String, Color) {
     }
     if s.pools.is_empty() {
         return (
-            "Soonest KES expiry: no pools enrolled yet (press '2' then 'n' to enroll)".into(),
+            "No pools yet — open Pools and choose Add a pool (n).".into(),
             Color::Yellow,
         );
     }
@@ -702,12 +718,18 @@ fn soonest_expiry_summary(snapshot: Option<&Snapshot>) -> (String, Color) {
                 .and_then(|h| h.get("network"))
                 .and_then(Value::as_str)
                 .unwrap_or("bound-net");
-            let text = format!(
+            let mut text = format!(
                 "Soonest KES expiry: pool {} in {rem}p ({}, host_utc+{})",
                 workspace::short_id(&pool.pool_id),
                 format_wall_duration(wall),
                 super::safe(net)
             );
+            if rem <= EXPIRING_PERIOD_THRESHOLD {
+                text.push_str(&format!(
+                    " — Press R to rotate KES for pool {}",
+                    workspace::short_id(&pool.pool_id)
+                ));
+            }
             let color = if rem == 0 {
                 Color::Red
             } else if rem <= EXPIRING_PERIOD_THRESHOLD {
@@ -717,13 +739,19 @@ fn soonest_expiry_summary(snapshot: Option<&Snapshot>) -> (String, Color) {
             };
             (text, color)
         }
-        Some((pool, rem, None)) => (
-            format!(
+        Some((pool, rem, None)) => {
+            let mut text = format!(
                 "Soonest KES expiry: pool {} in {rem}p (wall-clock withheld: context unavailable)",
                 workspace::short_id(&pool.pool_id)
-            ),
-            Color::Yellow,
-        ),
+            );
+            if rem <= EXPIRING_PERIOD_THRESHOLD {
+                text.push_str(&format!(
+                    " — Press R to rotate KES for pool {}",
+                    workspace::short_id(&pool.pool_id)
+                ));
+            }
+            (text, Color::Yellow)
+        }
         None if any_stale => (
             "Soonest KES expiry: withheld (one or more pool observations stale)".into(),
             Color::Yellow,
@@ -993,9 +1021,9 @@ pub(super) fn render_overview(
     let step = next_step(snapshot, unresolved_records);
     let cta_text = match step {
         NextStep::Activity => "Reconcile interrupted operation in Activity (6)",
-        NextStep::Setup => "Open Guided Setup to configure or commission device",
+        NextStep::Setup => "Set up my Pico 2 (s)",
         NextStep::Host => "Inspect or start pico2-kes-agentd in Host (4)",
-        NextStep::Pools => "Inspect KES fleet & pool lifecycles in Pools (2)",
+        NextStep::Pools => "Open Pools to add a pool or rotate its KES key (2)",
         NextStep::Refresh => "Refresh host & device observations (r)",
     };
     let (banner_title, banner_color) = if svc_color == Color::Red {
@@ -1008,7 +1036,7 @@ pub(super) fn render_overview(
     } else if access == Some(ConfigAccess::Absent)
         || cfg_summary.is_some_and(|c| c.pinned_device_id.is_none())
     {
-        (" [SETUP] Guided setup in progress ", Color::Yellow)
+        (" [SETUP] Set up my Pico 2 ", Color::Yellow)
     } else {
         match snapshot
             .map(|s| overview_assessment(s, unresolved_records))
@@ -1023,7 +1051,7 @@ pub(super) fn render_overview(
     let jump_labels = [
         cta_text,
         "Jump -> 2 Pools (KES fleet & rotations)",
-        "Jump -> Guided Setup (new or existing Pico 2)",
+        "Set up my Pico 2 (new or existing board)",
         "Jump -> 4 Host (service, config, producer hardening)",
         "Jump -> 3 Device (firmware & OTP security)",
         "Jump -> 5 Software (tuple upgrades & releases)",
@@ -1703,82 +1731,6 @@ pub(super) fn software_lines(
     out
 }
 
-pub(super) fn setup_lines(snapshot: Option<&Snapshot>, is_new: bool) -> Vec<Line<'static>> {
-    let Some(s) = snapshot else {
-        return vec![kv_line(
-            "Posture",
-            "awaiting host & USB observation",
-            Color::Yellow,
-        )];
-    };
-    let elapsed = s.captured_at.elapsed();
-    let local = s.local.value.as_ref().filter(|_| fresh(&s.local, elapsed));
-    let usb = local.and_then(|l| l.usb_mode.value.filter(|_| fresh(&l.usb_mode, elapsed)));
-    let access = local.and_then(|l| {
-        l.config_access
-            .value
-            .filter(|_| fresh(&l.config_access, elapsed))
-    });
-    let cfg = local.and_then(|l| {
-        l.config_summary
-            .value
-            .as_ref()
-            .filter(|_| fresh(&l.config_summary, elapsed))
-    });
-    let svc = local.and_then(|l| {
-        l.service_state
-            .value
-            .as_ref()
-            .filter(|_| fresh(&l.service_state, elapsed))
-    });
-    let (pin, _, _) = pin_posture(snapshot);
-
-    let usb_step = match usb {
-        Some(DeviceMode::Application) => {
-            ("[DONE] USB application detected (1209:4b45)", Color::Green)
-        }
-        Some(DeviceMode::Bootloader) => (
-            "[NEXT] BOOTSEL detected — flash firmware (step 1)",
-            Color::Yellow,
-        ),
-        Some(DeviceMode::Absent) => ("[WAIT] Connect Pico 2 over USB", Color::Yellow),
-        _ => ("[WAIT] Check single USB connection", Color::Yellow),
-    };
-    let cfg_step = match (access, cfg) {
-        (Some(ConfigAccess::Readable), Some(c)) if c.pinned_device_id.is_some() => {
-            ("[DONE] Normal pinned config installed", Color::Green)
-        }
-        (Some(ConfigAccess::Readable), Some(_)) if is_new => (
-            "[NEXT] Commissioning config installed -> run commission & normal config",
-            Color::Yellow,
-        ),
-        _ => (
-            "[NEXT] Build & install configuration (guided form computes genesis SHA-256)",
-            Color::Yellow,
-        ),
-    };
-    let svc_step = match (svc, pin) {
-        (Some(st), PinPosture::Matched) if st.active == "active" => (
-            "[DONE] Normal service active & device pin matched",
-            Color::Green,
-        ),
-        (Some(st), _) if st.active == "active" => (
-            "[WAIT] Service active; awaiting normal pin match",
-            Color::Yellow,
-        ),
-        _ => (
-            "[WAIT] Start normal service once normal config is installed",
-            Color::DarkGray,
-        ),
-    };
-
-    vec![
-        Line::styled(usb_step.0, tone(usb_step.1)),
-        Line::styled(cfg_step.0, tone(cfg_step.1)),
-        Line::styled(svc_step.0, tone(svc_step.1)),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1969,6 +1921,49 @@ mod tests {
             .unwrap()
             .pinned_device_id = None;
         assert_eq!(pin_posture(Some(&snap)).0, PinPosture::ObservedUnpinned);
+    }
+
+    #[test]
+    fn rotation_shortcut_chooses_nearest_fresh_expiry_within_threshold() {
+        let mut snapshot = Snapshot {
+            captured_at: std::time::Instant::now(),
+            local: Observation {
+                source: "test".into(), value: None, observed_at_unix_us: None,
+                age: None, state: ObservationState::Stale, public_error: None,
+            },
+            host: observed(json!({})),
+            device: observed(json!({})),
+            membership: observed(vec![]),
+            pools: [4, 2, 1].into_iter().enumerate().map(|(i, remaining)| JoinedPool {
+                pool_id: format!("{i:056x}"),
+                incarnation_id: format!("{i:032x}"),
+                membership: None,
+                host: None,
+                observation: observed(json!({
+                    "active": {"certificate_present": true, "remaining_valid_periods": remaining}
+                })),
+            }).collect(),
+        };
+        assert_eq!(
+            expiring_pool(&snapshot).unwrap().pool_id,
+            format!("{:056x}", 2)
+        );
+        snapshot.pools[2].observation.state = ObservationState::Stale;
+        assert_eq!(
+            expiring_pool(&snapshot).unwrap().pool_id,
+            format!("{:056x}", 1)
+        );
+        snapshot.pools[1].observation.value.as_mut().unwrap()["active"]["certificate_present"] =
+            json!(false);
+        assert!(expiring_pool(&snapshot).is_none());
+        snapshot.pools[0].observation.value.as_mut().unwrap()["active"]["remaining_valid_periods"] =
+            json!(0);
+        assert_eq!(
+            expiring_pool(&snapshot).unwrap().pool_id,
+            format!("{:056x}", 0)
+        );
+        snapshot.membership.state = ObservationState::Stale;
+        assert!(expiring_pool(&snapshot).is_none());
     }
 
     #[test]

@@ -8,9 +8,9 @@ Start with the [manual RC-to-lifecycle runbook](../../docs/manual-testing.md) fo
 
 - Signed source-free candidate bundle or published RC tag, with a separately PGP-authorized secp256k1 distribution key and domain-separated release/bootstrap signatures. The manifest must authorize the exact compatible tuple and declare `qualification: candidate`; admit it only through explicit `--version TAG` or local `--bundle` acceptance on disposable targets. Have a second explicitly compatible signed bundle and incompatible/untrusted inputs. Final qualification follows acceptance, not merely signing.
 - Disposable Debian 12, Ubuntu 24.04 and Ubuntu 26.04 x86-64 systemd/udev machines, plus an isolated backup host. Ubuntu 26.04 needs a newly published release containing its support change, not RC.13 or earlier. Package installation and service changes require administrative approval. Ordinary TUI inspection runs unprivileged.
-- An accepted Pico2 A2 with required hardware/tool/image evidence and disposable pool generations for maintenance scenarios; a factory/BOOTSEL-only board for first installation, a compatible running blank application for the alternate setup path, and an eligible sacrificial target with required qualification for OTP. Never erase a populated device to satisfy a scenario. First-install does not require a pre-existing application pin.
+- An accepted Pico2 A2 with required hardware/tool/image evidence and disposable pool generations for maintenance scenarios; a factory/BOOTSEL-only board for first installation, a compatible running blank application for the alternate setup path, and an eligible sacrificial target with required qualification for OTP. Wipe acceptance requires a separate explicitly authorized eligible OTP-unlocked disposable board; never erase production state or erase a board to satisfy OTP or update admission. First-install does not require a pre-existing application pin.
 - Operator-supplied public network/genesis/pool inputs, trusted device identity, public recipient records and disposable encrypted artifacts. Cold signing remains offline. Recipient private keys/passphrases exist only on the backup host.
-- Existing host-memory/security requirements from [README](../../README.md). The existing agent preflight still references `cardano-node.service`; this guide does not add node discovery, configuration or integration checks. Custom-unit drop-in installation does not change that constraint.
+- Existing host-memory/security requirements from [README](../../README.md). Normal preflight still references `cardano-node.service`; custom-unit drop-in installation does not change that constraint. Bounded read-only systemd node-unit/configuration/genesis discovery is permitted, not node connections or integration checks.
 - One actual terminal at least 80×24, keyboard-only/no-color runs, and a way to exercise resize. For SC-003, fix the five-person operator cohort and record eligibility as specified in [SC-003](spec.md#measurable-outcomes).
 - For performance acceptance, approve the baseline-selection procedure, actual comparable baseline/build identity, environment, measurement tool/version and bounded comparison rules in the [quality contract](contracts/quality.md#required-project-performance-gate) before candidate evaluation. Freeze a separate first comparable implementation if no earlier manager exists; missing behavior is not a zero baseline. Retain approval, sensitivity evidence, raw timings and verdicts in `evidence/p2kesup/<candidate>/performance.md`.
 - Before trusting behavioral readings, complete the [behavioral tool calibration](contracts/quality.md#behavioral-tool-calibration) approved in T001 and exercised in T067. Retain passing → known-defect failure → restored passing evidence in `evidence/p2kesup/<candidate>/behavioral-calibration.md`; missing or invalid calibration blocks acceptance independently of performance calibration.
@@ -228,11 +228,11 @@ These US1–US3 checkpoints are historical observations of their respective deve
 
 ## Navigation and recovery
 
-Use 1–6 or Tab/Shift-Tab to change sections, arrows or j/k to select, Enter to review, `d` for the 4-tab technical evidence drawer (`1–4` or `Tab`), `?` for help and Esc to cancel. Operational plans, CLI receipts, lifecycle references, config candidates and pre-filled transferable export paths are managed under `$XDG_STATE_HOME/p2kesup/{plans,receipts,references,candidates,exports}` (`0700`). **Software → Install authenticated bundle** installs host components; **Software → Upgrade or switch complete release tuple** performs coordinated release tuple upgrades and offers immediate re-exec. **Host → Continue setup** separates existing-device configuration from new blank-device setup, including guided commissioning and normal configuration builders. An interrupted first install reconciles directly from **Activity** (or `m` → **Reconcile original first firmware install**), not a new transfer.
+Use 1–6 or Tab/Shift-Tab to change sections, arrows or j/k to select, Enter to review, `d` for technical evidence, `?` for help and Esc to cancel. Plans, receipts, references, candidates and exports are managed under `$XDG_STATE_HOME/p2kesup/` (`0700`). Use **Set up my Pico 2**, **Add a pool** and **Rotate KES key** for their respective jobs. Root and firmware handoffs require an attended default-no `[y/N]`; the displayed plan digest remains bound and revalidated, not pasted as a password.
 
-**Pools** displays up to 64 pools in a 1-row-per-pool `80×24` table (`n` enroll, `b` bind `[UNB]` pool in `config.json`, `a` global pool actions, `f` attention-only filter, `o` sort order, `/` substring filter). Selecting a pool opens side-by-side Active/Staged slot cards and lifecycle actions with target/generation identities prefilled. **Activity** automatically lists host/backup maintenance records, lifecycle `.ref.json` receipts and retained plans, placing `[RECONCILE]` / `[PENDING]` items at the top for 1-key Enter reconciliation (press `m` for manual recovery actions). Original commissioning reconciliation uses the saved serial and restricted daemon authority even if committed and no normal pin exists; it does not require a second blank admission. Normal actions use normal pinned authority. Both use caller-bound expiring root admission and paired CLI peer PID/UID checks before bytes; changed authority requires a fresh review.
+**Activity** lists original maintenance records and lifecycle receipts, prioritizing pending/reconcile items. Select the original item to reconcile instead of entering raw IDs or submitting a new operation. Original commissioning reconciliation uses its saved serial and restricted authority even if committed and no normal pin exists; normal actions use pinned authority. Both retain caller-bound expiring admission and CLI peer PID/UID checks.
 
-**Software** offers tuple upgrades, host component selection and explicit re-exec. **Device** offers firmware preview/update and **Security / OTP (advanced)**. **Host** offers guided/supplied configuration controls, pool binding, service actions and producer memory policy. **Activity** (`m`) also provides diagnostics/export, manual plan/receipt inspection, firmware reconciliation and compatible binary fallback. Backup-role **Overview**, **Recipients** and **Restore** provide the isolated backup workflows with swap preflight and optional `.metadata.json` ID pre-population. **Software → Uninstall managed components (advanced)** selects `new` or `recover`.
+**Software** offers authenticated tuple upgrades and uninstall; **Device** offers firmware and optional OTP; **Host** offers service and producer memory policy. Backup-role **Overview**, **Recipients** and **Restore** provide isolated backup workflows. None implies node integration or hardware acceptance.
 
 ## Q1 — Bootstrap, reopen and absent/partial inventory
 
@@ -253,7 +253,7 @@ Expected: SC-001 inventory correctness, local overview ≤5 seconds, no unexpect
 
 ## Q2 — Guided prerequisites and setup
 
-In Software → Install authenticated bundle, inspect exact packages/privileges/paths, decline once, then approve prerequisites using the supported OS package path. Inject one package-install failure; setup remains blocked with the failing command/tool and no bypass. Complete clean installation of selected manager/daemon/CLI/deployment files. Supply network/public pool inputs and host-policy declarations; missing/malformed/conflicting files must not replace working config or trigger node lookups.
+In Software → Install authenticated bundle, inspect exact packages/privileges/paths, decline once, then approve prerequisites using the supported OS package path. Inject one package-install failure; setup remains blocked with the failing command/tool and no bypass. Complete clean installation of selected manager/daemon/CLI/deployment files. Start **Set up my Pico 2** and review discovered public node configuration/genesis or supply missing inputs and host-policy declarations; malformed or conflicting inputs must not replace working config or trigger node connections.
 
 Review and cancel a configuration change, then accept a valid one. Independent existing validator:
 
@@ -264,6 +264,10 @@ sudo -u pico2-kes-agent pico2-kes-agentd --config /etc/pico2-kes-agent/config.js
 Interrupt setup between confirmed host steps and reopen. Completed ownership/state must be recognized and preserved. Rerun setup with existing config, journal, receipts and pin; compare their public digests, permissions and identity bindings with the approved expected change set. Do not snapshot/restore operational device state.
 
 Expected: reviewed agent-only configuration, exact unmet prerequisites, resumable non-destructive behavior; no hidden host-wide policy change.
+
+On disposable hardware test **Keep** for a commissioned board, including preservation of an existing configured pin and configuration. Separately, only with explicit authorization and an eligible OTP-unlocked disposable board, test **Wipe board and start over**: review pool loss and fencing warnings, decline once, then approve; verify root-owned mode 0700 archive, stopped services, verified erase and blank post-check before separate commissioning. Locked or uncertain boards must refuse wiping. Interrupt at safe checkpoints and select the original Activity record; recovery is forward-only and must never retry an uncertain erase or restore archived state. Do not perform these destructive checks on production equipment.
+
+Review source/destination genesis digests and root-owned 0644 imported public files; a changed source or different existing destination must block. Test known and custom transition epochs. Bounded local node discovery must never execute node scripts, access a node socket or invoke Cardano CLI.
 
 ## Q3 — Complete observation and freshness
 
@@ -285,16 +289,16 @@ Disconnect device or deny access while viewing. Within 10 seconds, affected valu
 
 ## Q4 — Commissioning and every ordinary lifecycle action
 
-Exercise both initial states with OTP declined. For a factory/BOOTSEL-only board, use Setup's authenticated `first-install` foreground handoff: preview without writes, confirm the unambiguous physical target and firmware-only range, retain intent and copy/flush checkpoints, then observe the selected compatible blank application through the sole restricted commissioning daemon. No source build, fabricated application serial/pin, erasure or OTP is permitted. For an already-running compatible blank application, skip flashing and perform the same blank admission.
+Exercise both initial states with OTP declined through **Set up my Pico 2**. For a factory/BOOTSEL-only board, review the authenticated `first-install` foreground handoff, confirm the unambiguous physical target and firmware-only range, retain intent and copy/flush checkpoints, then observe the selected compatible blank application through the sole restricted commissioning daemon. No source build, fabricated application serial/pin, erasure or OTP is permitted. For an already-running compatible blank application, skip flashing and perform the same blank admission.
 
 Cancel before transfer, try ambiguous targets, and exercise a qualified interrupted transfer/reopen: retain the original record and uncertain state rather than automatically reflashing or treating the board as new. Missing/wrong build, nonblank, mismatched or unavailable application evidence must block commissioning and pinning. Do not treat a missing pin on an existing installation as first-install eligibility.
 
-Only after blank admission, review board identity/security limits, separately confirm commissioning, retain original receipt and public enrollment output, review normal pin/network config, then transition to the normal daemon. Try an unexpected commissioned board: it must not be reset or automatically trusted. Record first-install and alternate setup results with Q2, and ordinary lifecycle results with Q4.
+Only after blank admission, review board identity/security limits, separately confirm commissioning, retain original receipt and public enrollment output, review normal pin/network config, then transition to the normal daemon. An unexpected commissioned board is never automatically trusted or reset; exercise explicit Keep and eligible Wipe as in Q2. Record first-install and alternate setup results with Q2, and ordinary lifecycle results with Q4.
 
 Through the manager, on disposable identities:
 
-1. Install a public recipient record; enroll a pool with explicit supplied inputs; inspect its incarnation/binding.
-2. Create a staged generation; export public verification key and encrypted initial artifact to new explicit destinations. Output collisions do not overwrite files.
+1. Use **Add a pool** to select the public cold verification key, enroll and bind, then continue to **Rotate KES key**. The protocol does not report recipient status for this purpose. Only a certain durable missing-recipient generation rejection opens the public-recipient picker/set flow and permits a fresh generate; an uncertain or different failure must not trigger that retry.
+2. Generate a staged key and export the public verification key and encrypted artifact to managed new destinations. Output collisions do not overwrite files. Check that the displayed local period uses trusted genesis and host time, and agrees with the daemon calculation; no node query or Cardano CLI runs in the manager.
 3. Transfer public verification material for offline certificate signing; install the matching public certificate. No cold/private-recipient key is requested and no extra activation approval or archival gate appears.
 4. Observe scheduled activation/evolution and readiness; create a future staged generation. Occupied-stage, stale-revision, invalid-context and mismatched-certificate cases preserve established rejection semantics.
 5. Cancel a staged discard and pool deletion; verify unchanged state. Then perform each with exact target confirmation and retained receipts; unrelated active/pool state remains intact.
@@ -302,7 +306,7 @@ Through the manager, on disposable identities:
 7. Exercise 64-pool capacity and rejected 65th enrollment without eviction.
 8. Terminate the manager after a mutation is submitted but before its outcome is displayed. Reopen Activity and reconcile the original receipt; never resubmit under a new identity.
 
-For an interrupted original commissioning, retain its reference/receipt and use **Activity → Reconcile an original receipt** with its original public output destination when needed. The restricted daemon must correspond to the saved serial; do not demand blank state or a normal pin for this recovery and do not submit a new commission.
+For interrupted original commissioning, select its original item in **Activity**. The restricted daemon must correspond to the saved serial; do not demand blank state or a normal pin for this recovery and do not submit a new commission.
 
 Existing independent reconciliation command, with `RECEIPT` set to the original file:
 
@@ -356,9 +360,9 @@ On the separate backup host, with no daemon/device and no active swap:
 p2kesup --role backup
 ```
 
-Create a recipient to new protected destinations; export only the public record for transfer. Restore a disposable encrypted artifact using independently trusted device identity and exact pool/incarnation/generation/vkey evidence to a nonexisting owner-only local output. Do not capture the foreground passphrase terminal. Verify resulting key format/identity with the existing independent qualification procedure without placing secret contents in a report.
+Create a recipient using the automatic protected destinations and transfer only the public record. For **Restore**, pick the disposable encrypted artifact and independently trusted `device.json`; sibling metadata supplies pool/incarnation/generation, with suggested verification and recipient keys and an automatic new output path. Independently verify all public bindings. Do not capture the foreground passphrase terminal. Verify the resulting key format/identity using the existing independent qualification procedure without placing secret contents in a report.
 
-Select **Backup host → Create protected backup recipient** or **Restore encrypted backup locally**. Explicitly approve the finite elevated local `/proc`/role inspection before entering private paths and again before the inherited-terminal CLI handoff; refusal or inaccessible evidence blocks. It neither reads private paths nor contacts daemon/device/node.
+Explicitly approve the finite elevated local `/proc`/role inspection before private work and again before the inherited-terminal CLI handoff; refusal or inaccessible evidence blocks. It neither reads private paths nor contacts daemon/device/node.
 
 Try wrong recipient/passphrase, tampered artifact, missing/mismatched public evidence, active swap and destination collision. None publishes/replaces a signing-key file. On a detected/configured primary, selecting backup role refuses before private-file access or a passphrase prompt; inaccessible role evidence also blocks. CLI binaries alone do not make an isolated backup host a primary.
 
@@ -372,7 +376,7 @@ Inspect **Activity → Inspect bounded public diagnostic history** and export th
 
 Select Software → Uninstall managed components (advanced) and cancel once, then confirm only manager-owned components. Modified/external paths are not silently removed. Inspect retained config, journal, receipts, public identities, maintenance records, service user/group, producer drop-ins and device state. No producer restart occurs. Remaining data are listed, and uninstall is not presented as erasure or revocation.
 
-Review the selected inventory digest including registered files/links, not only registry bytes. On a disposable interrupted removal choose **Uninstall → recover**, supply the original operation ID and plan digest, review fresh readback and cancel once; approved recovery refuses changed evidence and does not stop services. After completed full removal verify retained registry provenance/source cache and the other listed state; initial Install may restore the exact prior single-bundle tuple, not silently reinterpret mixed tuples. Do not call removal secure erasure or revocation.
+Review the selected inventory digest including registered files/links, not only registry bytes. On a disposable interrupted removal select the original record in **Activity**, review fresh readback and cancel once; approved recovery refuses changed evidence and does not stop services. After completed full removal verify retained registry provenance/source cache and the other listed state; initial Install may restore the exact prior single-bundle tuple, not silently reinterpret mixed tuples. Do not call removal secure erasure or revocation.
 
 ## Q10 — Actual terminal and operator acceptance
 
@@ -382,9 +386,9 @@ Evaluate the fixed cohort under [SC-003](spec.md#measurable-outcomes), recording
 
 ## Q11 — Minimal producer hardening acceptance
 
-Supply an operator-selected local `.service` name (custom concrete instances are supported), review the exact drop-in destination and approve administrative installation. Observe file-install result and `systemctl daemon-reload` result. Approve restart for a selected running service once; defer once. Stopped services must not be started. Failed file/systemd operations must be reported, and unrelated files remain untouched.
+Select discovered or operator-supplied local concrete `.service` units, review the exact drop-in destination and approve administrative installation. Observe file-install result and `systemctl daemon-reload` result. Approve restart for a selected running service once; defer once. Stopped services must not be started. Failed file/systemd operations must be reported, and unrelated files remain untouched.
 
-For a disposable interrupted batch select **Producer hardening → Recover original producer batch**, supply the original operation ID and approved plan digest, inspect fresh public readback and cancel once. An approved recovery reauthorizes only the original reload/try-restarts, refuses changed readback and never adds scope or starts a stopped unit.
+For a disposable interrupted batch select its original record in **Activity**, inspect fresh public readback and cancel once. An approved recovery reauthorizes only the original reload/try-restarts, refuses changed readback and never adds scope or starts a stopped unit.
 
 This is a manual file/command acceptance action, not a dedicated test suite, multi-producer setup or runtime-policy audit. Do not inspect node connections or re-test systemd. Drop-ins remain on uninstall; existing agent preflight is unchanged.
 

@@ -2,7 +2,7 @@
 //! Never connects to or inspects a Cardano node; all genesis inputs are static operator-supplied files.
 
 use std::{
-    fs::{self, OpenOptions},
+    fs::OpenOptions,
     io::{self, Read},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
@@ -64,43 +64,16 @@ pub struct NormalConfigSpec {
 /// Reads sysfs USB serial when exactly one Pico 2 application (`1209:4b45`) is connected.
 /// Public convenience hint only; never treated as an authenticated device pin.
 pub fn candidate_usb_serial() -> Option<String> {
-    let entries = fs::read_dir("/sys/bus/usb/devices").ok()?;
-    let mut found: Option<String> = None;
-    for (index, entry) in entries.enumerate() {
-        if index >= 1024 {
-            return None;
-        }
-        let path = entry.ok()?.path();
-        let vendor = read_small_trimmed(&path.join("idVendor"), 16)?;
-        if vendor != "1209" {
-            continue;
-        }
-        let product = read_small_trimmed(&path.join("idProduct"), 16)?;
-        if product != "4b45" {
-            continue;
-        }
-        let serial = read_small_trimmed(&path.join("serial"), 64)?;
-        if serial.len() == 16 && serial.is_ascii() {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(serial);
-        }
+    let boards = super::discovery::usb::list_pico2().ok()?;
+    let mut apps = boards
+        .into_iter()
+        .filter(|b| b.mode == super::model::DeviceMode::Application);
+    let serial = apps.next()?.serial?;
+    if apps.next().is_some() {
+        None
+    } else {
+        Some(serial)
     }
-    found
-}
-
-fn read_small_trimmed(path: &Path, limit: u64) -> Option<String> {
-    let mut text = String::new();
-    fs::File::open(path)
-        .ok()?
-        .take(limit + 1)
-        .read_to_string(&mut text)
-        .ok()?;
-    if text.len() as u64 > limit {
-        return None;
-    }
-    Some(text.trim().to_owned())
 }
 
 fn read_bounded_regular(path: &Path, max_bytes: u64, label: &'static str) -> io::Result<Vec<u8>> {
@@ -355,7 +328,7 @@ pub fn publish_candidate(stem: &str, bytes: &[u8]) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::{Config, RunMode};
-    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     #[test]
     fn builds_valid_commissioning_and_bound_normal_configs() {
