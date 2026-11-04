@@ -270,23 +270,7 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 
     fn host_observe(&mut self, arguments: &Value) -> Result<Value, Error> {
-        let mut networks: Vec<_> = self.config.networks.iter().collect();
-        networks.sort_by_key(|(name, _)| *name);
-        let config_identity = hex(&Sha256::digest(
-            format!(
-                "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
-                self.config.mode,
-                self.config.pin,
-                self.config.selected_serial,
-                self.config.socket_directory,
-                self.config.socket_group,
-                self.config.management_socket,
-                self.config.state_directory,
-                networks,
-                self.config.pools,
-            )
-            .as_bytes(),
-        ));
+        let config_identity = self.config.identity_hex();
         let journal_position = self.journal.completed().len() as u64;
         let last_result = self
             .journal
@@ -501,11 +485,11 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             json!({"schema_version":1,"device_id":observed.device.to_string(),
             "pool_id":target.pool.to_string(),"incarnation_id":target.incarnation.to_string(),
             "revision":observed.revision,"health":observed.health,
-            "active":observed.active.map(|value| generation_observation(value, context.map(|c| c.0))).transpose()?,
-            "staged":observed.staged.map(|value| generation_observation(value, context.map(|c| c.0))).transpose()?,
+            "active":observed.active.map(|value| generation_observation(value, context.map(|(period, _)| period))).transpose()?,
+            "staged":observed.staged.map(|value| generation_observation(value, context.map(|(period, _)| period))).transpose()?,
             "publication":observation_publication(observed.publication),
             "period_floor":observed.period_floor,"failure":observed.failure,
-            "context":{"valid":context.is_some(),"source":context.map(|_| "host_utc"),"age_us":context.map(|c| c.1),"reason":if context.is_none() {Some(reason)} else {None}}}),
+            "context":{"valid":context.is_some(),"source":context.map(|_| "host_utc"),"age_us":context.map(|(_, age)| age),"reason":if context.is_none() {Some(reason)} else {None}}}),
         )
     }
 

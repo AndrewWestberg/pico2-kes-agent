@@ -6,7 +6,7 @@ use super::model::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -64,6 +64,16 @@ fn config_access(result: &std::io::Result<PathBuf>) -> Result<ConfigAccess, Stri
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigSummary {
+    pub pinned_device_id: Option<String>,
+    pub usb_serial: Option<String>,
+    pub networks: Vec<String>,
+    pub configured_pools: usize,
+    pub config_identity: Option<String>,
+    pub validated_networks: HashMap<String, crate::daemon::context::NetworkConfig>,
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalOverview {
     pub own_executable: Observation<PathBuf>,
@@ -73,6 +83,8 @@ pub struct LocalOverview {
     pub config: Observation<PathBuf>,
     pub config_access: Observation<ConfigAccess>,
     pub config_ownership: Observation<String>,
+    pub config_summary: Observation<ConfigSummary>,
+    pub swap_free: Observation<bool>,
     pub support: String,
     pub registry: Observation<InstallationRegistry>,
     pub components: Vec<ComponentObservation>,
@@ -308,12 +320,57 @@ fn local(config: Option<&Path>) -> LocalOverview {
             })
             .map_err(|e| e.to_string()),
     );
+    let mut parsed_summary: Result<ConfigSummary, String> = Err("config unreadable".into());
     let config_result = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(config_path)
         .and_then(|file| {
             if file.metadata()?.is_file() {
+                let mut bytes = Vec::new();
+                file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                if bytes.len() <= 1024 * 1024 {
+                    parsed_summary = serde_json::from_slice::<Value>(&bytes)
+                        .map_err(|e| e.to_string())
+                        .map(|val| {
+                            let pinned_device_id = val
+                                .pointer("/device/id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            let usb_serial = val
+                                .pointer("/device/usb_serial")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            let mut networks: Vec<String> = val
+                                .get("networks")
+                                .and_then(Value::as_object)
+                                .map(|m| m.keys().cloned().collect())
+                                .unwrap_or_default();
+                            networks.sort();
+                            let configured_pools = val
+                                .get("pools")
+                                .and_then(Value::as_array)
+                                .map_or(0, Vec::len);
+                            let mode = if pinned_device_id.is_some() {
+                                crate::config::RunMode::Normal
+                            } else {
+                                crate::config::RunMode::Commissioning
+                            };
+                            let (config_identity, validated_networks) =
+                                match crate::config::Config::from_bytes(&bytes, mode) {
+                                    Ok(cfg) => (Some(cfg.identity_hex()), cfg.networks),
+                                    Err(_) => (None, HashMap::new()),
+                                };
+                            ConfigSummary {
+                                pinned_device_id,
+                                usb_serial,
+                                networks,
+                                configured_pools,
+                                config_identity,
+                                validated_networks,
+                            }
+                        });
+                }
                 Ok(config_path.to_owned())
             } else {
                 Err(std::io::Error::new(
@@ -326,6 +383,12 @@ fn local(config: Option<&Path>) -> LocalOverview {
     let config = local_item(
         "config read access",
         config_result.map_err(|e| e.to_string()),
+    );
+    let config_summary = local_item("config public summary", parsed_summary);
+    let swap_free = local_item(
+        "/proc/swaps",
+        public_text(Path::new("/proc/swaps"), 64 * 1024)
+            .map(|text| text.lines().skip(1).all(|line| line.trim().is_empty())),
     );
     let service = local_item("systemd", service());
     let service_state = local_item(
@@ -358,11 +421,17 @@ fn local(config: Option<&Path>) -> LocalOverview {
         config,
         config_access,
         config_ownership,
+        config_summary,
+        swap_free,
         registry,
         components,
         support,
         usb_mode,
     }
+}
+
+pub fn local_snapshot() -> LocalOverview {
+    local(None)
 }
 
 fn public_text(path: &Path, limit: u64) -> Result<String, String> {
@@ -913,6 +982,8 @@ fn run(
                 retain_local(&mut local.config, &old.config, elapsed);
                 retain_local(&mut local.config_access, &old.config_access, elapsed);
                 retain_local(&mut local.config_ownership, &old.config_ownership, elapsed);
+                retain_local(&mut local.config_summary, &old.config_summary, elapsed);
+                retain_local(&mut local.swap_free, &old.swap_free, elapsed);
                 retain_local(&mut local.service, &old.service, elapsed);
                 retain_local(&mut local.service_state, &old.service_state, elapsed);
                 retain_local(&mut local.registry, &old.registry, elapsed);

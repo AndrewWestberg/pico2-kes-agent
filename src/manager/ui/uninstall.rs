@@ -1,4 +1,7 @@
-use super::{public_fields, review, setup};
+use super::{
+    setup,
+    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
+};
 use crate::manager::{
     model::InstallationRole, observe::Worker, terminal::TerminalOwner, uninstall,
 };
@@ -7,6 +10,51 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) fn recover_record(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    selected_bundle: Option<&PathBuf>,
+    operation_id: &str,
+    plan_digest: &str,
+) -> io::Result<()> {
+    let checked = uninstall::review_uninstall_recovery(operation_id, plan_digest)?;
+    let mut lines = vec![
+        format!("Original operation: {operation_id}"),
+        format!("Original plan SHA : {plan_digest}"),
+        "Recovery never stops a newly changed service; configuration, records, identities, and Pico 2 storage remain untouched."
+            .into(),
+    ];
+    lines.extend(checked.lines);
+    if !review_mode(
+        terminal,
+        "Review original uninstall recovery",
+        lines,
+        ConfirmMode::Enter("stage uninstall recovery plan"),
+    )? {
+        return Ok(());
+    }
+    if crate::manager::host::trusted_manager().is_ok() {
+        return setup::apply(terminal, worker, socket, checked.action, None);
+    }
+    let Some((path, bundle, accepted)) = setup::bundle(terminal, selected_bundle)? else {
+        return Ok(());
+    };
+    let mut action = checked.action;
+    if let crate::manager::host::HostAction::UninstallRecovery {
+        bootstrap,
+        bootstrap_manifest_digest,
+        candidate_accepted,
+        ..
+    } = &mut action
+    {
+        *bootstrap = Some(path);
+        *bootstrap_manifest_digest = Some(bundle.selection().manifest_digest.to_string());
+        *candidate_accepted = accepted;
+    }
+    setup::apply(terminal, worker, socket, action, Some(&bundle))
+}
+
 pub(super) fn run(
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
@@ -14,120 +62,89 @@ pub(super) fn run(
     role: InstallationRole,
     selected_bundle: Option<&PathBuf>,
 ) -> io::Result<()> {
-    let Some(choice) = public_fields(
-        terminal,
-        "Uninstall",
-        &[(
-            "Choose new removal or original-record recovery: new/recover",
-            "new",
-        )],
-    )?
-    else {
-        return Ok(());
-    };
-    if choice[0] == "recover" {
-        let Some(values) = public_fields(
-            terminal,
-            "Reopen original removal",
-            &[
-                ("Original operation ID", ""),
-                ("Original approved plan digest", ""),
-            ],
-        )?
-        else {
-            return Ok(());
-        };
-        let checked = uninstall::review_uninstall_recovery(&values[0], &values[1])?;
-        let mut lines = vec![format!("Original operation {} and plan {}; no new removal identity.", values[0], values[1]), "Absent paths are observations, not proof of who removed them. Recovery never stops a newly changed service; stop it separately before review.".into()];
-        lines.extend(checked.lines);
-        lines.push("Changed or external files block recovery. Configuration, records, identities, device storage and producer drop-ins remain untouched. This is not erasure or revocation.".into());
-        if !review(
-            terminal,
-            "Review original removal recovery",
-            lines,
-            Some("RECOVER ORIGINAL REMOVAL"),
-        )? {
-            return Ok(());
-        }
-        if crate::manager::host::trusted_manager().is_ok() {
-            return setup::apply(terminal, worker, socket, checked.action, None);
-        }
-        let Some((path, bundle, accepted)) = setup::bundle(terminal, selected_bundle)? else {
-            return Ok(());
-        };
-        let mut action = checked.action;
-        if let crate::manager::host::HostAction::UninstallRecovery {
-            bootstrap,
-            bootstrap_manifest_digest,
-            candidate_accepted,
-            ..
-        } = &mut action
-        {
-            *bootstrap = Some(path);
-            *bootstrap_manifest_digest = Some(bundle.selection().manifest_digest.to_string());
-            *candidate_accepted = accepted;
-        }
-        return setup::apply(terminal, worker, socket, action, Some(&bundle));
-    }
-    if choice[0] != "new" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "choose new or recover",
-        ));
-    }
-    let Some(values) = public_fields(
-        terminal,
-        "Select components for removal",
+    let mode_opts = [
+        ("new", "Select installed host components to remove"),
+        ("recover", "Reconcile an interrupted uninstall record"),
+    ];
+    let stop_opts = if role == InstallationRole::Primary {
         &[
-            (
-                "Comma-separated installed components: manager,daemon,cli,firmware,tool,deployment",
-                "",
-            ),
-            (
-                "Approve stopping the affected managed daemon if active? yes/no",
-                "no",
-            ),
-        ],
-    )?
+            ("no", "Do not stop running pico2-kes-agentd"),
+            ("yes", "Stop pico2-kes-agentd if affected"),
+        ][..]
+    } else {
+        &[("no", "Backup role has no agent service")][..]
+    };
+    let specs = [
+        FieldSpec::select("Workflow", "new", &mode_opts),
+        FieldSpec::text_hint(
+            "Components to remove (comma-separated, for new workflow)",
+            "manager,daemon,cli,firmware,tool,deployment",
+            "Configuration, records, and Pico 2 storage are always preserved",
+        ),
+        FieldSpec::select("Stop affected agent service", "no", stop_opts),
+        FieldSpec::text_hint(
+            "Original operation ID (only for recover workflow)",
+            "",
+            "32 hex characters",
+        ),
+        FieldSpec::text_hint(
+            "Original approved plan digest (only for recover workflow)",
+            "",
+            "64 hex characters",
+        ),
+    ];
+    enum Choice {
+        New(Box<uninstall::UninstallReview>),
+        Recover(String, String),
+    }
+    let Some(choice) =
+        form_validated(terminal, "Uninstall managed components", &specs, |values| {
+            if values[0] == "recover" {
+                let op = values[3].trim();
+                let dg = values[4].trim();
+                if op.len() != 32 || !op.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err((Some(3), "Operation ID must be 32 hex characters".into()));
+                }
+                if dg.len() != 64 || !dg.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err((Some(4), "Plan digest must be 64 hex characters".into()));
+                }
+                return Ok(Choice::Recover(op.to_owned(), dg.to_owned()));
+            }
+            let selected: Vec<String> = values[1]
+                .split(',')
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+                .collect();
+            let stop = values[2] == "yes" && role == InstallationRole::Primary;
+            let checked = uninstall::review_uninstall(selected, stop)
+                .map_err(|e| (Some(1), e.to_string()))?;
+            Ok(Choice::New(Box::new(checked)))
+        })?
     else {
         return Ok(());
     };
-    let selected: Vec<String> = values[0]
-        .split(',')
-        .map(|value| value.trim().to_owned())
-        .collect();
-    let stop = match values[1].as_str() {
-        "yes" if role == InstallationRole::Primary => true,
-        "no" => false,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "stop approval must be yes on primary or no",
-            ));
+    match choice {
+        Choice::Recover(op, dg) => {
+            recover_record(terminal, worker, socket, selected_bundle, &op, &dg)
         }
-    };
-    let checked = uninstall::review_uninstall(selected, stop)?;
-    let mut lines = vec!["Exact registered files and links below will be removed; a changed or external file blocks removal. Administrative approval is required.".into()];
-    lines.extend(
-        checked
-            .details
-            .iter()
-            .map(|line| format!("Remove/change: {line}")),
-    );
-    lines.extend(
-        checked
-            .retained
-            .iter()
-            .map(|line| format!("Retain: {line}")),
-    );
-    lines.push("Only an explicitly approved affected agent service is stopped. Producer services are never restarted. Removing binaries does not erase keys or revoke them; the running manager can complete its report after self-removal.".into());
-    if !review(
-        terminal,
-        "Review selected uninstall",
-        lines,
-        Some("REMOVE SELECTED COMPONENTS"),
-    )? {
-        return Ok(());
+        Choice::New(checked) => {
+            let mut lines = vec![
+                "Registered files and links to remove (modified/external files block removal):"
+                    .into(),
+            ];
+            lines.extend(checked.details.iter().map(|l| format!("  Remove: {l}")));
+            lines.push(String::new());
+            lines.push("Preserved operational paths (never erased by uninstall):".into());
+            lines.extend(checked.retained.iter().map(|l| format!("  Retain: {l}")));
+            if !review_mode(
+                terminal,
+                "Review selected uninstall",
+                lines,
+                ConfirmMode::Enter("approve removal & stage host plan"),
+            )? {
+                return Ok(());
+            }
+            setup::apply(terminal, worker, socket, checked.action, None)
+        }
     }
-    setup::apply(terminal, worker, socket, checked.action, None)
 }

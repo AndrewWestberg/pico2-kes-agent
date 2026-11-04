@@ -187,6 +187,33 @@ impl Config {
         Self::from_bytes(&bytes, mode)
     }
 
+    pub(crate) fn identity_hex(&self) -> String {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut networks: Vec<_> = self.networks.iter().collect();
+        networks.sort_by_key(|(name, _)| *name);
+        let digest = Sha256::digest(
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                self.mode,
+                self.pin,
+                self.selected_serial,
+                self.socket_directory,
+                self.socket_group,
+                self.management_socket,
+                self.state_directory,
+                networks,
+                self.pools,
+            )
+            .as_bytes(),
+        );
+        let mut out = String::with_capacity(64);
+        for byte in digest {
+            out.push(DIGITS[usize::from(byte >> 4)] as char);
+            out.push(DIGITS[usize::from(byte & 0x0f)] as char);
+        }
+        out
+    }
+
     pub(crate) fn from_bytes(bytes: &[u8], mode: RunMode) -> Result<Self, Error> {
         if bytes.len() as u64 > MAX_CONFIG_BYTES {
             return Err(Error::Invalid("configuration exceeds 1 MiB"));

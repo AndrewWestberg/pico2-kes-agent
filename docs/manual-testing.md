@@ -134,7 +134,7 @@ p2kesup
 
 Versions/source/build IDs must match the signed candidate, not `development-unqualified`. Installed version and running process version are separate observations.
 
-Navigation: 1–6 or Tab/Shift-Tab changes sections; `d` opens technical evidence; arrows or j/k select; Enter opens/reviews; Esc backs out; `r` refreshes; `?` helps. In a field, Tab changes field, Enter advances, Backspace edits; fields are not shell-expanded, so paste `/home/operator/...`, **not** `$OPS/...` or `~/...`. Review all text before typing confirmation. `q` inside a text field is a character, not a general cancel key.
+Navigation: 1–6 or Tab/Shift-Tab changes sections; `d` opens the 4-tab technical evidence drawer (`1–4` or `Tab`); arrows or j/k select; Enter opens/reviews; Esc backs out; `r` refreshes; `?` helps. In a form, `Up`/`Down`/`Tab`/`Shift-Tab` moves between fields, `< >` cycles selector choices, `Left`/`Right`/`Home`/`End`/`Backspace`/`Delete`/`Ctrl+U`/`Ctrl+W` edit at the cursor, and validation errors keep typed values intact; fields are not shell-expanded, so paste `/home/operator/...`, **not** `$OPS/...` or `~/...`. `q` inside a text field is a character, not a general cancel key.
 
 ### Local UI iteration (not release qualification)
 
@@ -152,10 +152,10 @@ Keep `$HOME/.local/bin` ahead of `/usr/bin`. This UI reports `development-unqual
 
 For each UI iteration:
 
-1. At 80×24, check the status, configuration, daemon state and next action without scrolling. Unknown observations must not become empty or healthy. The **Pool checks** banner covers observed pool conditions, not independent identity attestation, host-policy qualification or node forging.
-2. Press Enter on **Next**, then choose existing-device or blank-device setup. Missing configuration must not select commissioning automatically. Setup status comes from current observations; eligibility and configuration validation remain separate checks on each reviewed action.
-3. Visit all six primary sections; in **Pools**, press `a` for enrollment/recipient actions or Enter on a selected pool for its lifecycle actions. Refresh must preserve the exact pool/incarnation selection, including when the displayed order changes. A vanished target must not become a different selected pool.
-4. Press `d` for full evidence, then Esc. Cancel a configuration form. Try a nonexistent candidate and verify refusal without a write. Review long confirmation tokens at 80 columns; their labels must wrap rather than hide the target.
+1. At 80×24, check the two-column **Overview** (Primary Posture + Device & Pool Fleet, including pin posture, swap preflight, capacity and trusted wall-clock KES expiry) without scrolling. Unknown observations must not become empty or healthy. Readiness covers observed pool conditions, not independent identity attestation, host-policy qualification or node forging.
+2. Press Enter on the **Next** action banner, then choose existing-device or blank-device setup. Missing configuration must not select commissioning automatically. Setup status comes from current observations; eligibility and configuration validation remain separate checks on each reviewed action.
+3. Visit all six primary sections; in **Pools**, inspect the 1-row-per-pool table and exercise `n` (enroll), `b` (bind unbound pool), `a` (global pool actions), `f` (attention-only toggle), `o` (sort order), `/` (substring filter), or Enter on a selected pool for its side-by-side Active/Staged slot cards and lifecycle actions. Refresh must preserve the exact pool/incarnation selection, including when the displayed order changes. A vanished target must not become a different selected pool.
+4. Press `d` for the 4-tab evidence drawer, then Esc. Cancel a configuration form. Try a nonexistent candidate and verify inline validation refusal without losing typed form text or writing files. Review standalone root approval digests at 80 columns.
 5. Repeat with `NO_COLOR=1`, resize below 80×24 and back, then quit. Navigation, selection, statuses and cancellation must remain understandable, and terminal echo/cursor/alternate-screen state must be restored.
 
 Do not repeat a lifecycle mutation, firmware transfer or OTP operation solely to test layout. Device-backed pool states and private backup workflows require their separate disposable-host acceptance scenarios below.
@@ -211,12 +211,12 @@ mkdir -m 0700 "$OPS"
 : "${USB_SERIAL:?Set the intended application serial: 16 lowercase characters}"
 ```
 
-Save the complete [commissioning configuration template](../README.md#operator-workspace-and-commissioning-mode) as `$OPS/commission.json`, replacing its serial. It has no pin, networks or pools. In `p2kesup`:
+Save the complete [commissioning configuration template](../README.md#operator-workspace-and-commissioning-mode) as `$OPS/commission.json` (or use the guided builder directly). It has no pin, networks or pools. In `p2kesup`:
 
-1. **Host → Continue setup → Set up a new blank device → Install commissioning configuration**; select that absolute file and inspect the exact diff.
+1. **Host → Continue setup → Set up a new blank device → Build & install commissioning configuration (guided)** (pre-fills the detected 16-char USB serial and standard paths, or use **Install supplied commissioning configuration** for `$OPS/commission.json`); inspect the exact diff and approve the single root `approved_digest` confirmation.
 2. **Start commissioning service**; require the intended compatible blank application through the sole daemon.
-3. If needed, resolve the **original** first-install record with the fresh blank/build evidence.
-4. **Commission blank device**; review serial, blank admission, receipt and unused public output path such as `$OPS/device.json`; confirm once.
+3. If needed, resolve the **original** first-install record in **Activity** (or via **Reconcile original first firmware install**) with the fresh blank/build evidence.
+4. **Commission blank device**; review serial, blank admission, auto-allocated receipt path and pre-filled unused public output path (defaulting under `$XDG_STATE_HOME/p2kesup/exports/` or override to `$OPS/device.json`); confirm once.
 5. Archive the public enrollment record and original receipt off-primary. It is a pin obtained through attended trust, not independent hardware attestation.
 
 **Interface rule for the rest of this guide:** the recommended pass uses the named TUI action. The CLI blocks are equivalent standalone command tests, **not commands to run again after doing the same mutation in the TUI**. Choose one interface per mutation. For TUI results, set shell variables from the observed public IDs/receipts, or recover them with read-only status; do not repeat a mutation merely to populate a shell variable. A later independent CLI pass needs new disposable identities and unique receipts.
@@ -248,7 +248,7 @@ Check correct UTC and independently trusted network timing before exposing keys 
 Through Host → Continue setup → Set up a new blank device:
 
 1. **Stop commissioning service**.
-2. **Install normal configuration and identity pin**; inspect the exact candidate/diff.
+2. **Build & install normal configuration + pin (guided)** (parses `device.json`, computes the exact Shelley genesis SHA-256 `genesis_digest`, and builds a candidate in `$XDG_STATE_HOME/p2kesup/candidates/`, or use **Install supplied normal configuration and identity pin** for `$OPS/config.json`); inspect the exact candidate/diff.
 3. Complete the real normal-mode node/host policy prerequisites from step 6.
 4. **Start normal service** (existing preflight still applies).
 
@@ -293,7 +293,7 @@ RECIPIENT_KEY="$BACKUP_OPS/recipient.private"
 RECIPIENT_PUBLIC="$BACKUP_OPS/recipient.public.json"
 ```
 
-Select **Recipients → Create protected backup recipient**. Approve the finite local privileged role/process inspection before private-path forms and again before the child; it does not connect to the primary/daemon/device. Enter the two absolute output paths. The foreground CLI, not a TUI field, asks for the passphrase. Do not record, pipe, tee or put it in argv/environment.
+Select **Recipients → Create protected backup recipient**. Approve the finite local privileged role/process inspection before private-path forms and again before the child; it does not connect to the primary/daemon/device. Confirm or override the two pre-filled absolute output paths (defaulting under `$XDG_STATE_HOME/p2kesup/exports/` or set to `$RECIPIENT_KEY` and `$RECIPIENT_PUBLIC`). The foreground CLI, not a TUI field, asks for the passphrase. Do not record, pipe, tee or put it in argv/environment.
 
 Equivalent **backup-host-only** CLI test:
 
@@ -308,7 +308,7 @@ Expected: new protected private file and public JSON, no overwrite. Transfer **o
 
 **Primary.** Public inputs and their immediate parent must be operator-owned and not group/world writable. Copy transferred files into `$OPS` as the operator. Do not ask the CLI to publish into root-owned `/etc`.
 
-TUI: **Pools → a (Actions) → Install / rotate public recipient**. Supply the public file and new receipt path. Review fresh device identity/revision. Equivalent:
+TUI: **Pools → a (Actions) → Install / rotate public recipient**. Supply the public file (receipt and reference paths are auto-allocated under `$XDG_STATE_HOME/p2kesup/{receipts,references}/`). Review fresh device identity/revision. Equivalent:
 
 ```bash
 RECIPIENT_PUBLIC="$OPS/recipient.public.json"
@@ -339,7 +339,7 @@ pico2-kes-agent-cli --json pool list --page-size 16
 
 Do not pipe a mutation into `jq` or hide its exit status. Every mutation gets a new receipt; uncertainty reuses the original receipt, not a new request. IDs: pool is 56 lowercase hex characters, not `pool1...`; device/incarnation/generation IDs are 32 hex characters. Save exact returned IDs.
 
-**Required before readiness:** obtain this pool's `socket_path` from the complete list; add `{pool_id, incarnation_id, socket_path, network}` to a normal configuration candidate. Use **Host → Review/validate supplied configuration candidate**, review/cancel once, then validate/apply and separately **Restart managed agent**. Enrollment/journal reconstruction alone does **not** start a context poller for a pool absent from startup configuration. Never substitute the management socket for the pool delivery socket.
+**Required before readiness:** accept the post-enrollment prompt to bind `{pool_id, incarnation_id, socket_path, network}` in `/etc/pico2-kes-agent/config.json` and optionally restart `pico2-kes-agentd` (or press `b` on the `[UNB]` pool in **Pools**, or use **Host → Review/validate supplied configuration candidate** and **Restart managed agent**). Enrollment/journal reconstruction alone does **not** start a context poller for a pool absent from startup configuration. Never substitute the management socket for the pool delivery socket.
 
 ## 12. Generate, inspect and export the first generation
 
@@ -442,11 +442,11 @@ Use **Install / rotate public recipient** or step 11's `recipient set`, with the
 
 ## 16. Exercise receipt discovery and reconciliation
 
-First rehearse read-only discovery: **Activity → Discover and inspect original operation receipts**. Record the exact original path, operation ID, request digest, target and result. A manager reference is not a substitute for the CLI receipt.
+First rehearse read-only discovery: open **Activity** (where retained CLI receipts, lifecycle references, host/backup maintenance records and plans are listed automatically; or press `m` → **Discover and inspect original operation receipts**). Record the exact original path, operation ID, request digest, target and result. A manager reference is not a substitute for the CLI receipt.
 
 For a qualification-controlled interrupted **non-OTP** lifecycle submission on disposable state, terminate only the manager after submission but before final display. Do not kill the daemon or unplug storage merely to test a lost UI response. The result may already be committed; reopening must not invent a retry.
 
-TUI: **Reconcile an original receipt**. Equivalent:
+TUI: press Enter on the `[PENDING]` item in **Activity** (or press `m` → **Reconcile an original receipt**). Equivalent:
 
 ```bash
 : "${RECEIPT:?Set the absolute original receipt file path}"
@@ -517,7 +517,7 @@ For performance/capacity acceptance, repeat the setup with 64 distinct disposabl
 
 One fresh RC is enough for initial setup/lifecycle testing, **not proof of upgrade/downgrade**. Keep the original authenticated bundle, pin, configuration, journal and operation records. Record complete public pre-state before changes.
 
-1. With a second authenticated RC, run `p2kesup upgrade --version v0.1.0-rc.12`, replacing the example with its actual tag. Review candidate admission on the disposable host. The default `p2kesup upgrade` selects latest qualified stable; `p2kesup upgrade --bundle /absolute/new-RC-bundle` selects an offline bundle. The installed role is inferred.
+1. With a second authenticated RC, run `p2kesup upgrade --version v0.1.0-rc.12` (or in the TUI open **Software → Upgrade or switch complete release tuple**), replacing the example with its actual tag. Review candidate admission on the disposable host. The default `p2kesup upgrade` selects latest qualified stable; `p2kesup upgrade --bundle /absolute/new-RC-bundle` selects an offline bundle. The installed role is inferred.
 2. Review the complete signed host and firmware tuple, service disruption, physical prerequisites and pre-state. The coordinated update does not authorize arbitrary mixed tuples. Preserve stopped service state unless explicitly approving temporary validation.
 3. Attend any firmware transfer on the exact pinned board, following the foreground BOOTSEL, verified mount, flush and reconnect instructions. Require the selected live build, original identity and retained state; copy success alone is incomplete. Compare config, pin, journal, recipients and pool/generation continuity, allowing only explained forward lifecycle transitions.
 4. Repeat the selected upgrade and verify the already-installed tuple is a no-op. For an admitted interruption, retain the original plan's absolute path and resume only that forward-only operation with `p2kesup upgrade --resume ORIGINAL_PLAN_PATH`; never erase, re-pin, recommission, restore old state or create a replacement operation to hide uncertainty.

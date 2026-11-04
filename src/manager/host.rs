@@ -23,7 +23,9 @@ use std::{
 };
 
 mod upgrade;
-pub use upgrade::{review_upgrade_recovery, trusted_upgrade_recovery_manager, verify_installed_ownership};
+pub use upgrade::{
+    review_upgrade_recovery, trusted_upgrade_recovery_manager, verify_installed_ownership,
+};
 
 pub(super) fn read_confirmation(input: impl io::BufRead) -> io::Result<String> {
     let mut line = String::new();
@@ -186,6 +188,143 @@ pub enum HostAction {
     },
 }
 
+impl HostAction {
+    pub fn stem(&self) -> &'static str {
+        match self {
+            Self::Install { .. } => "install",
+            Self::Upgrade { .. } => "upgrade",
+            Self::UpgradeRecovery { .. } => "upgrade-recovery",
+            Self::Update { .. } => "component-update",
+            Self::UpdateRecovery { .. } => "update-recovery",
+            Self::FirmwareUpdate { .. } => "firmware-update",
+            Self::FirmwarePreview { .. } => "firmware-preview",
+            Self::FirmwareRecovery { .. } => "firmware-recovery",
+            Self::FirmwareFirstInstall { .. } => "firmware-first-install",
+            Self::Config {
+                commissioning: true,
+                ..
+            } => "config-commission",
+            Self::Config {
+                commissioning: false,
+                ..
+            } => "config-normal",
+            Self::CommissionService { start: true, .. } => "commission-start",
+            Self::CommissionService { start: false, .. } => "commission-stop",
+            Self::Service {
+                operation: ServiceAction::Start,
+                ..
+            } => "service-start",
+            Self::Service {
+                operation: ServiceAction::Stop,
+                ..
+            } => "service-stop",
+            Self::Service {
+                operation: ServiceAction::Restart,
+                ..
+            } => "service-restart",
+            Self::ReconcileFirstInstall { .. } => "reconcile-first-install",
+            Self::CommissionAdmission { .. } => "commission-admission",
+            Self::Provisioning { .. } => "device-security",
+            Self::ProducerHardening { .. } => "producer-hardening",
+            Self::ProducerRecovery { .. } => "producer-recovery",
+            Self::HostReconcile { .. } => "host-reconcile",
+            Self::UninstallRecovery { .. } => "uninstall-recovery",
+            Self::Uninstall { .. } => "uninstall",
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Install { role, bundle, .. } => {
+                format!("Install {role:?} host bundle from {}", bundle.display())
+            }
+            Self::Upgrade { bundle, .. } => {
+                format!("Upgrade complete release tuple from {}", bundle.display())
+            }
+            Self::UpgradeRecovery { operation_id, .. } => {
+                format!("Reconcile interrupted tuple upgrade {operation_id}")
+            }
+            Self::Update { selection, .. } => {
+                format!("Apply component selection {}", selection.tag)
+            }
+            Self::UpdateRecovery { operation_id, .. } => {
+                format!("Reconcile interrupted host update {operation_id}")
+            }
+            Self::FirmwareUpdate { serial, .. } => {
+                format!("Update firmware on pinned board {serial}")
+            }
+            Self::FirmwarePreview { .. } => {
+                "Temporary daemon start for read-only firmware pre-state".into()
+            }
+            Self::FirmwareRecovery { operation_id, .. } => {
+                format!("Reconcile original firmware update {operation_id}")
+            }
+            Self::FirmwareFirstInstall { apply, .. } => {
+                if *apply {
+                    "Apply factory BOOTSEL firmware install".into()
+                } else {
+                    "Preview factory BOOTSEL firmware install".into()
+                }
+            }
+            Self::Config {
+                commissioning,
+                candidate,
+                ..
+            } => {
+                let mode = if *commissioning {
+                    "commissioning"
+                } else {
+                    "normal"
+                };
+                format!("Install {mode} configuration from {}", candidate.display())
+            }
+            Self::CommissionService { start, .. } => {
+                if *start {
+                    "Start restricted commissioning service".into()
+                } else {
+                    "Stop restricted commissioning service".into()
+                }
+            }
+            Self::Service { operation, .. } => {
+                format!("{operation:?} managed pico2-kes-agentd.service")
+            }
+            Self::ReconcileFirstInstall {
+                operation_id,
+                serial,
+                ..
+            } => format!("Associate blank application {serial} with transfer {operation_id}"),
+            Self::CommissionAdmission { serial, .. } => {
+                format!("Authenticate blank commissioning admission for {serial}")
+            }
+            Self::Provisioning { request } => {
+                format!(
+                    "Device security {:?} on board {}",
+                    request.action, request.serial
+                )
+            }
+            Self::ProducerHardening { request } => {
+                format!(
+                    "Install producer memory drop-in ({} unit(s))",
+                    request.targets.len()
+                )
+            }
+            Self::ProducerRecovery { operation_id, .. } => {
+                format!("Reconcile producer drop-in batch {operation_id}")
+            }
+            Self::HostReconcile { operation_id, .. } => {
+                format!("Reconcile original service/configuration record {operation_id}")
+            }
+            Self::UninstallRecovery { operation_id, .. } => {
+                format!("Reconcile original uninstall record {operation_id}")
+            }
+            Self::Uninstall {
+                selected_components,
+                ..
+            } => format!("Uninstall components: {}", selected_components.join(", ")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostPlan {
@@ -235,25 +374,64 @@ impl HostPlan {
                 ..
             } => bundle.is_absolute() && digest_ok(manifest_digest),
             HostAction::Upgrade {
-                bundle, manifest_digest, expected_registry_digest,
-                expected_service_state, pre_state, serial, device_id, identity_public_key,
-                record, ..
+                bundle,
+                manifest_digest,
+                expected_registry_digest,
+                expected_service_state,
+                pre_state,
+                serial,
+                device_id,
+                identity_public_key,
+                record,
+                ..
             } => {
-                bundle.is_absolute() && digest_ok(manifest_digest) && digest_ok(expected_registry_digest)
-                    && match (expected_service_state, pre_state, serial, device_id, identity_public_key, record) {
+                bundle.is_absolute()
+                    && digest_ok(manifest_digest)
+                    && digest_ok(expected_registry_digest)
+                    && match (
+                        expected_service_state,
+                        pre_state,
+                        serial,
+                        device_id,
+                        identity_public_key,
+                        record,
+                    ) {
                         (None, None, None, None, None, None) => true,
-                        (Some(state), Some(_), Some(serial), Some(device), Some(key), Some(record)) => {
-                            !state.is_empty() && state.len() <= 512 && state.bytes().all(|b| (32..127).contains(&b))
-                                && serial_ok(serial) && id_ok(device) && digest_ok(key)
+                        (
+                            Some(state),
+                            Some(_),
+                            Some(serial),
+                            Some(device),
+                            Some(key),
+                            Some(record),
+                        ) => {
+                            !state.is_empty()
+                                && state.len() <= 512
+                                && state.bytes().all(|b| (32..127).contains(&b))
+                                && serial_ok(serial)
+                                && id_ok(device)
+                                && digest_ok(key)
                                 && record.parent() == Some(Path::new("/var/lib/p2kesup/firmware"))
-                                && record.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")).is_some_and(id_ok)
+                                && record
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .and_then(|n| n.strip_suffix(".json"))
+                                    .is_some_and(id_ok)
                         }
                         _ => false,
                     }
             }
-            HostAction::UpgradeRecovery { operation_id, original_plan_digest, expected_service_state, .. } => {
-                id_ok(operation_id) && digest_ok(original_plan_digest)
-                    && expected_service_state.as_ref().is_none_or(|s| !s.is_empty() && s.len() <= 512 && s.bytes().all(|b| (32..127).contains(&b)))
+            HostAction::UpgradeRecovery {
+                operation_id,
+                original_plan_digest,
+                expected_service_state,
+                ..
+            } => {
+                id_ok(operation_id)
+                    && digest_ok(original_plan_digest)
+                    && expected_service_state.as_ref().is_none_or(|s| {
+                        !s.is_empty() && s.len() <= 512 && s.bytes().all(|b| (32..127).contains(&b))
+                    })
             }
             HostAction::Update {
                 authorizing_bundle,
@@ -916,7 +1094,11 @@ fn host_record(plan: &HostPlan, previous: Option<String>) -> io::Result<Maintena
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let operation_id = if let HostAction::FirmwareUpdate { record, .. }
-        | HostAction::Upgrade { record: Some(record), .. } = &plan.action {
+    | HostAction::Upgrade {
+        record: Some(record),
+        ..
+    } = &plan.action
+    {
         let name = record
             .file_stem()
             .and_then(|n| n.to_str())
@@ -1143,11 +1325,14 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     if reopen_existing_plan(&plan)? {
         return Ok(());
     }
+    println!("\n=== Privileged Host Maintenance Review ===");
+    println!("Summary: {}", plan.action.summary());
     println!(
-        "Host maintenance scope: {}",
+        "Scope details:\n{}",
         serde_json::to_string_pretty(&plan.action).map_err(io::Error::other)?
     );
-    println!("Approval digest: {}", plan.approved_digest);
+    println!("\nApproval digest (copy the standalone 64-hex line below):");
+    println!("{}", plan.approved_digest);
     if matches!(
         &plan.action,
         HostAction::Install {
@@ -1159,10 +1344,10 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         }
     ) {
         println!(
-            "This is explicit offline candidate acceptance on a disposable host, not release qualification."
+            "Notice: explicit offline candidate acceptance on a disposable host (not release qualification)."
         );
     }
-    print!("Type the complete digest to approve this exact scope: ");
+    print!("Paste or type the digest above to approve this exact scope: ");
     io::stdout().flush()?;
     let answer = read_confirmation(io::stdin().lock())?;
     if answer.trim() != plan.approved_digest {
@@ -1241,7 +1426,13 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             manifest_digest,
             candidate_accepted,
             ..
-        } | HostAction::Upgrade { bundle, manifest_digest, candidate_accepted, .. } => {
+        }
+        | HostAction::Upgrade {
+            bundle,
+            manifest_digest,
+            candidate_accepted,
+            ..
+        } => {
             let admission = if *candidate_accepted {
                 super::release::Admission::AttendedCandidate
             } else {
@@ -1286,8 +1477,11 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     let _lock = maintenance_lock()?;
     if !matches!(&plan.action, HostAction::Install { .. }) {
         let expected = match &plan.action {
-            HostAction::UpgradeRecovery { operation_id, original_plan_digest, .. } =>
-                trusted_upgrade_recovery_manager(operation_id, original_plan_digest)?,
+            HostAction::UpgradeRecovery {
+                operation_id,
+                original_plan_digest,
+                ..
+            } => trusted_upgrade_recovery_manager(operation_id, original_plan_digest)?,
             HostAction::UpdateRecovery {
                 operation_id,
                 original_plan_digest,
@@ -1407,7 +1601,11 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         HostAction::Update {
             expected_service_state,
             ..
-        } | HostAction::Upgrade { expected_service_state, .. } => expected_service_state.clone(),
+        }
+        | HostAction::Upgrade {
+            expected_service_state,
+            ..
+        } => expected_service_state.clone(),
         HostAction::FirmwareUpdate {
             expected_service_state,
             ..
@@ -1491,10 +1689,19 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         record.bundle_digest = Some(selection.manifest_digest.to_string());
     }
     if matches!(&plan.action, HostAction::Upgrade { .. }) {
-        let previous = installation_registry()?.current.ok_or_else(|| io::Error::other("installed tuple unavailable"))?;
+        let previous = installation_registry()?
+            .current
+            .ok_or_else(|| io::Error::other("installed tuple unavailable"))?;
         let link = fs::read_link("/usr/lib/pico2-kes-agent/current")?;
-        record.pre_observations.push(serde_json::to_string(&(previous, link)).map_err(io::Error::other)?);
-        let image = verified.as_ref().unwrap().manifest().artifacts.iter()
+        record
+            .pre_observations
+            .push(serde_json::to_string(&(previous, link)).map_err(io::Error::other)?);
+        let image = verified
+            .as_ref()
+            .unwrap()
+            .manifest()
+            .artifacts
+            .iter()
             .find(|a| a.path == "firmware/pico2-kes-firmware.signed.uf2")
             .ok_or_else(|| io::Error::other("firmware image absent"))?;
         record.image_digest = Some(image.sha256.clone());
@@ -1586,7 +1793,13 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             &mut effects,
         ),
         HostAction::Update { .. } => update_bundle(&plan, &store, &mut record, &mut effects, None),
-        HostAction::Upgrade { .. } => upgrade::apply(&plan, verified.as_ref().unwrap(), &store, &mut record, &mut effects),
+        HostAction::Upgrade { .. } => upgrade::apply(
+            &plan,
+            verified.as_ref().unwrap(),
+            &store,
+            &mut record,
+            &mut effects,
+        ),
         HostAction::FirmwareUpdate { .. } => firmware_update(
             &plan,
             verified.as_ref().unwrap(),
@@ -1846,7 +2059,14 @@ fn service_group() -> io::Result<Option<u32>> {
             &mut result,
         )
     };
-    group_lookup_result(rc, if result.is_null() { None } else { Some(entry.gr_gid) })
+    group_lookup_result(
+        rc,
+        if result.is_null() {
+            None
+        } else {
+            Some(entry.gr_gid)
+        },
+    )
 }
 
 fn group_lookup_result(rc: i32, gid: Option<u32>) -> io::Result<Option<u32>> {
@@ -3752,7 +3972,10 @@ fn admit_commissioning_target(
     Ok(())
 }
 
-pub(super) fn same_selection(a: &super::model::ReleaseSelection, b: &super::model::ReleaseSelection) -> bool {
+pub(super) fn same_selection(
+    a: &super::model::ReleaseSelection,
+    b: &super::model::ReleaseSelection,
+) -> bool {
     a.tag == b.tag
         && a.version == b.version
         && a.source_commit == b.source_commit
@@ -4089,8 +4312,9 @@ fn update_bundle(
         .iter()
         .find(|c| c.component == "firmware")
         .ok_or_else(|| io::Error::other("reviewed firmware selection missing"))?;
-    if coordinated.is_none() && (old_firmware.digest != next_firmware.digest
-        || old_firmware.manifest_digest != next_firmware.manifest_digest)
+    if coordinated.is_none()
+        && (old_firmware.digest != next_firmware.digest
+            || old_firmware.manifest_digest != next_firmware.manifest_digest)
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -4461,7 +4685,16 @@ fn update_bundle(
         store.update(record)?;
     }
     if let Some(original) = coordinated {
-        return upgrade::activate_prepared(original, &authorizing, registry, actual, additions, store, record, effects);
+        return upgrade::activate_prepared(
+            original,
+            &authorizing,
+            registry,
+            actual,
+            additions,
+            store,
+            record,
+            effects,
+        );
     }
     if prior_active && disruptive {
         run_service(
@@ -4835,10 +5068,11 @@ pub fn firmware_review_temporary(expected_service_state: &str) -> io::Result<Fir
     })?;
     plan.validate()?;
     println!(
-        "Temporary firmware observation will start the stopped agent and restore it to stopped. Approval digest: {}",
-        plan.approved_digest
+        "Temporary firmware observation will start the stopped agent, read public state, and restore it to stopped."
     );
-    print!("Type the complete digest to approve: ");
+    println!("Approval digest (copy the standalone 64-hex line below):");
+    println!("{}", plan.approved_digest);
+    print!("Paste or type the digest above to approve: ");
     io::stdout().flush()?;
     let answer = read_confirmation(io::stdin().lock())?;
     if answer.trim() != plan.approved_digest {
@@ -7087,8 +7321,13 @@ fn recover_provisioning(plan: &HostPlan, store: &RecordStore) -> io::Result<()> 
 
 fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) -> io::Result<bool> {
     Ok(match action {
-        HostAction::UpgradeRecovery { operation_id, original_plan_digest, .. } => {
-            record.action == "upgrade" && record.operation_id.to_string() == *operation_id
+        HostAction::UpgradeRecovery {
+            operation_id,
+            original_plan_digest,
+            ..
+        } => {
+            record.action == "upgrade"
+                && record.operation_id.to_string() == *operation_id
                 && record.plan_digest.to_string() == *original_plan_digest
         }
         HostAction::HostReconcile {
@@ -7166,13 +7405,23 @@ fn group_lookup_distinguishes_absence_from_failure() {
     assert_eq!(group_lookup_result(0, Some(0)).unwrap(), Some(0));
     assert_eq!(group_lookup_result(0, Some(989)).unwrap(), Some(989));
     for rc in [
-        libc::EACCES, libc::EPERM, libc::EIO, libc::EMFILE,
-        libc::ENOMEM, libc::ERANGE, libc::EAGAIN,
+        libc::EACCES,
+        libc::EPERM,
+        libc::EIO,
+        libc::EMFILE,
+        libc::ENOMEM,
+        libc::ERANGE,
+        libc::EAGAIN,
     ] {
-        assert_eq!(group_lookup_result(rc, None).unwrap_err().raw_os_error(), Some(rc));
+        assert_eq!(
+            group_lookup_result(rc, None).unwrap_err().raw_os_error(),
+            Some(rc)
+        );
     }
     assert_eq!(
-        group_lookup_result(libc::ENOENT, Some(989)).unwrap_err().raw_os_error(),
+        group_lookup_result(libc::ENOENT, Some(989))
+            .unwrap_err()
+            .raw_os_error(),
         Some(libc::ENOENT),
     );
 }

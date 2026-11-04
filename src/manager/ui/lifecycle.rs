@@ -1,12 +1,17 @@
-use super::{public_fields, review};
+use super::{
+    review, setup,
+    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
+};
 use crate::manager::{
     host,
     lifecycle::{self, Mutation},
-    observe::Worker,
+    observe::{Snapshot, Worker},
     terminal::TerminalOwner,
+    workspace::{self, WorkspaceKind},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read},
@@ -39,29 +44,54 @@ pub(super) enum Action {
 pub(super) const ACTIONS: &[(Action, &str)] = &[
     (
         Action::List,
-        "List complete device inventory and host bindings",
+        "Inspect complete device inventory & host bindings",
     ),
-    (Action::Detail, "Inspect exact pool and generation details"),
-    (
-        Action::Enroll,
-        "Enroll supplied public cold verification key",
-    ),
+    (Action::Detail, "Inspect exact pool & generation JSON"),
+    (Action::Enroll, "Enroll new pool from cold verification key"),
     (
         Action::Delete,
-        "Delete exact pool incarnation (irreversible)",
+        "Delete pool incarnation from device (destructive)",
     ),
-    (Action::Generate, "Create staged generation"),
-    (Action::Discard, "Discard exact staged generation"),
-    (Action::VerificationKey, "Export public verification key"),
-    (Action::Artifact, "Export encrypted artifact"),
-    (Action::Certificate, "Install matching public certificate"),
-    (Action::Recipient, "Install / rotate public recipient"),
+    (Action::Generate, "Create next staged KES generation"),
+    (Action::Discard, "Discard staged generation (destructive)"),
+    (
+        Action::VerificationKey,
+        "Export KES verification key (.vkey)",
+    ),
+    (
+        Action::Artifact,
+        "Export encrypted HPKE backup (.kes-backup)",
+    ),
+    (
+        Action::Certificate,
+        "Install cold-signed operational certificate",
+    ),
+    (Action::Recipient, "Install or rotate HPKE backup recipient"),
     (
         Action::Receipts,
-        "Discover and inspect original operation receipts",
+        "Browse retained lifecycle operation receipts",
     ),
-    (Action::Reconcile, "Reconcile an original receipt"),
+    (Action::Reconcile, "Reconcile an interrupted CLI receipt"),
 ];
+
+impl Action {
+    fn stem(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Detail => "detail",
+            Self::Enroll => "pool-enroll",
+            Self::Delete => "pool-delete",
+            Self::Generate => "key-generate",
+            Self::Discard => "key-discard",
+            Self::VerificationKey => "export-vkey",
+            Self::Artifact => "export-backup",
+            Self::Certificate => "cert-install",
+            Self::Recipient => "recipient-set",
+            Self::Receipts => "receipts",
+            Self::Reconcile => "reconcile",
+        }
+    }
+}
 
 fn progress<T: Send + 'static>(
     terminal: &mut TerminalOwner,
@@ -79,12 +109,25 @@ fn progress<T: Send + 'static>(
     let mut terminal_error = None;
     loop {
         if terminal_error.is_none() {
-            let draw = terminal.terminal().and_then(|terminal| terminal.draw(|frame| {
-                let message = if cancelled { "Cancellation requested; waiting for the current read to finish. No mutation will be submitted." }
-                    else if cancellable { "Working; Esc cancels after the current read finishes, before submission." }
-                    else { "Working; if submitted, this operation cannot be cancelled. Waiting for its original result." };
-                frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL).title(label)), frame.area());
-            }).map(|_| ()));
+            let draw = terminal.terminal().and_then(|terminal| {
+                terminal
+                    .draw(|frame| {
+                        let message = if cancelled {
+                            "Cancellation requested; waiting for the current read to finish. No mutation will be submitted."
+                        } else if cancellable {
+                            "Working; Esc cancels after the current read finishes, before submission."
+                        } else {
+                            "Working; if submitted, this operation cannot be cancelled. Waiting for its original result."
+                        };
+                        frame.render_widget(
+                            Paragraph::new(message)
+                                .wrap(Wrap { trim: false })
+                                .block(Block::default().borders(Borders::ALL).title(label)),
+                            frame.area(),
+                        );
+                    })
+                    .map(|_| ())
+            });
             if let Err(error) = draw {
                 terminal_error = Some(error);
             }
@@ -167,7 +210,7 @@ fn observe(
     cli: &lifecycle::TrustedCli,
     authority: &lifecycle::PeerAuthority,
     target: Option<(&str, &str)>,
-) -> io::Result<Option<serde_json::Value>> {
+) -> io::Result<Option<Value>> {
     let cli = cli.clone();
     let authority = authority.clone();
     let target = target.map(|(a, b)| (a.to_owned(), b.to_owned()));
@@ -194,13 +237,14 @@ fn observe(
     )
 }
 
-fn lines(value: &serde_json::Value) -> io::Result<Vec<String>> {
+fn lines(value: &Value) -> io::Result<Vec<String>> {
     Ok(serde_json::to_string_pretty(value)
         .map_err(io::Error::other)?
         .lines()
         .map(str::to_owned)
         .collect())
 }
+
 struct PublicInput {
     directory: PathBuf,
     path: String,
@@ -250,6 +294,7 @@ impl Drop for PublicInput {
         let _ = std::fs::remove_dir(&self.directory);
     }
 }
+
 fn absolute(path: &str) -> io::Result<()> {
     if !Path::new(path).is_absolute() {
         return Err(io::Error::new(
@@ -259,12 +304,52 @@ fn absolute(path: &str) -> io::Result<()> {
     }
     Ok(())
 }
+
+fn enrolled_target_from_outcome(result: &lifecycle::Outcome) -> Option<(String, String)> {
+    let from_val = |v: &Value| -> Option<(String, String)> {
+        let res = v.get("result")?;
+        if res.get("kind").and_then(Value::as_str) != Some("enrolled") {
+            return None;
+        }
+        Some((
+            res.get("pool_id")?.as_str()?.to_owned(),
+            res.get("incarnation_id")?.as_str()?.to_owned(),
+        ))
+    };
+    if let Some(receipt) = &result.receipt
+        && let Some(resp) = &receipt.response
+        && let Some(pair) = from_val(resp)
+    {
+        return Some(pair);
+    }
+    if !result.stdout.is_empty()
+        && !result.output_truncated
+        && let Ok(resp) = serde_json::from_slice::<Value>(&result.stdout)
+    {
+        return from_val(&resp);
+    }
+    None
+}
+
 fn outcome(
     terminal: &mut TerminalOwner,
     result: lifecycle::Outcome,
-    reference: &str,
-) -> io::Result<()> {
-    let mut text = vec![format!("CLI exit class: {:?}; uncertain: {}", result.class, result.uncertain), format!("Original reference: {reference}"), "Never submit a replacement operation for an uncertain or interrupted result. Reopen this original receipt and reconcile it.".into()];
+    reference: &Path,
+) -> io::Result<Option<(String, String)>> {
+    let enrolled = if result.class == lifecycle::ExitClass::Success && !result.uncertain {
+        enrolled_target_from_outcome(&result)
+    } else {
+        None
+    };
+    let mut text = vec![
+        format!(
+            "CLI exit class: {:?}; uncertain: {}",
+            result.class, result.uncertain
+        ),
+        format!("Retained reference: {}", reference.display()),
+        "Never submit a replacement operation for an uncertain or interrupted result. Reopen the original receipt in Activity (6)."
+            .into(),
+    ];
     if let Some(path) = &result.reconciliation_evidence {
         text.push(format!(
             "Reconciliation evidence retained at {}",
@@ -272,32 +357,38 @@ fn outcome(
         ));
     }
     if let Some(error) = &result.reconciliation_evidence_error {
-        text.push(format!("Reconciliation evidence could not be retained: {error}; record the actual response shown below."));
+        text.push(format!(
+            "Reconciliation evidence could not be retained: {error}; record the actual response shown below."
+        ));
     }
     if !result.stdout.is_empty()
         && !result.output_truncated
-        && let Ok(response) = serde_json::from_slice::<serde_json::Value>(&result.stdout)
+        && let Ok(response) = serde_json::from_slice::<Value>(&result.stdout)
     {
-        text.push("Actual CLI response:".into());
+        text.push(String::new());
+        text.push("CLI response:".into());
         text.extend(lines(&response)?);
     }
     if let Some(receipt) = result.receipt {
+        text.push(String::new());
+        text.push("Durable receipt:".into());
         text.extend(lines(
             &serde_json::to_value(receipt).map_err(io::Error::other)?,
         )?);
     } else {
-        text.push("No readable receipt was found; inspect the original reference before any further action.".into());
+        text.push(
+            "No readable receipt was found; inspect the retained reference before any further action."
+                .into(),
+        );
     }
     review(terminal, "Lifecycle result", text, None)?;
-    Ok(())
+    Ok(enrolled)
 }
-fn revisions_match(before: &serde_json::Value, after: &serde_json::Value) -> bool {
-    let comparable_pool = |value: &serde_json::Value| {
+
+fn revisions_match(before: &Value, after: &Value) -> bool {
+    let comparable_pool = |value: &Value| {
         let mut pool = value["pool"].clone();
-        if let Some(context) = pool
-            .get_mut("context")
-            .and_then(serde_json::Value::as_object_mut)
-        {
+        if let Some(context) = pool.get_mut("context").and_then(Value::as_object_mut) {
             context.remove("age_us");
         }
         pool
@@ -309,12 +400,115 @@ fn revisions_match(before: &serde_json::Value, after: &serde_json::Value) -> boo
         && comparable_pool(before) == comparable_pool(after)
 }
 
+pub(super) fn reconcile_reference(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    reference_path: &Path,
+) -> io::Result<()> {
+    let observing = worker.is_some();
+    if let Some(active) = worker.take() {
+        active.shutdown();
+    }
+    let res = reconcile_reference_stopped(terminal, socket, reference_path, None);
+    if observing && terminal.terminal().is_ok() {
+        *worker = Some(Worker::start(socket.to_owned(), None));
+    }
+    res
+}
+
+fn reconcile_reference_stopped(
+    terminal: &mut TerminalOwner,
+    socket: &Path,
+    reference_path: &Path,
+    explicit_output: Option<&str>,
+) -> io::Result<()> {
+    let cli = host::trusted_cli()?;
+    let saved = lifecycle::review_receipt(reference_path)?;
+    let serial = lifecycle::receipt_commissioning_serial(&saved.receipt)?;
+    let out_opt = match (explicit_output, serial) {
+        (Some(out), _) if !out.is_empty() => {
+            if serial.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "output path is only valid for commissioning receipts",
+                ));
+            }
+            Some(out.to_owned())
+        }
+        (_, Some(ser)) => {
+            let suggested = workspace::next_path(WorkspaceKind::Exports, ser, "device.json")?
+                .to_string_lossy()
+                .into_owned();
+            let specs = [FieldSpec::text_hint(
+                "Commissioning device.json output path (optional)",
+                &suggested,
+                "Leave empty if device.json was already written",
+            )];
+            let Some(chosen) = form_validated(
+                terminal,
+                "Commissioning reconciliation output",
+                &specs,
+                |v| {
+                    let s = v[0].trim();
+                    if !s.is_empty() && !Path::new(s).is_absolute() {
+                        return Err((Some(0), "Output path must be absolute or empty".into()));
+                    }
+                    Ok((!s.is_empty()).then(|| s.to_owned()))
+                },
+            )?
+            else {
+                return Ok(());
+            };
+            chosen
+        }
+        _ => None,
+    };
+
+    let authority = admission(terminal, socket, serial)?;
+    let mut text = vec![
+        format!("Original reference: {}", reference_path.display()),
+        "Reconciles the saved request identity forward-only; never creates a new operation ID."
+            .into(),
+        String::new(),
+    ];
+    text.extend(lines(
+        &serde_json::to_value(&saved.receipt).map_err(io::Error::other)?,
+    )?);
+    if !review_mode(
+        terminal,
+        "Reconcile original receipt",
+        text,
+        ConfirmMode::Enter("reconcile original operation ID"),
+    )? {
+        return Ok(());
+    }
+    let current = admission(terminal, socket, serial)?;
+    if current != authority {
+        return Err(io::Error::other(
+            "daemon authority changed; confirmation expired",
+        ));
+    }
+    let cli = cli.bind_peer(&authority);
+    let socket_owned = socket.to_owned();
+    let result = progress(
+        terminal,
+        "Reconciling original operation",
+        false,
+        move |_| lifecycle::reconcile_reviewed(&cli, &socket_owned, saved, out_opt.as_deref()),
+    )?
+    .expect("noncancellable");
+    let _ = outcome(terminal, result, reference_path)?;
+    Ok(())
+}
+
 pub(super) fn run(
     action: usize,
     terminal: &mut TerminalOwner,
     worker: &mut Option<Worker>,
     socket: &Path,
     selected: Option<(&str, &str)>,
+    snapshot: Option<&Snapshot>,
 ) -> io::Result<()> {
     let action = ACTIONS
         .get(action)
@@ -332,11 +526,74 @@ pub(super) fn run(
             },
         )?;
     }
-    let result = run_stopped(action, terminal, socket, selected);
+    let result = run_stopped(action, terminal, socket, selected, snapshot);
     if observing && terminal.terminal().is_ok() {
         *worker = Some(Worker::start(socket.to_owned(), None));
     }
-    result
+    if let Ok(Some((pool_id, incarnation_id, enrolled_net))) = result {
+        if review_mode(
+            terminal,
+            "Bind enrolled pool in host configuration?",
+            vec![
+                format!("Enrolled pool ID       : {pool_id}"),
+                format!("Enrolled incarnation ID: {incarnation_id}"),
+                format!("Enrolled network       : {enrolled_net}"),
+                String::new(),
+                "Pool enrollment is recorded in the daemon journal, but KES socket serving and UTC context polling start only after the pool is listed in /etc/pico2-kes-agent/config.json and pico2-kes-agentd is restarted."
+                    .into(),
+                "Press Enter to bind this pool and optionally restart pico2-kes-agentd now (or Esc to defer; you can press 'b' on Pools later)."
+                    .into(),
+            ],
+            ConfirmMode::Enter("bind pool in config.json now"),
+        )? {
+            setup::bind_pool_workflow(
+                terminal,
+                worker,
+                socket,
+                &pool_id,
+                &incarnation_id,
+                Some(&enrolled_net),
+            )?;
+        }
+        return Ok(());
+    }
+    result.map(|_| ())
+}
+
+fn known_pool_generations(
+    snapshot: Option<&Snapshot>,
+    target: Option<(&str, &str)>,
+) -> (Option<String>, Option<String>) {
+    let (Some(s), Some((p_id, inc_id))) = (snapshot, target) else {
+        return (None, None);
+    };
+    let Some(pool) = s
+        .pools
+        .iter()
+        .find(|p| p.pool_id == p_id && p.incarnation_id == inc_id)
+    else {
+        return (None, None);
+    };
+    let Some(obs) = &pool.observation.value else {
+        return (None, None);
+    };
+    let staged = obs
+        .pointer("/staged/generation_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let active = obs
+        .pointer("/active/generation_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    (staged, active)
+}
+
+fn configured_net_hints(snapshot: Option<&Snapshot>) -> Vec<String> {
+    snapshot
+        .and_then(|s| s.local.value.as_ref())
+        .and_then(|l| l.config_summary.value.as_ref())
+        .map(|c| c.networks.clone())
+        .unwrap_or_default()
 }
 
 fn run_stopped(
@@ -344,20 +601,32 @@ fn run_stopped(
     terminal: &mut TerminalOwner,
     socket: &Path,
     selected: Option<(&str, &str)>,
-) -> io::Result<()> {
+    snapshot: Option<&Snapshot>,
+) -> io::Result<Option<(String, String, String)>> {
     let cli = host::trusted_cli()?;
     if action == Action::Receipts {
-        let Some(v) = public_fields(
+        let default_dir = workspace::dir(WorkspaceKind::References)?
+            .to_string_lossy()
+            .into_owned();
+        let specs = [FieldSpec::text(
+            "Owner-controlled reference directory",
+            &default_dir,
+        )];
+        let Some(dir_path) = form_validated(
             terminal,
-            "Original receipt discovery",
-            &[("Absolute owner-controlled reference directory", "")],
+            "Browse lifecycle operation references",
+            &specs,
+            |v| {
+                let p = v[0].trim();
+                absolute(p).map_err(|e| (Some(0), e.to_string()))?;
+                Ok(p.to_owned())
+            },
         )?
         else {
-            return Ok(());
+            return Ok(None);
         };
-        absolute(&v[0])?;
         let mut entries = Vec::new();
-        for entry in std::fs::read_dir(&v[0])? {
+        for entry in std::fs::read_dir(&dir_path)? {
             let path = entry?.path();
             if let Ok(receipt) = lifecycle::load_reference(&path) {
                 let detail = match lifecycle::load_public_receipt(&receipt) {
@@ -381,7 +650,7 @@ fn run_stopped(
                     let mut bytes = Vec::new();
                     file.take(65537).read_to_end(&mut bytes)?;
                     if bytes.len() <= 65536
-                        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
                         && value["version"] == 1
                         && value["request"].is_object()
                         && value["response"].is_object()
@@ -399,79 +668,49 @@ fn run_stopped(
             }
         }
         entries.sort();
+        entries.reverse();
         if entries.is_empty() {
-            entries.push("No readable references found; inaccessible references are not proof of no operation.".into());
+            entries.push("No readable references found in this directory.".into());
         }
-        review(terminal, "Original operations", entries, None)?;
-        return Ok(());
+        review(terminal, "Retained lifecycle operations", entries, None)?;
+        return Ok(None);
     }
     if action == Action::Reconcile {
-        let Some(v) = public_fields(
-            terminal,
-            "Reopen original operation",
-            &[
-                ("Absolute original reference file", ""),
-                ("Commissioning output path only, otherwise empty", ""),
-            ],
-        )?
-        else {
-            return Ok(());
-        };
-        absolute(&v[0])?;
-        let saved = lifecycle::review_receipt(Path::new(&v[0]))?;
-        let serial = lifecycle::receipt_commissioning_serial(&saved.receipt)?;
-        if !v[1].is_empty() && serial.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "output is only valid for commissioning",
-            ));
-        }
-        let authority = admission(terminal, socket, serial)?;
-        let mut text = vec![
-            format!("Original reference {}", v[0]),
-            "This resends/reconciles the saved request identity, never creates a new operation ID."
-                .into(),
+        let latest_ref = workspace::list_files(WorkspaceKind::References)?
+            .into_iter()
+            .next()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let specs = [
+            FieldSpec::text("Absolute original reference file", &latest_ref),
+            FieldSpec::text_hint(
+                "Commissioning output path (only for commissioning receipts)",
+                "",
+                "Leave empty for pool/key/recipient operations",
+            ),
         ];
-        text.extend(lines(
-            &serde_json::to_value(&saved.receipt).map_err(io::Error::other)?,
-        )?);
-        if !review(
+        let Some((ref_str, out_str)) =
+            form_validated(terminal, "Reopen original CLI operation", &specs, |v| {
+                let r = v[0].trim();
+                absolute(r).map_err(|e| (Some(0), e.to_string()))?;
+                let o = v[1].trim();
+                if !o.is_empty() {
+                    absolute(o).map_err(|e| (Some(1), e.to_string()))?;
+                }
+                Ok((r.to_owned(), o.to_owned()))
+            })?
+        else {
+            return Ok(None);
+        };
+        reconcile_reference_stopped(
             terminal,
-            "Reconcile original receipt",
-            text,
-            Some("RECONCILE"),
-        )? {
-            return Ok(());
-        }
-        let current = admission(terminal, socket, serial)?;
-        if current != authority {
-            return Err(io::Error::other(
-                "daemon authority changed; confirmation expired",
-            ));
-        }
-        let cli = cli.bind_peer(&authority);
-        let socket = socket.to_owned();
-        let output = v[1].clone();
-        let result = progress(
-            terminal,
-            "Reconciling original operation",
-            false,
-            move |_| {
-                lifecycle::reconcile_reviewed(
-                    &cli,
-                    &socket,
-                    saved,
-                    if output.is_empty() {
-                        None
-                    } else {
-                        Some(&output)
-                    },
-                )
-            },
-        )?
-        .expect("noncancellable");
-        return outcome(terminal, result, &v[0]);
+            socket,
+            Path::new(&ref_str),
+            (!out_str.is_empty()).then_some(out_str.as_str()),
+        )?;
+        return Ok(None);
     }
+
     let authority = admission(terminal, socket, None)?;
     let cli = cli.bind_peer(&authority);
     let targeted = matches!(
@@ -488,29 +727,6 @@ fn run_stopped(
         action,
         Action::Discard | Action::VerificationKey | Action::Artifact | Action::Certificate
     );
-    let mut fields = Vec::new();
-    if targeted {
-        let (pool, incarnation) = selected.unwrap_or(("", ""));
-        fields.extend([
-            ("Exact pool ID", pool),
-            ("Exact incarnation ID", incarnation),
-        ]);
-    }
-    if generation {
-        fields.push(("Exact generation ID", ""));
-    }
-    match action {
-        Action::Enroll => fields.extend([
-            ("Absolute public cold verification key", ""),
-            ("Configured network name", ""),
-        ]),
-        Action::Certificate => fields.push(("Absolute public certificate", "")),
-        Action::Recipient => fields.push(("Absolute recipient public record", "")),
-        Action::VerificationKey | Action::Artifact => {
-            fields.push(("New absolute output file (no overwrite)", ""))
-        }
-        _ => {}
-    }
     let mutation = matches!(
         action,
         Action::Enroll
@@ -520,66 +736,289 @@ fn run_stopped(
             | Action::Certificate
             | Action::Recipient
     );
-    if mutation {
-        fields.extend([
-            ("New absolute reference file", ""),
-            ("New absolute CLI receipt file", ""),
-        ]);
-    }
-    let values = if fields.is_empty() {
-        Vec::new()
-    } else {
-        match public_fields(terminal, "Lifecycle public inputs", &fields)? {
-            Some(v) => v,
-            None => return Ok(()),
-        }
+
+    let (staged_gen, active_gen) = known_pool_generations(snapshot, selected);
+    let gen_default = match action {
+        Action::Discard => staged_gen.clone().unwrap_or_default(),
+        _ => staged_gen
+            .clone()
+            .or_else(|| active_gen.clone())
+            .unwrap_or_default(),
     };
+    let dual_gen_opts: Vec<(&str, &str)> = match (&staged_gen, &active_gen, action) {
+        (Some(s), Some(a), Action::VerificationKey | Action::Artifact | Action::Certificate) => {
+            vec![
+                (s.as_str(), "Staged generation"),
+                (a.as_str(), "Active generation"),
+            ]
+        }
+        _ => Vec::new(),
+    };
+
+    let net_hints = configured_net_hints(snapshot);
+    let net_default = net_hints.first().map(String::as_str).unwrap_or("mainnet");
+    let net_opts: Vec<(&str, &str)> = net_hints
+        .iter()
+        .map(|n| (n.as_str(), "configured network"))
+        .collect();
+
+    let (sel_pool, sel_inc) = selected.unwrap_or(("", ""));
+    let export_stem = if !sel_pool.is_empty() && !gen_default.is_empty() {
+        format!(
+            "pool-{}-gen-{}",
+            workspace::short_id(sel_pool),
+            workspace::short_id(&gen_default)
+        )
+    } else if !sel_pool.is_empty() {
+        format!("pool-{}", workspace::short_id(sel_pool))
+    } else {
+        action.stem().to_owned()
+    };
+    let export_default = match action {
+        Action::VerificationKey => {
+            workspace::next_path(WorkspaceKind::Exports, &export_stem, "vkey")?
+                .to_string_lossy()
+                .into_owned()
+        }
+        Action::Artifact => {
+            workspace::next_path(WorkspaceKind::Exports, &export_stem, "kes-backup")?
+                .to_string_lossy()
+                .into_owned()
+        }
+        _ => String::new(),
+    };
+    let receipt_stem = if !sel_pool.is_empty() {
+        format!("{}-{}", action.stem(), workspace::short_id(sel_pool))
+    } else {
+        action.stem().to_owned()
+    };
+    let receipt_default = if mutation {
+        workspace::next_path(WorkspaceKind::Receipts, &receipt_stem, "receipt.json")?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        String::new()
+    };
+    let auto_reference = if mutation {
+        Some(workspace::next_path(
+            WorkspaceKind::References,
+            &receipt_stem,
+            "ref.json",
+        )?)
+    } else {
+        None
+    };
+
+    let mut specs = Vec::new();
+    if targeted {
+        if !sel_pool.is_empty() && !sel_inc.is_empty() {
+            specs.push(FieldSpec::readonly("Target pool ID", sel_pool));
+            specs.push(FieldSpec::readonly("Target incarnation ID", sel_inc));
+        } else {
+            specs.push(FieldSpec::text("Exact pool ID (56 hex)", sel_pool));
+            specs.push(FieldSpec::text("Exact incarnation ID (32 hex)", sel_inc));
+        }
+    }
+    if generation {
+        if !dual_gen_opts.is_empty() {
+            specs.push(FieldSpec::select(
+                "Target generation slot",
+                &gen_default,
+                &dual_gen_opts,
+            ));
+        } else {
+            specs.push(FieldSpec::text_hint(
+                "Exact generation ID (32 hex)",
+                &gen_default,
+                if action == Action::Discard {
+                    "Only the staged generation can be discarded"
+                } else {
+                    "Pre-filled from observed generation when available"
+                },
+            ));
+        }
+    }
+    match action {
+        Action::Enroll => {
+            specs.push(FieldSpec::text(
+                "Absolute cold verification key file (cold.vkey)",
+                "",
+            ));
+            if net_opts.len() > 1 {
+                specs.push(FieldSpec::select(
+                    "Configured network name",
+                    net_default,
+                    &net_opts,
+                ));
+            } else {
+                specs.push(FieldSpec::text("Configured network name", net_default));
+            }
+        }
+        Action::Certificate => {
+            specs.push(FieldSpec::text(
+                "Absolute cold-signed operational certificate (node.cert)",
+                "",
+            ));
+        }
+        Action::Recipient => {
+            specs.push(FieldSpec::text(
+                "Absolute HPKE recipient public record file",
+                "",
+            ));
+        }
+        Action::VerificationKey | Action::Artifact => {
+            specs.push(FieldSpec::text(
+                "Protected export destination (0600, no overwrite)",
+                &export_default,
+            ));
+        }
+        _ => {}
+    }
+    if mutation {
+        specs.push(FieldSpec::text(
+            "Durable CLI receipt file (0600, no overwrite)",
+            &receipt_default,
+        ));
+    }
+
+    let offset = usize::from(targeted) * 2 + usize::from(generation);
+    let values = if specs.iter().all(|s| {
+        !matches!(
+            s.kind,
+            super::widgets::FieldKind::Text | super::widgets::FieldKind::Select(_)
+        )
+    }) {
+        specs.iter().map(|s| s.initial.to_owned()).collect()
+    } else {
+        let Some(vals) = form_validated(
+            terminal,
+            ACTIONS
+                .iter()
+                .find(|(a, _)| *a == action)
+                .map_or("Lifecycle input", |(_, l)| *l),
+            &specs,
+            |v| {
+                let trimmed: Vec<String> = v.iter().map(|s| s.trim().to_owned()).collect();
+                if targeted && (trimmed[0].is_empty() || trimmed[1].is_empty()) {
+                    return Err((Some(0), "Pool ID and Incarnation ID are required".into()));
+                }
+                if generation && trimmed[2].is_empty() {
+                    return Err((Some(2), "Generation ID is required".into()));
+                }
+                if matches!(
+                    action,
+                    Action::Enroll
+                        | Action::Certificate
+                        | Action::Recipient
+                        | Action::VerificationKey
+                        | Action::Artifact
+                ) {
+                    absolute(&trimmed[offset]).map_err(|e| (Some(offset), e.to_string()))?;
+                }
+                if action == Action::Enroll && trimmed[offset + 1].is_empty() {
+                    return Err((
+                        Some(offset + 1),
+                        "Configured network name is required".into(),
+                    ));
+                }
+                if mutation {
+                    let rec_idx = trimmed.len() - 1;
+                    absolute(&trimmed[rec_idx]).map_err(|e| (Some(rec_idx), e.to_string()))?;
+                }
+                Ok(trimmed)
+            },
+        )?
+        else {
+            return Ok(None);
+        };
+        vals
+    };
+
     let target = targeted.then(|| (values[0].as_str(), values[1].as_str()));
     let Some(before) = observe(terminal, &cli, &authority, target)? else {
-        return Ok(());
+        return Ok(None);
     };
-    let mut text = lines(&before)?;
     if action == Action::List || action == Action::Detail {
-        review(terminal, "Authoritative lifecycle observations", text, None)?;
-        return Ok(());
+        review(
+            terminal,
+            "Authoritative lifecycle observations",
+            lines(&before)?,
+            None,
+        )?;
+        return Ok(None);
     }
-    let offset = usize::from(targeted) * 2 + usize::from(generation);
+
     let input = match action {
         Action::Enroll | Action::Certificate | Action::Recipient => Some(values[offset].as_str()),
         _ => None,
     };
     let copy = if let Some(path) = input {
         absolute(path)?;
-        let copy = PublicInput::copy(path)?;
-        text.push(format!("Public input {path}; SHA-256 {}", copy.digest));
-        Some(copy)
+        Some(PublicInput::copy(path)?)
     } else {
         None
     };
-    for (label, value) in fields.iter().zip(&values) {
-        text.push(format!("{}: {}", label.0, value));
+
+    let mut text = vec![format!(
+        "Device ID : {}",
+        before["device"]["device_id"].as_str().unwrap_or("unknown")
+    )];
+    for (spec, value) in specs.iter().zip(&values) {
+        text.push(format!("{:<28}: {value}", spec.label));
     }
-    text.extend([
-        "Only public inputs and encrypted artifacts belong on the primary; cold signing and private recipient keys remain off-primary.".into(),
-        "A new enrollment creates a new incarnation; review its returned binding. Capacity is limited to 64; no pool is evicted.".into(),
-        "Deletion removes device keys and artifacts irreversibly; fence all producers and account for external copies. Discard removes only the staged generation and ends its artifact retrieval.".into(),
-        "Occupied stage, expired certificate or invalid/missing context may block progress. Active generation is not replaced by discard; activation races are rejected.".into(),
-        "Certificate signing is off-primary; the existing matching and automatic activation rules apply. Export retains the existing activation intent; no archive approval gate is added.".into(),
-        "Recipient changes affect future artifacts only. Old artifacts still require their original private recipient keys.".into(),
-    ]);
-    let confirm = match action {
-        Action::Delete => format!("DELETE {} {}", values[0], values[1]),
-        Action::Discard => format!("DISCARD {} {} {}", values[0], values[1], values[2]),
-        _ => "APPLY".into(),
+    if let (Some(path), Some(c)) = (input, &copy) {
+        text.push(format!("Input SHA-256 ({path}): {}", c.digest));
+    }
+    if let Some(ref_path) = &auto_reference {
+        text.push(format!(
+            "Managed reference           : {}",
+            ref_path.display()
+        ));
+    }
+    text.push(String::new());
+    match action {
+        Action::Delete => {
+            text.push("DESTRUCTIVE: Permanently erases this pool incarnation's KES keys and artifacts from the Pico 2. Fence all producers first.".into());
+        }
+        Action::Discard => {
+            text.push("DESTRUCTIVE: Permanently erases the staged generation from the Pico 2; its encrypted backup can no longer be exported from the device.".into());
+        }
+        Action::Enroll => {
+            text.push(
+                "Creates a new pool incarnation on the Pico 2 (capacity <= 64 pools).".into(),
+            );
+        }
+        Action::Generate => {
+            text.push("Generates a fresh KES keypair in the staged slot on the Pico 2.".into());
+        }
+        Action::Certificate => {
+            text.push("Installs the cold-signed OpCert onto the target generation; automatic activation rules apply when valid.".into());
+        }
+        Action::Recipient => {
+            text.push("Updates the HPKE public recipient for future generations (existing backups still use their original recipient key).".into());
+        }
+        Action::VerificationKey | Action::Artifact => {
+            text.push("Exports public/HPKE-encrypted material to a new 0600 file without modifying activation state.".into());
+        }
+        _ => {}
+    }
+    text.push(String::new());
+    text.push("Authoritative pre-mutation observation:".into());
+    text.extend(lines(&before)?);
+
+    let confirm_phrase = match action {
+        Action::Delete => Some(format!("DELETE {}", workspace::short_id(&values[0]))),
+        Action::Discard => Some(format!("DISCARD {}", workspace::short_id(&values[2]))),
+        _ => None,
     };
-    if !review(
-        terminal,
-        "Review exact lifecycle action",
-        text,
-        Some(&confirm),
-    )? {
-        return Ok(());
+    let confirm_mode = match &confirm_phrase {
+        Some(phrase) => ConfirmMode::Phrase(phrase),
+        None => ConfirmMode::Enter("submit reviewed lifecycle operation"),
+    };
+    if !review_mode(terminal, "Review lifecycle operation", text, confirm_mode)? {
+        return Ok(None);
     }
+
     let current = admission(terminal, socket, None)?;
     if current != authority {
         return Err(io::Error::other(
@@ -587,7 +1026,7 @@ fn run_stopped(
         ));
     }
     let Some(after) = observe(terminal, &cli, &authority, target)? else {
-        return Ok(());
+        return Ok(None);
     };
     if !revisions_match(&before, &after) {
         return Err(io::Error::other(
@@ -599,6 +1038,7 @@ fn run_stopped(
             "device operation pending or unknown; reconcile the original receipt before another mutation",
         ));
     }
+
     if matches!(action, Action::VerificationKey | Action::Artifact) {
         absolute(&values[offset])?;
         let args = vec![
@@ -619,12 +1059,14 @@ fn run_stopped(
         ];
         let export_cli = cli.clone();
         let export_socket = socket.to_owned();
-        let (class, mut response) =
-            progress(terminal, "Exporting public material", false, move |_| {
-                lifecycle::public_command(&export_cli, &export_socket, &args)
-            })?
-            .expect("noncancellable");
-        let mut result = vec![format!("CLI result: {class:?}; destination: {}", values[offset]), "Output is no-clobber. Export preserves the existing activation intent; it is not a new generation.".into()];
+        let (class, mut response) = progress(terminal, "Exporting material", false, move |_| {
+            lifecycle::public_command(&export_cli, &export_socket, &args)
+        })?
+        .expect("noncancellable");
+        let mut result = vec![
+            format!("CLI result  : {class:?}"),
+            format!("Destination : {}", values[offset]),
+        ];
         if class == lifecycle::ExitClass::Success {
             let mut output = Vec::new();
             crate::files::open_owner_controlled_file(Path::new(&values[offset]))?
@@ -665,39 +1107,61 @@ fn run_stopped(
                         ));
                     }
                     Err(error) => {
-                        review(terminal, "Artifact validation failed", vec![format!("Exported file {} exists but its identity or signature could not be verified: {error}", values[offset]), "No authenticated recipient metadata was retained. Preserve the file and investigate; it will not be overwritten.".into()], None)?;
-                        return Ok(());
+                        review(
+                            terminal,
+                            "Artifact validation failed",
+                            vec![
+                                format!(
+                                    "Exported file {} exists but its identity or signature could not be verified: {error}",
+                                    values[offset]
+                                ),
+                                "No authenticated recipient metadata was retained. Preserve the file and investigate."
+                                    .into(),
+                            ],
+                            None,
+                        )?;
+                        return Ok(None);
                     }
                 };
-                Some(
-                    serde_json::json!({"public_key": public.iter().map(|b| format!("{b:02x}")).collect::<String>(), "recipient_id": format!("{:x}", Sha256::digest(public))}),
-                )
+                Some(serde_json::json!({
+                    "public_key": public.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                    "recipient_id": format!("{:x}", Sha256::digest(public)),
+                }))
             } else {
                 None
             };
             let metadata = serde_json::json!({
-                "device_id": after["device"]["device_id"], "pool_id": values[0],
-                "incarnation_id": values[1], "generation_id": values[2],
+                "device_id": after["device"]["device_id"],
+                "pool_id": values[0],
+                "incarnation_id": values[1],
+                "generation_id": values[2],
                 "recipient_binding": recipient,
-                "output_path": values[offset], "output_sha256": format!("{:x}", Sha256::digest(&output)),
+                "output_path": values[offset],
+                "output_sha256": format!("{:x}", Sha256::digest(&output)),
                 "response": response,
             });
             let metadata_path = format!("{}.metadata.json", values[offset]);
-            match crate::files::publish_no_clobber(Path::new(&metadata_path), &serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?, 0o600) {
-                Ok(()) => result.push(format!("Public export metadata retained at {metadata_path}")),
-                Err(error) => result.push(format!("Export succeeded but metadata publication failed at {metadata_path}: {error}; retain the displayed public evidence")),
+            match crate::files::publish_no_clobber(
+                Path::new(&metadata_path),
+                &serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?,
+                0o600,
+            ) {
+                Ok(()) => result.push(format!("Metadata    : {metadata_path}")),
+                Err(error) => result.push(format!(
+                    "Metadata publication failed at {metadata_path}: {error}"
+                )),
             }
+            result.push(String::new());
             result.extend(lines(&metadata)?);
         } else {
             result.extend(lines(&response)?);
         }
-        result.push("Recipient identity above is authenticated from this artifact, not inferred from the current recipient policy; verification-key-only exports have no recipient binding.".into());
         review(terminal, "Export result", result, None)?;
-        return Ok(());
+        return Ok(None);
     }
-    let reference = &values[values.len() - 2];
+
+    let reference = auto_reference.expect("mutation reference");
     let receipt = &values[values.len() - 1];
-    absolute(reference)?;
     absolute(receipt)?;
     let revision = if targeted {
         after["pool"]["revision"].as_u64()
@@ -705,10 +1169,12 @@ fn run_stopped(
         after["status"]["revision"].as_u64()
     }
     .ok_or_else(|| io::Error::other("authoritative revision unavailable"))?;
+
+    let enrolled_net = (action == Action::Enroll).then(|| values[offset + 1].clone());
     let m = match action {
         Action::Enroll => Mutation::Enroll {
             cold_vkey: copy.as_ref().expect("public input").path.clone(),
-            network: values[1].clone(),
+            network: values[offset + 1].clone(),
         },
         Action::Delete => Mutation::Delete {
             pool: values[0].clone(),
@@ -746,7 +1212,7 @@ fn run_stopped(
             lifecycle::submit(
                 &submit_cli,
                 &submit_socket,
-                Path::new(&submit_reference),
+                &submit_reference,
                 Path::new(&submit_receipt),
                 revision,
                 m,
@@ -755,7 +1221,10 @@ fn run_stopped(
     )
     .and_then(|value| value.ok_or_else(|| io::Error::other("operation outcome unavailable")))
     {
-        Ok(result) => outcome(terminal, result, reference),
+        Ok(result) => {
+            let enrolled = outcome(terminal, result, &reference)?;
+            Ok(enrolled.zip(enrolled_net).map(|((p, i), n)| (p, i, n)))
+        }
         Err(error) => {
             review(
                 terminal,
@@ -763,13 +1232,13 @@ fn run_stopped(
                 vec![
                     format!("{error}"),
                     format!(
-                        "Inspect original reference {reference}; do not create a replacement operation if a receipt exists."
+                        "Inspect retained reference {} in Activity (6); do not create a replacement operation if a receipt exists.",
+                        reference.display()
                     ),
-                    "A missing final response is not proof of cancellation.".into(),
                 ],
                 None,
             )?;
-            Ok(())
+            Ok(None)
         }
     }
 }

@@ -42,8 +42,10 @@ struct DistributionAuthority {
 fn parse_authority(bytes: &[u8]) -> io::Result<DistributionAuthority> {
     let authority: DistributionAuthority =
         serde_json::from_slice(bytes).map_err(|_| invalid("invalid distribution authority"))?;
-    if authority.schema_version != 1 || authority.purpose != AUTHORITY_PURPOSE
-        || authority.project != PROJECT || authority.algorithm != "secp256k1"
+    if authority.schema_version != 1
+        || authority.purpose != AUTHORITY_PURPOSE
+        || authority.project != PROJECT
+        || authority.algorithm != "secp256k1"
     {
         return Err(invalid("invalid distribution authority scope"));
     }
@@ -527,9 +529,18 @@ pub(super) fn verify_signature(root: &Path, name: &str) -> io::Result<()> {
         "install.sh" => "pico2-kes-agent-bootstrap-v1",
         _ => return Err(invalid("invalid distribution signature purpose")),
     };
-    let statement = read_file(&root.join("distribution-authority.json"), MAX_MANIFEST_BYTES)?;
-    let signature = read_file(&root.join("distribution-authority.json.asc"), MAX_MANIFEST_BYTES)?;
-    let certificate = read_file(&root.join("firmware/release-authority.asc"), MAX_MANIFEST_BYTES)?;
+    let statement = read_file(
+        &root.join("distribution-authority.json"),
+        MAX_MANIFEST_BYTES,
+    )?;
+    let signature = read_file(
+        &root.join("distribution-authority.json.asc"),
+        MAX_MANIFEST_BYTES,
+    )?;
+    let certificate = read_file(
+        &root.join("firmware/release-authority.asc"),
+        MAX_MANIFEST_BYTES,
+    )?;
     let data = read_file(&root.join(name), MAX_ARTIFACT_BYTES)?;
     let detached = read_file(&root.join(format!("{name}.sig")), MAX_MANIFEST_BYTES)?;
     let dir = PathBuf::from(format!(
@@ -588,13 +599,17 @@ pub(super) fn verify_signature(root: &Path, name: &str) -> io::Result<()> {
     let key = dir.0.join("public.pem");
     fs::write(&key, authority.public_key_pem.as_bytes())?;
     bounded_command(
-        Command::new("/usr/bin/openssl").env_clear()
-            .args(["pkey", "-pubin", "-pubcheck", "-noout", "-in"]).arg(&key),
+        Command::new("/usr/bin/openssl")
+            .env_clear()
+            .args(["pkey", "-pubin", "-pubcheck", "-noout", "-in"])
+            .arg(&key),
         Duration::from_secs(30),
     )?;
     let der = bounded_command(
-        Command::new("/usr/bin/openssl").env_clear()
-            .args(["pkey", "-pubin", "-outform", "DER", "-in"]).arg(&key),
+        Command::new("/usr/bin/openssl")
+            .env_clear()
+            .args(["pkey", "-pubin", "-outform", "DER", "-in"])
+            .arg(&key),
         Duration::from_secs(30),
     )?;
     const PREFIX: &[u8] = b"\x30\x56\x30\x10\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x05\x2b\x81\x04\x00\x0a\x03\x42\x00\x04";
@@ -604,19 +619,34 @@ pub(super) fn verify_signature(root: &Path, name: &str) -> io::Result<()> {
     verify_der_signature(&dir.0, &key, purpose, &data, &detached)
 }
 
-fn verify_der_signature(dir: &Path, key: &Path, purpose: &str, data: &[u8], detached: &[u8]) -> io::Result<()> {
+fn verify_der_signature(
+    dir: &Path,
+    key: &Path,
+    purpose: &str,
+    data: &[u8],
+    detached: &[u8],
+) -> io::Result<()> {
     if ![PURPOSE, "pico2-kes-agent-bootstrap-v1"].contains(&purpose) {
         return Err(invalid("invalid distribution signature purpose"));
     }
     let input = dir.join("input");
-    let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&input)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&input)?;
     writeln!(file, "{purpose}")?;
     file.write_all(data)?;
     fs::write(dir.join("signature"), detached)?;
     bounded_command(
-        Command::new("/usr/bin/openssl").env_clear()
-            .args(["dgst", "-sha256", "-verify"]).arg(key)
-            .arg("-signature").arg(dir.join("signature")).arg(&input),
+        Command::new("/usr/bin/openssl")
+            .env_clear()
+            .args(["dgst", "-sha256", "-verify"])
+            .arg(key)
+            .arg("-signature")
+            .arg(dir.join("signature"))
+            .arg(&input),
         Duration::from_secs(30),
     )?;
     Ok(())
@@ -764,8 +794,13 @@ fn supported_platform(p: &Platform) -> bool {
         && p.udev
         && (p.os.len() == 2 || p.os.len() == 3)
         && p.os.iter().any(|o| o.id == "debian" && o.version == "12")
-        && p.os.iter().any(|o| o.id == "ubuntu" && o.version == "24.04")
-        && (p.os.len() == 2 || p.os.iter().any(|o| o.id == "ubuntu" && o.version == "26.04"))
+        && p.os
+            .iter()
+            .any(|o| o.id == "ubuntu" && o.version == "24.04")
+        && (p.os.len() == 2
+            || p.os
+                .iter()
+                .any(|o| o.id == "ubuntu" && o.version == "26.04"))
 }
 
 fn verify_snapshot(
@@ -850,7 +885,14 @@ fn verify_snapshot(
             || a.size_bytes > MAX_ARTIFACT_BYTES
             || a.class != class
             || ![0o644, 0o755].contains(&a.mode)
-            || (["distribution-authority.json", "distribution-authority.json.asc", "install.sh.sig", "firmware/release-authority.asc"].contains(&a.path.as_str()) && a.mode != 0o644)
+            || ([
+                "distribution-authority.json",
+                "distribution-authority.json.asc",
+                "install.sh.sig",
+                "firmware/release-authority.asc",
+            ]
+            .contains(&a.path.as_str())
+                && a.mode != 0o644)
             || !expected.insert(a.path.clone())
         {
             return Err(invalid("invalid artifact entry"));
@@ -1070,9 +1112,13 @@ mod tests {
             "target": "x86_64-unknown-linux-gnu", "glibc_min": "2.36",
             "systemd": true, "udev": true,
             "os": [{"id": "debian", "version": "12"}, {"id": "ubuntu", "version": "24.04"}]
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(supported_platform(&platform));
-        platform.os.push(Os { id: "ubuntu".into(), version: "26.04".into() });
+        platform.os.push(Os {
+            id: "ubuntu".into(),
+            version: "26.04".into(),
+        });
         assert!(supported_platform(&platform));
         platform.os[2].version = "24.04".into();
         assert!(!supported_platform(&platform));
@@ -1089,8 +1135,14 @@ mod tests {
         for bad in [
             valid.replace("distribution-authority-v1", "firmware-boot-authority-v1"),
             valid.replace("\"schema_version\":1", "\"schema_version\":true"),
-            valid.replace("\"schema_version\":1", "\"schema_version\":1,\"schema_version\":1"),
-            valid.replace("\"algorithm\":\"secp256k1\"", "\"algorithm\":\"secp256k1\",\"extra\":0"),
+            valid.replace(
+                "\"schema_version\":1",
+                "\"schema_version\":1,\"schema_version\":1",
+            ),
+            valid.replace(
+                "\"algorithm\":\"secp256k1\"",
+                "\"algorithm\":\"secp256k1\",\"extra\":0",
+            ),
             valid.replace("secp256k1", "prime256v1"),
         ] {
             assert!(parse_authority(bad.as_bytes()).is_err());
@@ -1099,21 +1151,66 @@ mod tests {
 
     #[test]
     fn distribution_signatures_are_bound_to_context_and_bytes() {
-        let path = PathBuf::from(format!("/tmp/p2kesup-test-{}-{}", std::process::id(), TEMP_ID.fetch_add(1, Ordering::Relaxed)));
-        std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(&path).unwrap();
+        let path = PathBuf::from(format!(
+            "/tmp/p2kesup-test-{}-{}",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700)
+            .create(&path)
+            .unwrap();
         let dir = Temp(path);
         let private = dir.0.join("private.pem");
         let public = dir.0.join("public.pem");
-        bounded_command(Command::new("/usr/bin/openssl").args(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:secp256k1", "-out"]).arg(&private), Duration::from_secs(30)).unwrap();
-        bounded_command(Command::new("/usr/bin/openssl").args(["pkey", "-in"]).arg(&private).args(["-pubout", "-out"]).arg(&public), Duration::from_secs(30)).unwrap();
+        bounded_command(
+            Command::new("/usr/bin/openssl")
+                .args([
+                    "genpkey",
+                    "-algorithm",
+                    "EC",
+                    "-pkeyopt",
+                    "ec_paramgen_curve:secp256k1",
+                    "-out",
+                ])
+                .arg(&private),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        bounded_command(
+            Command::new("/usr/bin/openssl")
+                .args(["pkey", "-in"])
+                .arg(&private)
+                .args(["-pubout", "-out"])
+                .arg(&public),
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let message = dir.0.join("message");
         let signature = dir.0.join("signed");
         fs::write(&message, format!("{PURPOSE}\nbody")).unwrap();
-        bounded_command(Command::new("/usr/bin/openssl").args(["dgst", "-sha256", "-sign"]).arg(&private).arg("-out").arg(&signature).arg(&message), Duration::from_secs(30)).unwrap();
+        bounded_command(
+            Command::new("/usr/bin/openssl")
+                .args(["dgst", "-sha256", "-sign"])
+                .arg(&private)
+                .arg("-out")
+                .arg(&signature)
+                .arg(&message),
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let sig = fs::read(signature).unwrap();
         assert!(verify_der_signature(&dir.0, &public, PURPOSE, b"body", &sig).is_ok());
         assert!(verify_der_signature(&dir.0, &public, PURPOSE, b"changed", &sig).is_err());
-        assert!(verify_der_signature(&dir.0, &public, "pico2-kes-agent-bootstrap-v1", b"body", &sig).is_err());
+        assert!(
+            verify_der_signature(
+                &dir.0,
+                &public,
+                "pico2-kes-agent-bootstrap-v1",
+                b"body",
+                &sig
+            )
+            .is_err()
+        );
         assert!(verify_der_signature(&dir.0, &public, "other", b"body", &sig).is_err());
     }
     #[test]
@@ -1201,7 +1298,10 @@ mod tests {
         assert_eq!(component_for_artifact("install.sh"), Some("deployment"));
         assert_eq!(component_for_artifact("install.sh.sig"), None);
         assert_eq!(component_for_artifact("distribution-authority.json"), None);
-        assert_eq!(component_for_artifact("distribution-authority.json.asc"), None);
+        assert_eq!(
+            component_for_artifact("distribution-authority.json.asc"),
+            None
+        );
     }
     #[test]
     fn paths_and_duplicate_tuple_keys_fail_closed() {

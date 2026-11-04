@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod config_builder;
 pub mod host;
 pub mod lifecycle;
 pub mod maintenance;
@@ -13,3 +14,4 @@ pub mod setup;
 pub mod terminal;
 pub mod ui;
 pub mod uninstall;
+pub mod workspace;

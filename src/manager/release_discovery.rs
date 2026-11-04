@@ -28,7 +28,8 @@ use std::{
 const API: &str =
     "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases?per_page=100";
 const TAG_API: &str = "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/tags/";
-const LATEST_API: &str = "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/latest";
+const LATEST_API: &str =
+    "https://api.github.com/repos/AndrewWestberg/pico2-kes-agent/releases/latest";
 const PROJECT: &str = "https://github.com/AndrewWestberg/pico2-kes-agent/releases/download/";
 const ARCHIVE_LIMIT: u64 = MAX_RELEASE_BYTES + 1024 * 1024;
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -366,7 +367,12 @@ fn url_allowed(url: &str, initial: bool) -> bool {
         && !url.contains('\\')
 }
 fn fetch(url: &str, target: &Path, limit: u64, api: bool) -> io::Result<()> {
-    if (!api && !url_allowed(url, true)) || (api && url != API && url != LATEST_API && !url.strip_prefix(TAG_API).is_some_and(valid_tag)) {
+    if (!api && !url_allowed(url, true))
+        || (api
+            && url != API
+            && url != LATEST_API
+            && !url.strip_prefix(TAG_API).is_some_and(valid_tag))
+    {
         return Err(invalid("unapproved release URL"));
     }
     private_file(target)?;
@@ -578,7 +584,12 @@ fn publication_matches(published: &str, signed: &str, qualification: Qualificati
             && published.strip_prefix("qualified-") == Some(signed))
 }
 
-fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only: bool) -> io::Result<PathBuf> {
+fn obtain(
+    cache: &Path,
+    item: &GithubRelease,
+    admission: Admission,
+    stable_only: bool,
+) -> io::Result<PathBuf> {
     if item.draft || item.assets.len() > 128 {
         return Err(invalid("invalid release assets"));
     }
@@ -613,11 +624,20 @@ fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only:
         MAX_MANIFEST_BYTES,
         false,
     )?;
-    for name in ["distribution-authority.json", "distribution-authority.json.asc"] {
+    for name in [
+        "distribution-authority.json",
+        "distribution-authority.json.asc",
+    ] {
         fetch(asset(name)?, &bundle.join(name), MAX_MANIFEST_BYTES, false)?;
     }
-    let delegation = read_bounded(&bundle.join("distribution-authority.json"), MAX_MANIFEST_BYTES)?;
-    let delegation_signature = read_bounded(&bundle.join("distribution-authority.json.asc"), MAX_MANIFEST_BYTES)?;
+    let delegation = read_bounded(
+        &bundle.join("distribution-authority.json"),
+        MAX_MANIFEST_BYTES,
+    )?;
+    let delegation_signature = read_bounded(
+        &bundle.join("distribution-authority.json.asc"),
+        MAX_MANIFEST_BYTES,
+    )?;
     let authority = read_bounded(
         &bundle.join("firmware/release-authority.asc"),
         MAX_MANIFEST_BYTES,
@@ -627,10 +647,17 @@ fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only:
     let manifest: Manifest =
         serde_json::from_slice(&bytes).map_err(|_| invalid("invalid signed manifest"))?;
     if (stable_only && (item.prerelease || manifest.release.channel != "stable"))
-        || (matches!(admission, Admission::Qualified) && manifest.qualification != Qualification::Qualified)
-        || !publication_matches(&item.tag_name, &manifest.release.tag, manifest.qualification)
+        || (matches!(admission, Admission::Qualified)
+            && manifest.qualification != Qualification::Qualified)
+        || !publication_matches(
+            &item.tag_name,
+            &manifest.release.tag,
+            manifest.qualification,
+        )
     {
-        return Err(invalid("release tag, channel or qualification differs from authenticated manifest"));
+        return Err(invalid(
+            "release tag, channel or qualification differs from authenticated manifest",
+        ));
     }
     let digest = format!("{:x}", Sha256::digest(&bytes));
     if cache.join(&digest).exists() {
@@ -676,8 +703,14 @@ fn obtain(cache: &Path, item: &GithubRelease, admission: Admission, stable_only:
         &bundle.join("firmware/release-authority.asc"),
         MAX_MANIFEST_BYTES,
     )? != authority
-        || read_bounded(&bundle.join("distribution-authority.json"), MAX_MANIFEST_BYTES)? != delegation
-        || read_bounded(&bundle.join("distribution-authority.json.asc"), MAX_MANIFEST_BYTES)? != delegation_signature
+        || read_bounded(
+            &bundle.join("distribution-authority.json"),
+            MAX_MANIFEST_BYTES,
+        )? != delegation
+        || read_bounded(
+            &bundle.join("distribution-authority.json.asc"),
+            MAX_MANIFEST_BYTES,
+        )? != delegation_signature
     {
         return Err(invalid("archive authority mismatch"));
     }
@@ -737,8 +770,14 @@ fn offers(cache: &Path, prerelease: bool) -> io::Result<Vec<Offer>> {
 }
 
 fn valid_tag(tag: &str) -> bool {
-    !tag.is_empty() && tag != "." && tag != ".." && !tag.starts_with('-') && tag.len() <= 128
-        && tag.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    !tag.is_empty()
+        && tag != "."
+        && tag != ".."
+        && !tag.starts_with('-')
+        && tag.len() <= 128
+        && tag
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 /// Fetch the newest qualified stable release, or one explicitly named release.
@@ -799,10 +838,26 @@ mod tests {
     use super::*;
     #[test]
     fn qualified_publication_mapping_does_not_promote_candidates() {
-        assert!(publication_matches("qualified-v1.2.3", "v1.2.3", Qualification::Qualified));
-        assert!(!publication_matches("qualified-v1.2.3", "v1.2.3", Qualification::Candidate));
-        assert!(!publication_matches("qualified-v1.2.4", "v1.2.3", Qualification::Qualified));
-        assert!(publication_matches("v1.2.3-rc1", "v1.2.3-rc1", Qualification::Candidate));
+        assert!(publication_matches(
+            "qualified-v1.2.3",
+            "v1.2.3",
+            Qualification::Qualified
+        ));
+        assert!(!publication_matches(
+            "qualified-v1.2.3",
+            "v1.2.3",
+            Qualification::Candidate
+        ));
+        assert!(!publication_matches(
+            "qualified-v1.2.4",
+            "v1.2.3",
+            Qualification::Qualified
+        ));
+        assert!(publication_matches(
+            "v1.2.3-rc1",
+            "v1.2.3-rc1",
+            Qualification::Candidate
+        ));
         assert!(valid_tag("v1.2.3-rc1"));
         assert!(!valid_tag("../v1"));
         assert!(!valid_tag(".."));

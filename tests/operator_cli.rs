@@ -85,7 +85,15 @@ fn manager_install_requires_explicit_role_and_absolute_bundle() {
         &["install", "--bundle", "/tmp/bundle"][..],
         &["install", "--bundle", "relative", "--role", "primary"][..],
         &["install", "--bundle", "/tmp/bundle", "--role", "other"][..],
-        &["install", "--bundle", "/tmp/bundle", "--role", "backup", "--role", "primary"][..],
+        &[
+            "install",
+            "--bundle",
+            "/tmp/bundle",
+            "--role",
+            "backup",
+            "--role",
+            "primary",
+        ][..],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
             .args(args)
@@ -111,7 +119,13 @@ fn manager_upgrade_rejects_conflicting_release_selectors() {
         &["upgrade", "--version", "--json"][..],
         &["upgrade", "--version", "../v1"][..],
         &["upgrade", "--resume", "relative"][..],
-        &["upgrade", "--resume", "/tmp/plan", "--bundle", "/tmp/bundle"][..],
+        &[
+            "upgrade",
+            "--resume",
+            "/tmp/plan",
+            "--bundle",
+            "/tmp/bundle",
+        ][..],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
             .args(args)

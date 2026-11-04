@@ -5,8 +5,9 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
-    time::Duration,
+    time::{Duration, Instant},
 };
+mod activity;
 mod backup;
 mod lifecycle;
 mod navigation;
@@ -22,7 +23,7 @@ mod widgets;
 use navigation::{Action, View};
 #[cfg(test)]
 use widgets::review_paragraph;
-use widgets::{public_fields, review, tone};
+use widgets::{FieldSpec, form_validated, public_fields, review, tone};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
@@ -35,8 +36,9 @@ use serde_json::Value;
 
 use super::{
     model::{InstallationRole, Observation, ObservationState},
-    observe::{Snapshot, Worker},
+    observe::{self, LocalOverview, Snapshot, Worker},
     terminal::TerminalOwner,
+    workspace::{self, WorkspaceKind},
 };
 use crate::cli;
 
@@ -80,15 +82,20 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
         manifest_digest: verified.selection().manifest_digest.to_string(),
         candidate_accepted,
     })?;
-    let cache = super::release_discovery::default_cache()?;
-    let path = cache.join(format!("install-plan-{}.json", plan.plan_id));
+    let path = match workspace::next_path(WorkspaceKind::Plans, "install-plan", "json") {
+        Ok(p) => p,
+        Err(_) => {
+            let cache = super::release_discovery::default_cache()?;
+            cache.join(format!("install-plan-{}.json", plan.plan_id))
+        }
+    };
     crate::files::publish_no_clobber(
         &path,
-        &serde_json::to_vec(&plan).map_err(io::Error::other)?,
+        &serde_json::to_vec_pretty(&plan).map_err(io::Error::other)?,
         0o600,
     )?;
     println!(
-        "Installation plan retained at {}. The privileged helper will display the scope and request its digest.",
+        "Installation plan retained at {}. The privileged helper will display the scope and standalone approval digest.",
         path.display()
     );
     let mut command = if rustix::process::geteuid().is_root() {
@@ -140,7 +147,7 @@ pub fn upgrade(version: Option<&str>, bundle: Option<PathBuf>) -> io::Result<()>
         super::records::Record::Unknown(_) => true,
     }) {
         return Err(io::Error::other(
-            "unresolved maintenance blocks upgrade, including no-op claims; recover the original operation (p2kesup upgrade --resume ORIGINAL_PLAN for an upgrade)",
+            "unresolved maintenance blocks upgrade, including no-op claims; recover the original operation (open p2kesup -> 6 Activity, or run p2kesup upgrade --resume ORIGINAL_PLAN)",
         ));
     }
     let (digest, registry, service, _) = super::host::update_review()?;
@@ -259,12 +266,15 @@ enum Exit {
     Reexec(PathBuf),
 }
 
-fn safe(text: &str) -> String {
+pub(super) fn safe(text: &str) -> String {
     use std::fmt::Write;
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars() {
         if c.is_control()
-            || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || matches!(
+                c,
+                '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
         {
             write!(escaped, "{}", c.escape_unicode()).expect("writing to String");
         } else {
@@ -328,170 +338,210 @@ fn json_lines(lines: &mut Vec<String>, label: &str, value: &Value) {
     }
 }
 
-fn overview(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum EvidenceTab {
+    #[default]
+    Summary,
+    Host,
+    Device,
+    Pools,
+}
+
+impl EvidenceTab {
+    const ALL: &[Self] = &[Self::Summary, Self::Host, Self::Device, Self::Pools];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Summary => "Summary",
+            Self::Host => "Host & Binaries",
+            Self::Device => "Device (non-attested)",
+            Self::Pools => "Pools & Raw JSON",
+        }
+    }
+
+    fn step(self, forward: bool) -> Self {
+        let idx = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
+        let delta = if forward { 1 } else { Self::ALL.len() - 1 };
+        Self::ALL[(idx + delta) % Self::ALL.len()]
+    }
+}
+
+fn build_evidence_lines(
+    tab: EvidenceTab,
     snapshot: Option<&Snapshot>,
+    backup_local: Option<&LocalOverview>,
     role: InstallationRole,
     bundle: Option<&PathBuf>,
+    pool_index: Option<usize>,
 ) -> Vec<String> {
-    let mut lines = vec![
-        format!("Role: {role:?}"),
-        "Read-only observations; sources are not simultaneous.".into(),
-    ];
+    let mut lines = vec![format!(
+        "Role: {role:?} · Read-only observations (sources are not simultaneous)."
+    )];
     if let Some(path) = bundle {
         lines.push(format!(
-            "Explicit bundle (not verified or executed): {}",
+            "Launched --bundle (unverified until workflow): {}",
             safe(&path.to_string_lossy())
         ));
     }
+    lines.push(String::new());
+
+    if role == InstallationRole::Backup {
+        lines.push(
+            "Backup role: primary daemon, socket, and USB device are never contacted.".into(),
+        );
+        if let Some(local) = backup_local {
+            lines.push(format!("Support: {}", safe(&local.support)));
+            lines.push(observation("Swap free", &local.swap_free, Duration::ZERO));
+            lines.push(observation(
+                "Service state",
+                &local.service_state,
+                Duration::ZERO,
+            ));
+            lines.push(observation(
+                "Installation registry",
+                &local.registry,
+                Duration::ZERO,
+            ));
+            for c in &local.components {
+                lines.push(format!(
+                    "Component {} ({:?}):",
+                    safe(&c.component),
+                    c.ownership
+                ));
+                lines.push(format!(
+                    "  {}",
+                    observation("Installed", &c.installed, Duration::ZERO)
+                ));
+            }
+        }
+        return lines;
+    }
+
     let Some(s) = snapshot else {
-        lines.push("Backup role: daemon and device are not contacted.".into());
+        lines.push("Awaiting initial primary snapshot...".into());
         return lines;
     };
     let elapsed = s.captured_at.elapsed();
-    lines.push(observation("Local inventory", &s.local, elapsed));
-    if let Some(local) = &s.local.value {
-        lines.push(format!("Support: {}", safe(&local.support)));
-        lines.push(observation("USB candidate mode", &local.usb_mode, elapsed));
-        if let Some(mode) = local.usb_mode.value {
-            lines.push(format!(
-                "USB mode: {mode:?}; bootloader association requires physical attendance"
-            ));
-        }
-        lines.push(observation(
-            "Manager executable",
-            &local.own_executable,
-            elapsed,
-        ));
-        if let Some(path) = &local.own_executable.value {
-            lines.push(safe(&path.to_string_lossy()));
-        }
-        lines.push(observation(
-            "PATH candidates",
-            &local.path_candidates,
-            elapsed,
-        ));
-        if let Some(paths) = &local.path_candidates.value {
-            lines.extend(paths.iter().map(|p| safe(&p.to_string_lossy())));
-        }
-        lines.push(observation("Service", &local.service, elapsed));
-        if let Some(service) = &local.service.value {
-            lines.extend(service.lines().map(safe));
-        }
-        lines.push(observation("Configuration", &local.config, elapsed));
-        lines.push(observation(
-            "Configuration ownership",
-            &local.config_ownership,
-            elapsed,
-        ));
-        if let Some(metadata) = &local.config_ownership.value {
-            lines.push(safe(metadata));
-        }
-        lines.push(observation(
-            "Installation registry",
-            &local.registry,
-            elapsed,
-        ));
-        for component in &local.components {
-            lines.push(format!(
-                "Component: {}; ownership {:?}",
-                safe(&component.component),
-                component.ownership
-            ));
-            lines.push(observation("Installed", &component.installed, elapsed));
-            if let Some(build) = &component.installed.value {
-                lines.push(format!(
-                    "Installed version {} build {} digest {} path {}",
-                    safe(&build.version),
-                    safe(&build.build_id),
-                    build
-                        .digest
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "unknown".into()),
-                    safe(&build.path.to_string_lossy())
-                ));
-            }
-            lines.push(observation("Running", &component.running, elapsed));
-            if let Some(running) = &component.running.value {
-                lines.push(format!(
-                    "Running version {} build {} digest {} path {} pid {}",
-                    safe(&running.build.version),
-                    safe(&running.build.build_id),
-                    running
-                        .build
-                        .digest
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "unknown".into()),
-                    safe(&running.build.path.to_string_lossy()),
-                    running
-                        .pid
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "unknown".into())
-                ));
-            }
-            if let Some(build) = &component.selected {
-                lines.push(format!(
-                    "Selected version {} build {} digest {} path {}",
-                    safe(&build.version),
-                    safe(&build.build_id),
-                    build
-                        .digest
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "unknown".into()),
-                    safe(&build.path.to_string_lossy())
-                ));
-            } else {
-                lines.push("Selected: unknown".into());
-            }
-            if let Some(provenance) = &component.provenance {
-                lines.push(format!("Provenance: {}", safe(provenance)));
-            }
-        }
-        if let Some(path) = &local.config.value {
-            lines.push(safe(&path.to_string_lossy()));
-        }
-    }
-    lines.push(observation("Host registry", &s.host, elapsed));
-    if let Some(value) = &s.host.value {
-        json_lines(&mut lines, "Host observation", value);
-    }
-    lines.push(observation("Device information", &s.device, elapsed));
-    if let Some(value) = &s.device.value {
-        json_lines(
-            &mut lines,
-            "Device observation (security report is not attestation)",
-            value,
-        );
-    }
-    lines.push(observation("Device membership", &s.membership, elapsed));
-    lines.push(format!("Joined pool identities: {}", s.pools.len()));
-    lines
-}
 
-fn detail(s: &Snapshot, selected: usize) -> Vec<String> {
-    let Some(pool) = s.pools.get(selected) else {
-        return vec!["No pool selected.".into()];
-    };
-    let elapsed = s.captured_at.elapsed();
-    let mut lines = vec![
-        format!("Pool: {}", safe(&pool.pool_id)),
-        format!("Incarnation: {}", safe(&pool.incarnation_id)),
-        observation("Host registry", &s.host, elapsed),
-        observation("Device membership", &s.membership, elapsed),
-        observation("Pool observation", &pool.observation, elapsed),
-    ];
-    match &pool.host {
-        Some(v) => json_lines(&mut lines, "Host binding", v),
-        None => lines
-            .push("Host binding: not observed (absence requires a complete fresh snapshot)".into()),
-    }
-    match &pool.membership {
-        Some(v) => json_lines(&mut lines, "Device membership", v),
-        None => lines.push(
-            "Device membership: not observed (absence requires a complete fresh snapshot)".into(),
-        ),
-    }
-    if let Some(v) = &pool.observation.value {
-        json_lines(&mut lines, "Pool, generation, certificate and context", v);
+    match tab {
+        EvidenceTab::Summary => {
+            lines.push(observation("Local inventory", &s.local, elapsed));
+            if let Some(local) = &s.local.value {
+                lines.push(format!("Platform support : {}", safe(&local.support)));
+                lines.push(observation("USB candidate", &local.usb_mode, elapsed));
+                lines.push(observation("Swap preflight", &local.swap_free, elapsed));
+                lines.push(observation("Service state", &local.service_state, elapsed));
+                lines.push(observation("Configuration", &local.config, elapsed));
+                lines.push(observation(
+                    "Config ownership",
+                    &local.config_ownership,
+                    elapsed,
+                ));
+            }
+            lines.push(observation("Host registry", &s.host, elapsed));
+            lines.push(observation("Device info", &s.device, elapsed));
+            lines.push(observation("Device membership", &s.membership, elapsed));
+            lines.push(format!("Joined pools observed: {}", s.pools.len()));
+        }
+        EvidenceTab::Host => {
+            if let Some(local) = &s.local.value {
+                lines.push(observation(
+                    "Manager executable",
+                    &local.own_executable,
+                    elapsed,
+                ));
+                if let Some(p) = &local.own_executable.value {
+                    lines.push(format!("  {}", safe(&p.to_string_lossy())));
+                }
+                lines.push(observation(
+                    "PATH candidates",
+                    &local.path_candidates,
+                    elapsed,
+                ));
+                if let Some(paths) = &local.path_candidates.value {
+                    lines.extend(
+                        paths
+                            .iter()
+                            .map(|p| format!("  {}", safe(&p.to_string_lossy()))),
+                    );
+                }
+                lines.push(observation("Systemd unit", &local.service, elapsed));
+                if let Some(svc) = &local.service.value {
+                    lines.extend(svc.lines().map(|l| format!("  {}", safe(l))));
+                }
+                lines.push(String::new());
+                for component in &local.components {
+                    lines.push(format!(
+                        "Component: {} (ownership {:?})",
+                        safe(&component.component),
+                        component.ownership
+                    ));
+                    if let Some(b) = &component.installed.value {
+                        lines.push(format!(
+                            "  Installed: {} build={} digest={} path={}",
+                            safe(&b.version),
+                            safe(&b.build_id),
+                            b.digest.map_or_else(|| "unknown".into(), |d| d.to_string()),
+                            safe(&b.path.to_string_lossy())
+                        ));
+                    }
+                    if let Some(r) = &component.running.value {
+                        lines.push(format!(
+                            "  Running  : {} build={} pid={:?} digest={}",
+                            safe(&r.build.version),
+                            safe(&r.build.build_id),
+                            r.pid,
+                            r.build
+                                .digest
+                                .map_or_else(|| "unknown".into(), |d| d.to_string()),
+                        ));
+                    }
+                }
+            }
+            if let Some(value) = &s.host.value {
+                lines.push(String::new());
+                json_lines(&mut lines, "Daemon host.observe JSON", value);
+            }
+        }
+        EvidenceTab::Device => {
+            lines.push(
+                "NOTE: Firmware-reported security posture is NOT cryptographic hardware attestation."
+                    .into(),
+            );
+            lines.push(observation("Device observation", &s.device, elapsed));
+            if let Some(value) = &s.device.value {
+                json_lines(&mut lines, "Device firmware & security report", value);
+            }
+        }
+        EvidenceTab::Pools => {
+            if let Some(idx) = pool_index.filter(|&i| i < s.pools.len()) {
+                let pool = &s.pools[idx];
+                lines.push(format!("Selected pool       : {}", safe(&pool.pool_id)));
+                lines.push(format!(
+                    "Selected incarnation: {}",
+                    safe(&pool.incarnation_id)
+                ));
+                lines.push(observation("Pool observation", &pool.observation, elapsed));
+                if let Some(h) = &pool.host {
+                    json_lines(&mut lines, "Host binding", h);
+                }
+                if let Some(m) = &pool.membership {
+                    json_lines(&mut lines, "Device membership", m);
+                }
+                if let Some(v) = &pool.observation.value {
+                    json_lines(&mut lines, "Pool & generation JSON", v);
+                }
+            } else {
+                lines.push(format!("Total joined pools: {}", s.pools.len()));
+                if let Some(m) = &s.membership.value {
+                    json_lines(
+                        &mut lines,
+                        "Device membership JSON",
+                        &Value::Array(m.clone()),
+                    );
+                }
+            }
+        }
     }
     lines
 }
@@ -572,16 +622,17 @@ fn action_menu(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(title)
+                    .title(format!(" {title} "))
                     .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
             )
-            .highlight_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))
+            .highlight_style(tone(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::REVERSED))
             .highlight_symbol(" > "),
         area,
         &mut state,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn release_action(
     action: releases::Action,
     terminal: &mut TerminalOwner,
@@ -594,6 +645,9 @@ fn release_action(
 ) -> io::Result<Option<PathBuf>> {
     use releases::Action;
     match action {
+        Action::TupleUpgrade => {
+            return releases::tuple_upgrade(terminal, worker, socket, bundle, state, role);
+        }
         Action::Browse => {
             review(terminal, "Release evidence", state.lines(), None)?;
         }
@@ -603,7 +657,9 @@ fn release_action(
         Action::Select => {
             releases::component_update(terminal, worker, socket, bundle, state, snapshot, role)?
         }
-        Action::FirmwarePreview => releases::firmware_preview(terminal, worker, socket, bundle)?,
+        Action::FirmwarePreview => {
+            releases::firmware_preview(terminal, worker, socket, bundle, snapshot)?
+        }
         Action::FirmwareUpdate => releases::firmware_update(terminal, worker, socket, bundle)?,
         Action::Inspect => setup::run(1, terminal, worker, role, socket, bundle)?,
         Action::RecoverFirmware => releases::recover_firmware(terminal, worker, socket)?,
@@ -612,6 +668,31 @@ fn release_action(
         Action::Remove => state.remove(terminal)?,
     }
     Ok(None)
+}
+
+fn bind_selected_pool(
+    terminal: &mut TerminalOwner,
+    worker: &mut Option<Worker>,
+    socket: &Path,
+    snapshot: Option<&Snapshot>,
+    selected_identity: Option<&(String, String)>,
+) -> io::Result<()> {
+    let Some((pool_id, inc_id)) = selected_identity else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "select an enrolled pool first",
+        ));
+    };
+    let net_hint = snapshot
+        .and_then(|s| {
+            s.pools
+                .iter()
+                .find(|p| &p.pool_id == pool_id && &p.incarnation_id == inc_id)
+        })
+        .and_then(|p| p.host.as_ref())
+        .and_then(|h| h.get("network"))
+        .and_then(Value::as_str);
+    setup::bind_pool_workflow(terminal, worker, socket, pool_id, inc_id, net_hint)
 }
 
 fn event_loop(
@@ -625,24 +706,48 @@ fn event_loop(
     let mut view = View::Overview;
     let mut history = Vec::new();
     let mut evidence_origin = View::Overview;
+    let mut evidence_tab = EvidenceTab::Summary;
     let mut menu_view = view;
     let mut entries = navigation::entries(view, role);
     let mut selected = 0usize;
-    let mut overview_selected = 6usize;
+    let mut overview_selected = 0usize;
+    let mut activity_selected = 0usize;
     let mut selected_identity: Option<(String, String)> = None;
+    let mut pool_filter = status::PoolFilter::default();
     let mut scroll = 0u16;
     let mut diagnostics = super::observe::Diagnostics::default();
     let mut release_state = releases::State::new();
+    let mut activity_inv = activity::discover(role);
+    let mut last_activity_scan = Instant::now();
+    let mut backup_local = (role == InstallationRole::Backup).then(observe::local_snapshot);
     let mut last_snapshot: Option<std::sync::Arc<Snapshot>> = None;
-    let mut last_draw = std::time::Instant::now();
+    let mut last_draw = Instant::now();
     let mut redraw = true;
     let mut small = false;
+
     loop {
         redraw |= release_state.poll();
+        if last_activity_scan.elapsed() >= Duration::from_secs(5) {
+            let next_inv = activity::discover(role);
+            if next_inv.items.len() != activity_inv.items.len()
+                || next_inv.unresolved_count != activity_inv.unresolved_count
+            {
+                redraw = true;
+            }
+            activity_inv = next_inv;
+            activity_selected = activity_selected.min(activity_inv.items.len().saturating_sub(1));
+            last_activity_scan = Instant::now();
+        }
         if menu_view != view {
             entries = navigation::entries(view, role);
             selected = 0;
             scroll = 0;
+            if view == View::Activity {
+                activity_inv = activity::discover(role);
+                activity_selected =
+                    activity_selected.min(activity_inv.items.len().saturating_sub(1));
+                last_activity_scan = Instant::now();
+            }
             menu_view = view;
             redraw = true;
         }
@@ -657,7 +762,7 @@ fn event_loop(
         }
         if selected_identity.is_none()
             && let Some(s) = &snapshot
-            && let Some(&index) = status::pool_order(s).first()
+            && let Some(&index) = status::pool_order_filtered(s, &pool_filter).first()
         {
             let pool = &s.pools[index];
             selected_identity = Some((pool.pool_id.clone(), pool.incarnation_id.clone()));
@@ -669,116 +774,301 @@ fn event_loop(
                     .position(|p| &p.pool_id == pool && &p.incarnation_id == incarnation)
             })
         });
+
         if redraw || changed || last_draw.elapsed() >= Duration::from_secs(1) {
             let size = terminal.terminal()?.size()?;
             small = size.width < 80 || size.height < 24;
             terminal.terminal()?.draw(|frame| {
                 let screen = frame.area();
                 if small {
-                    frame.render_widget(Paragraph::new("Resize to 80×24 · q quit").style(tone(Color::Yellow)), screen);
+                    frame.render_widget(
+                        Paragraph::new("Resize terminal to at least 80×24 · q quit")
+                            .style(tone(Color::Yellow)),
+                        screen,
+                    );
                     return;
                 }
                 let width = screen.width.min(120);
-                let area = Rect::new(screen.x + (screen.width - width) / 2, screen.y, width, screen.height);
-                let regions = Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)]).split(area);
+                let area = Rect::new(
+                    screen.x + (screen.width - width) / 2,
+                    screen.y,
+                    width,
+                    screen.height,
+                );
+                let regions = Layout::vertical([
+                    Constraint::Length(2),
+                    Constraint::Min(1),
+                    Constraint::Length(2),
+                ])
+                .split(area);
+
+                let (fresh_badge, fresh_col) = if role == InstallationRole::Backup {
+                    ("[BACKUP ISOLATED]".into(), Color::Cyan)
+                } else {
+                    status::snapshot_freshness_badge(snapshot.as_deref())
+                };
                 let header = Line::from(vec![
-                    Span::styled("p2kesup  ", tone(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Span::raw(if role == InstallationRole::Primary { "primary  " } else { "backup  " }),
-                    Span::styled(safe(env!("P2KES_EMBEDDED_VERSION")), tone(Color::Yellow)),
+                    Span::styled("p2kesup ", tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!("{} ", safe(env!("P2KES_EMBEDDED_VERSION"))),
+                        tone(Color::Yellow),
+                    ),
+                    Span::raw(if role == InstallationRole::Primary {
+                        "[Primary]  "
+                    } else {
+                        "[Backup]  "
+                    }),
+                    Span::styled(fresh_badge, tone(fresh_col).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "   ?:help d:evidence r:refresh q:quit",
+                        tone(Color::DarkGray),
+                    ),
                 ]);
-                let root = if matches!(view, View::Evidence | View::Help) { evidence_origin.root() } else { view.root() };
-                let tabs = Line::from(roots.iter().enumerate().flat_map(|(index, candidate)| [
-                    Span::styled(format!("{} {}", index + 1, candidate.label()),
-                        if *candidate == root { tone(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { Style::default() }),
-                    Span::raw("  "),
-                ]).collect::<Vec<_>>());
+
+                let root = if matches!(view, View::Evidence | View::Help) {
+                    evidence_origin.root()
+                } else {
+                    view.root()
+                };
+                let tabs = Line::from(
+                    roots
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(index, candidate)| {
+                            let mut label = format!("{} {}", index + 1, candidate.label());
+                            if *candidate == View::Pools
+                                && let Some(s) = snapshot.as_deref()
+                                && status::fresh(&s.membership, s.captured_at.elapsed())
+                                && status::fresh(&s.host, s.captured_at.elapsed())
+                            {
+                                label = format!("{} Pools({})", index + 1, s.pools.len());
+                            } else if *candidate == View::Activity
+                                && activity_inv.unresolved_count > 0
+                            {
+                                label = format!(
+                                    "{} Activity(!{})",
+                                    index + 1,
+                                    activity_inv.unresolved_count
+                                );
+                            }
+                            let active_tab = *candidate == root;
+                            let tab_style = if active_tab {
+                                tone(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                            } else if *candidate == View::Activity
+                                && activity_inv.unresolved_count > 0
+                            {
+                                tone(Color::Yellow).add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            };
+                            [Span::styled(label, tab_style), Span::raw("  ")]
+                        })
+                        .collect::<Vec<_>>(),
+                );
                 frame.render_widget(Paragraph::new(vec![header, tabs]), regions[0]);
+
                 match view {
-                    View::Overview => status::render_overview(frame, regions[1], snapshot.as_deref(), role, overview_selected),
-                    View::Pools => status::render_pools(frame, regions[1], snapshot.as_deref(), pool_index.unwrap_or(usize::MAX)),
+                    View::Overview => status::render_overview(
+                        frame,
+                        regions[1],
+                        snapshot.as_deref(),
+                        backup_local.as_ref(),
+                        role,
+                        overview_selected,
+                        activity_inv.unresolved_count,
+                    ),
+                    View::Pools => status::render_pools(
+                        frame,
+                        regions[1],
+                        snapshot.as_deref(),
+                        pool_index.unwrap_or(usize::MAX),
+                        &pool_filter,
+                    ),
+                    View::Details => status::render_pool_detail(
+                        frame,
+                        regions[1],
+                        snapshot.as_deref(),
+                        pool_index,
+                        &entries,
+                        selected,
+                    ),
+                    View::Activity => activity::render_activity(
+                        frame,
+                        regions[1],
+                        &activity_inv,
+                        activity_selected,
+                        role,
+                    ),
                     View::Device => {
-                        let parts = Layout::vertical([Constraint::Length(8), Constraint::Min(1)]).split(regions[1]);
+                        let parts =
+                            Layout::vertical([Constraint::Length(8), Constraint::Min(1)])
+                                .split(regions[1]);
                         status::render_device(frame, parts[0], snapshot.as_deref());
-                        action_menu(frame, parts[1], "Device actions", &entries, selected);
-                    }
-                    View::Details => {
-                        let lines = snapshot.as_ref().map(|s| status::pool_lines(s, pool_index.unwrap_or(usize::MAX)))
-                            .unwrap_or_else(|| vec![Line::from("Pool: unavailable")]);
-                        let summary = Paragraph::new(lines).wrap(Wrap { trim: false });
-                        let height = (summary.line_count(regions[1].width) as u16).min(regions[1].height.saturating_sub(6));
-                        let parts = Layout::vertical([Constraint::Length(height), Constraint::Min(6)]).split(regions[1]);
-                        frame.render_widget(summary, parts[0]);
-                        if pool_index.is_some() {
-                            action_menu(frame, parts[1], "Pool actions", &entries, selected);
-                        } else {
-                            frame.render_widget(Paragraph::new("Selected pool: unavailable · Esc back").style(tone(Color::Yellow)), parts[1]);
-                        }
+                        action_menu(frame, parts[1], "Device Actions", &entries, selected);
                     }
                     View::Evidence | View::Help => {
                         let lines = if view == View::Help {
                             vec![
-                                "1–6 / Tab / Shift-Tab: section".into(),
-                                "↑↓ / j k: select or scroll".into(),
-                                "Enter: open / review".into(),
-                                "Pools → a: enrollment and recipient actions".into(),
-                                "d: full evidence · r: refresh".into(),
-                                "Esc: back · q: quit".into(),
-                                "Colors: green verified condition; yellow attention/unknown; red fault.".into(),
-                                "NO_COLOR: labels and selection remain available.".into(),
-                                "Viewing makes no changes. Actions require separate review.".into(),
-                                "Recovery: original plan or receipt; never a replacement retry.".into(),
+                                "Navigation & Shortcuts".into(),
+                                "  1–6 / Tab / Shift-Tab : Switch top-level workspace section".into(),
+                                "  ↑↓ / j k / PgUp PgDn  : Move selection or scroll".into(),
+                                "  Enter                 : Open item or review action".into(),
+                                "  Esc                   : Return to previous screen (never mutates)".into(),
+                                "  s                     : Open Guided Setup (from Primary Overview)".into(),
+                                "  d                     : Open structured read-only Evidence drawer".into(),
+                                "  r                     : Refresh host, daemon, device & activity state".into(),
+                                "  q                     : Quit p2kesup".into(),
+                                String::new(),
+                                "Pools Fleet Shortcuts (View 2)".into(),
+                                "  n : Enroll new pool      b : Bind selected unbound pool in config.json".into(),
+                                "  a : Global pool actions  f : Toggle attention-only  o : Cycle sort  / : Filter".into(),
+                                String::new(),
+                                "Safety & Recovery Principles".into(),
+                                "  • Browsing is strictly read-only; mutations stage reviewed plans or CLI receipts.".into(),
+                                "  • Interrupted operations surface in 6 Activity (!); press Enter to reconcile original ID.".into(),
+                                "  • Status badges (RDY, EXP!, UNB, ATT!, [OK], [!]) remain unambiguous with NO_COLOR=1.".into(),
                             ]
-                        } else if matches!(evidence_origin, View::Pools | View::Details) {
-                            snapshot.as_ref().map(|s| detail(s, pool_index.unwrap_or(usize::MAX))).unwrap_or_default()
                         } else {
-                            overview(snapshot.as_deref(), role, bundle)
+                            build_evidence_lines(
+                                evidence_tab,
+                                snapshot.as_deref(),
+                                backup_local.as_ref(),
+                                role,
+                                bundle,
+                                pool_index,
+                            )
                         };
-                        let paragraph = Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
-                            .block(Block::default().borders(Borders::ALL).title(view.label()))
-                            .wrap(Wrap { trim: false });
-                        let max = paragraph.line_count(regions[1].width.saturating_sub(2))
-                            .saturating_sub(usize::from(regions[1].height)).min(usize::from(u16::MAX)) as u16;
+                        let inner_w = regions[1].width.saturating_sub(2).max(1);
+                        let inner_h = regions[1].height.saturating_sub(2).max(1);
+                        let probe = Paragraph::new(
+                            lines.iter().cloned().map(Line::from).collect::<Vec<_>>(),
+                        )
+                        .wrap(Wrap { trim: false });
+                        let total = probe.line_count(inner_w).max(1);
+                        let max = total
+                            .saturating_sub(usize::from(inner_h))
+                            .min(usize::from(u16::MAX)) as u16;
                         scroll = scroll.min(max);
+                        let start = usize::from(scroll) + 1;
+                        let end = (usize::from(scroll) + usize::from(inner_h)).min(total);
+                        let title = if view == View::Help {
+                            format!(" Help [lines {start}-{end} of {total}] ")
+                        } else {
+                            let tab_bar = EvidenceTab::ALL
+                                .iter()
+                                .map(|t| {
+                                    if *t == evidence_tab {
+                                        format!("[{}]", t.label())
+                                    } else {
+                                        t.label().to_owned()
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            format!(" Evidence: {tab_bar} [{start}-{end}/{total}] ")
+                        };
+                        let paragraph = Paragraph::new(
+                            lines.into_iter().map(Line::from).collect::<Vec<_>>(),
+                        )
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(title)
+                                .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        )
+                        .wrap(Wrap { trim: false });
                         frame.render_widget(paragraph.scroll((scroll, 0)), regions[1]);
                     }
                     _ => {
                         let hint = match view {
-                            View::Setup => "Device: existing or blank? Missing configuration does not mean blank.",
-                            View::SetupExisting => "Preserve identity/state. Use the original trusted pin and public inputs.",
-                            View::SetupNew => "Blank device only. Each step checks current state; no automatic replay.",
-                            View::Activity => "Recovery: original plans / receipts only. No replacement retries.",
-                            View::DeviceSecurity => "OTP: irreversible. Separate qualification and confirmation required.",
-                            View::ProducerHardening => "Policy: explicit services only. Restart requires approval.",
-                            View::Recipients => "Private recipient: backup host only. Transfer public file only.",
-                            View::Restore => "Restore: protected local output. Existing files are never overwritten.",
-                            View::Releases => "Installed / running versions: d. Updates require authenticated releases.",
-                            _ => "pico2-kes-agentd: service and configuration",
+                            View::Setup => {
+                                "Choose blank commissioning or connect an already-commissioned Pico 2 (missing config != blank)."
+                            }
+                            View::SetupExisting => {
+                                "Preserves existing Pico 2 keys & pin. Imports/builds normal config and starts agentd."
+                            }
+                            View::SetupNew => {
+                                "Guided blank Pico 2 setup. Each step checks live state; interrupted steps reconcile in 6 Activity."
+                            }
+                            View::ActivityManual => {
+                                "Manual recovery & diagnostics for external file paths or explicit operation IDs."
+                            }
+                            View::DeviceSecurity => {
+                                "OTP security stages are irreversible; separate qualification evidence and confirmation apply."
+                            }
+                            View::ProducerHardening => {
+                                "Installs systemd memory-hardening drop-ins only; Cardano node configs/sockets are never touched."
+                            }
+                            View::Recipients => {
+                                "Generate HPKE backup keypairs locally; transfer ONLY the public .json file to the primary host."
+                            }
+                            View::Restore => {
+                                "Decrypts .kes-backup to a new 0600 file; fence all producers before using restored signing keys."
+                            }
+                            View::Releases => {
+                                "Coordinated tuple upgrades update host + firmware together; component selection is for advanced cases."
+                            }
+                            _ => "Manage pico2-kes-agentd service lifecycle, configuration candidates, and producer memory policy.",
                         };
-                        let mut summary = vec![Line::from(hint).style(tone(Color::DarkGray)), Line::default()];
+                        let mut summary = vec![Line::from(hint).style(tone(Color::DarkGray))];
                         if view == View::Releases {
-                            summary.extend(status::software_lines(snapshot.as_deref()));
+                            summary.extend(status::software_lines(
+                                snapshot.as_deref(),
+                                &release_state,
+                                bundle,
+                            ));
                         } else if matches!(view, View::SetupExisting | View::SetupNew) {
-                            summary.extend(status::setup_lines(snapshot.as_deref()));
+                            summary.extend(status::setup_lines(
+                                snapshot.as_deref(),
+                                view == View::SetupNew,
+                            ));
                         }
                         let paragraph = Paragraph::new(summary).wrap(Wrap { trim: false });
-                        let height = paragraph.line_count(regions[1].width).min(7) as u16;
-                        let parts = Layout::vertical([Constraint::Length(height), Constraint::Min(1)]).split(regions[1]);
+                        let height = (paragraph.line_count(regions[1].width) + 1).min(6) as u16;
+                        let parts = Layout::vertical([Constraint::Length(height), Constraint::Min(1)])
+                            .split(regions[1]);
                         frame.render_widget(paragraph, parts[0]);
                         action_menu(frame, parts[1], view.label(), &entries, selected);
                     }
                 }
+
                 let keys = match view {
-                    View::Overview => "↑↓ Select   Enter Open   d Evidence   r Refresh   ? Help   q Quit",
-                    View::Pools => "↑↓ Select  Enter Pool  a Actions  d Evidence  r Refresh  q Quit",
-                    View::Evidence | View::Help => "↑↓ Scroll   Esc Back   r Refresh   q Quit",
+                    View::Overview if role == InstallationRole::Primary => {
+                        "↑↓ Action  Enter Go  s Guided Setup  u Software  d Evidence  r Refresh  q Quit"
+                    }
+                    View::Overview => {
+                        "↑↓ Select Workflow   Enter Open   d Evidence   r Refresh   ? Help   q Quit"
+                    }
+                    View::Pools => {
+                        "↑↓/PgDn Select  Enter Detail  n Enroll  b Bind  a Global  f Attn  o Sort  / Filter"
+                    }
+                    View::Details => {
+                        "↑↓ Select Action   Enter Review   b Bind Config   Esc Pools   d Evidence"
+                    }
+                    View::Activity => {
+                        "↑↓ Select Record/Receipt/Plan   Enter Inspect & Reconcile   m Manual Menu   r Refresh"
+                    }
+                    View::Evidence => {
+                        "←→ Switch Section   ↑↓/PgUp/PgDn Scroll   Esc Back   r Refresh   q Quit"
+                    }
+                    View::Help => "↑↓/PgUp/PgDn Scroll   Esc Back   q Quit",
                     _ => "↑↓ Select   Enter Open   Esc Back   d Evidence   ? Help   q Quit",
                 };
-                frame.render_widget(Paragraph::new(vec![Line::from(keys), Line::from("Tab / Shift-Tab: section   1–6: jump").style(tone(Color::DarkGray))]), regions[2]);
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(keys),
+                        Line::from("1–6 / Tab / Shift-Tab: switch section")
+                            .style(tone(Color::DarkGray)),
+                    ]),
+                    regions[2],
+                );
             })?;
             last_snapshot = snapshot.clone();
-            last_draw = std::time::Instant::now();
+            last_draw = Instant::now();
             redraw = false;
         }
+
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
@@ -795,6 +1085,7 @@ fn event_loop(
         if small {
             continue;
         }
+
         match key.code {
             KeyCode::Char(c @ '1'..='6') => {
                 if let Some(next) = roots.get(c as usize - '1' as usize) {
@@ -818,6 +1109,15 @@ fn event_loop(
             KeyCode::Char('?') | KeyCode::Char('d') => {
                 if !matches!(view, View::Help | View::Evidence) {
                     evidence_origin = view;
+                    if matches!(view, View::Pools | View::Details) {
+                        evidence_tab = EvidenceTab::Pools;
+                    } else if matches!(view, View::Device | View::DeviceSecurity) {
+                        evidence_tab = EvidenceTab::Device;
+                    } else if view == View::Host {
+                        evidence_tab = EvidenceTab::Host;
+                    } else {
+                        evidence_tab = EvidenceTab::Summary;
+                    }
                     history.push(view);
                     view = if key.code == KeyCode::Char('?') {
                         View::Help
@@ -826,10 +1126,100 @@ fn event_loop(
                     };
                 }
             }
-            KeyCode::Esc => view = history.pop().unwrap_or(View::Overview),
+            KeyCode::Left | KeyCode::Char('[') if view == View::Evidence => {
+                evidence_tab = evidence_tab.step(false);
+                scroll = 0;
+            }
+            KeyCode::Right | KeyCode::Char(']') if view == View::Evidence => {
+                evidence_tab = evidence_tab.step(true);
+                scroll = 0;
+            }
+            KeyCode::Esc => {
+                view = history.pop().unwrap_or(View::Overview);
+            }
+            KeyCode::Char('s') if view == View::Overview && role == InstallationRole::Primary => {
+                history.push(view);
+                view = View::Setup;
+            }
+            KeyCode::Char('u') if view == View::Overview => {
+                history.push(view);
+                view = View::Releases;
+            }
+            KeyCode::Char('m') if view == View::Activity => {
+                history.push(view);
+                view = View::ActivityManual;
+            }
             KeyCode::Char('a') if view == View::Pools => {
                 history.push(view);
                 view = View::PoolActions;
+            }
+            KeyCode::Char('f') if view == View::Pools => {
+                pool_filter.attention_only = !pool_filter.attention_only;
+            }
+            KeyCode::Char('o') if view == View::Pools => {
+                pool_filter.sort = pool_filter.sort.next();
+            }
+            KeyCode::Char('/') if view == View::Pools => {
+                let specs = [FieldSpec::text_hint(
+                    "Filter pools by Pool ID or Incarnation substring",
+                    &pool_filter.query,
+                    "Leave blank and press Enter to clear filter",
+                )];
+                if let Some(q) = form_validated(terminal, "Filter Pools", &specs, |v| {
+                    Ok(v[0].trim().to_owned())
+                })? {
+                    pool_filter.query = q;
+                    if let Some(s) = &snapshot
+                        && let Some(&idx) = status::pool_order_filtered(s, &pool_filter).first()
+                    {
+                        let p = &s.pools[idx];
+                        selected_identity = Some((p.pool_id.clone(), p.incarnation_id.clone()));
+                    }
+                }
+            }
+            KeyCode::Char('n') if view == View::Pools && role == InstallationRole::Primary => {
+                release_state.pause();
+                let idx = navigation::lifecycle_index(lifecycle::Action::Enroll);
+                if let Err(error) =
+                    lifecycle::run(idx, terminal, worker, socket, None, snapshot.as_deref())
+                {
+                    review(
+                        terminal,
+                        "Blocked / incomplete",
+                        vec![
+                            error.to_string(),
+                            "Recovery: open 6 Activity to inspect or reconcile original receipts/records."
+                                .into(),
+                        ],
+                        None,
+                    )?;
+                }
+                activity_inv = activity::discover(role);
+                release_state.resume();
+                last_snapshot = None;
+            }
+            KeyCode::Char('b')
+                if matches!(view, View::Pools | View::Details)
+                    && role == InstallationRole::Primary =>
+            {
+                release_state.pause();
+                if let Err(error) = bind_selected_pool(
+                    terminal,
+                    worker,
+                    socket,
+                    snapshot.as_deref(),
+                    selected_identity.as_ref(),
+                ) {
+                    review(
+                        terminal,
+                        "Bind pool blocked / incomplete",
+                        vec![error.to_string()],
+                        None,
+                    )?;
+                }
+                activity_inv = activity::discover(role);
+                release_state.resume();
+                last_snapshot = None;
             }
             KeyCode::Char('r') => {
                 if view == View::Releases {
@@ -838,18 +1228,80 @@ fn event_loop(
                 if let Some(worker) = worker {
                     worker.refresh();
                 }
+                if role == InstallationRole::Backup {
+                    backup_local = Some(observe::local_snapshot());
+                }
+                activity_inv = activity::discover(role);
+                last_activity_scan = Instant::now();
+            }
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+                if matches!(
+                    view,
+                    View::Help | View::Evidence | View::Pools | View::Activity
+                ) =>
+            {
+                let page_step = 10usize;
+                match view {
+                    View::Help | View::Evidence => match key.code {
+                        KeyCode::PageUp => scroll = scroll.saturating_sub(12),
+                        KeyCode::PageDown => scroll = scroll.saturating_add(12),
+                        KeyCode::Home => scroll = 0,
+                        KeyCode::End => scroll = u16::MAX,
+                        _ => {}
+                    },
+                    View::Pools => {
+                        if let Some(s) = &snapshot {
+                            let order = status::pool_order_filtered(s, &pool_filter);
+                            let cur = pool_index
+                                .and_then(|i| order.iter().position(|&c| c == i))
+                                .unwrap_or(0);
+                            let next = match key.code {
+                                KeyCode::PageUp => cur.saturating_sub(page_step),
+                                KeyCode::PageDown => {
+                                    (cur + page_step).min(order.len().saturating_sub(1))
+                                }
+                                KeyCode::Home => 0,
+                                KeyCode::End => order.len().saturating_sub(1),
+                                _ => cur,
+                            };
+                            if let Some(&idx) = order.get(next) {
+                                let p = &s.pools[idx];
+                                selected_identity =
+                                    Some((p.pool_id.clone(), p.incarnation_id.clone()));
+                            }
+                        }
+                    }
+                    View::Activity => {
+                        let len = activity_inv.items.len();
+                        activity_selected = match key.code {
+                            KeyCode::PageUp => activity_selected.saturating_sub(page_step),
+                            KeyCode::PageDown => {
+                                (activity_selected + page_step).min(len.saturating_sub(1))
+                            }
+                            KeyCode::Home => 0,
+                            KeyCode::End => len.saturating_sub(1),
+                            _ => activity_selected,
+                        };
+                    }
+                    _ => {}
+                }
             }
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') => {
                 let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
                 if view == View::Overview {
+                    let max_idx = if role == InstallationRole::Primary {
+                        6
+                    } else {
+                        status::BACKUP_OVERVIEW_ACTIONS.len() - 1
+                    };
                     overview_selected = if down {
-                        (overview_selected + 1).min(6)
+                        (overview_selected + 1).min(max_idx)
                     } else {
                         overview_selected.saturating_sub(1)
                     };
                 } else if view == View::Pools {
                     if let Some(s) = &snapshot {
-                        let order = status::pool_order(s);
+                        let order = status::pool_order_filtered(s, &pool_filter);
                         let current = pool_index
                             .and_then(|i| order.iter().position(|&candidate| candidate == i));
                         let next = match current {
@@ -863,6 +1315,13 @@ fn event_loop(
                                 Some((pool.pool_id.clone(), pool.incarnation_id.clone()));
                         }
                     }
+                } else if view == View::Activity {
+                    let max_idx = activity_inv.items.len().saturating_sub(1);
+                    activity_selected = if down {
+                        activity_selected.saturating_add(1).min(max_idx)
+                    } else {
+                        activity_selected.saturating_sub(1)
+                    };
                 } else if matches!(view, View::Help | View::Evidence) {
                     scroll = if down {
                         scroll.saturating_add(1)
@@ -880,36 +1339,97 @@ fn event_loop(
                 }
             }
             KeyCode::Enter if view == View::Overview => {
-                history.push(view);
-                view = if role == InstallationRole::Backup {
-                    View::Recipients
-                } else if overview_selected < 6 {
-                    [
-                        View::Releases,
-                        View::Setup,
-                        View::Host,
-                        View::Device,
-                        View::Device,
-                        View::Pools,
-                    ][overview_selected]
-                } else {
-                    match status::next_step(snapshot.as_deref()) {
-                        status::NextStep::Setup => View::Setup,
-                        status::NextStep::Host => View::Host,
-                        status::NextStep::Pools => View::Pools,
-                        status::NextStep::Refresh => {
-                            if let Some(worker) = worker {
-                                worker.refresh();
+                if role == InstallationRole::Backup {
+                    match overview_selected {
+                        0..=2 => {
+                            release_state.pause();
+                            if let Err(error) =
+                                backup::run(overview_selected, terminal, worker, socket, bundle)
+                            {
+                                review(
+                                    terminal,
+                                    "Backup action blocked / incomplete",
+                                    vec![error.to_string()],
+                                    None,
+                                )?;
                             }
-                            history.pop();
-                            View::Overview
+                            backup_local = Some(observe::local_snapshot());
+                            activity_inv = activity::discover(role);
+                            release_state.resume();
+                        }
+                        3 => {
+                            history.push(view);
+                            view = View::Releases;
+                        }
+                        _ => {
+                            history.push(view);
+                            view = View::Activity;
                         }
                     }
+                    continue;
+                }
+                history.push(view);
+                view = match overview_selected {
+                    0 => {
+                        match status::next_step(snapshot.as_deref(), activity_inv.unresolved_count)
+                        {
+                            status::NextStep::Activity => View::Activity,
+                            status::NextStep::Setup => View::Setup,
+                            status::NextStep::Host => View::Host,
+                            status::NextStep::Pools => View::Pools,
+                            status::NextStep::Refresh => {
+                                if let Some(worker) = worker {
+                                    worker.refresh();
+                                }
+                                activity_inv = activity::discover(role);
+                                history.pop();
+                                View::Overview
+                            }
+                        }
+                    }
+                    1 => View::Pools,
+                    2 => View::Setup,
+                    3 => View::Host,
+                    4 => View::Device,
+                    5 => View::Releases,
+                    _ => View::Activity,
                 };
             }
-            KeyCode::Enter if view == View::Pools && pool_index.is_some() => {
-                history.push(view);
-                view = View::Details;
+            KeyCode::Enter if view == View::Pools => {
+                if pool_index.is_some() {
+                    history.push(view);
+                    view = View::Details;
+                } else if snapshot.as_deref().is_some_and(|s| {
+                    s.pools.is_empty() && status::fresh(&s.membership, s.captured_at.elapsed())
+                }) {
+                    history.push(view);
+                    view = View::PoolActions;
+                }
+            }
+            KeyCode::Enter if view == View::Activity => {
+                let Some(item) = activity_inv.items.get(activity_selected).cloned() else {
+                    history.push(view);
+                    view = View::ActivityManual;
+                    continue;
+                };
+                release_state.pause();
+                if let Err(error) = activity::open_item(&item, terminal, worker, socket, bundle) {
+                    review(
+                        terminal,
+                        "Reconciliation blocked / incomplete",
+                        vec![
+                            error.to_string(),
+                            "Retain the original record/receipt; never submit a duplicate replacement."
+                                .into(),
+                        ],
+                        None,
+                    )?;
+                }
+                activity_inv = activity::discover(role);
+                activity_selected =
+                    activity_selected.min(activity_inv.items.len().saturating_sub(1));
+                release_state.resume();
+                last_snapshot = None;
             }
             KeyCode::Enter => {
                 if view == View::Details && pool_index.is_none() {
@@ -947,8 +1467,17 @@ fn event_loop(
                         role,
                     ),
                     Action::Lifecycle(index) => {
-                        lifecycle::run(index, terminal, worker, socket, target).map(|()| None)
+                        lifecycle::run(index, terminal, worker, socket, target, snapshot.as_deref())
+                            .map(|()| None)
                     }
+                    Action::BindSelectedPool => bind_selected_pool(
+                        terminal,
+                        worker,
+                        socket,
+                        snapshot.as_deref(),
+                        selected_identity.as_ref(),
+                    )
+                    .map(|()| None),
                     Action::Service(index) => {
                         service::run(index, terminal, worker, socket, &diagnostics).map(|()| None)
                     }
@@ -970,9 +1499,22 @@ fn event_loop(
                     Ok(Some(path)) => return Ok(Exit::Reexec(path)),
                     Ok(None) => {}
                     Err(error) => {
-                        review(terminal, "Blocked / incomplete", vec![error.to_string(), "Recovery: Activity → original plan / receipt. Do not create a replacement retry.".into()], None)?;
+                        review(
+                            terminal,
+                            "Blocked / incomplete",
+                            vec![
+                                error.to_string(),
+                                "Recovery: open 6 Activity to inspect or reconcile the original record/receipt (never create a replacement retry)."
+                                    .into(),
+                            ],
+                            None,
+                        )?;
                     }
                 }
+                if role == InstallationRole::Backup {
+                    backup_local = Some(observe::local_snapshot());
+                }
+                activity_inv = activity::discover(role);
                 release_state.resume();
                 last_snapshot = None;
             }
