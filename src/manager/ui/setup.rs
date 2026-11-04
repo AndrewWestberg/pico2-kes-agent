@@ -131,6 +131,7 @@ fn failure_observations(plan: &HostPlan) -> Vec<String> {
         | HostAction::HostSecurityRecovery {
             operation_id,
             original_plan_digest,
+            ..
         }
         | HostAction::WipeRecovery {
             operation_id,
@@ -845,6 +846,9 @@ mod security_tests {
             start_mode(&HostAction::HostSecurityRecovery {
                 operation_id: "original".into(),
                 original_plan_digest: "digest".into(),
+                bootstrap: None,
+                bootstrap_manifest_digest: None,
+                candidate_accepted: false,
             }),
             None
         );

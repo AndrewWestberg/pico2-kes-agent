@@ -245,7 +245,12 @@ fn snapshot(path: &Path) -> io::Result<Option<FileEvidence>> {
     {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!("cannot open {}: {e}", path.display()),
+            ));
+        }
     };
     let m = file.metadata()?;
     if !m.is_file()
@@ -387,6 +392,32 @@ fn valid_source(value: &str) -> bool {
         })
 }
 
+fn parse_unit_sources(
+    unit: &str,
+    text: &str,
+    paths: &mut BTreeSet<String>,
+    mut is_masked: impl FnMut(&str) -> io::Result<bool>,
+) -> io::Result<()> {
+    let mask = format!("/etc/systemd/system/{unit}");
+    for line in text.lines() {
+        let (property, values) = line
+            .split_once('=')
+            .ok_or_else(|| io::Error::other("invalid systemd unit source"))?;
+        for path in values.split_whitespace() {
+            if path == "/dev/null"
+                || (property == "FragmentPath" && path == mask && is_masked(unit)?)
+            {
+                continue;
+            }
+            if !valid_source(path) {
+                return Err(io::Error::other(format!("unsupported unit source: {path}")));
+            }
+            paths.insert(path.to_owned());
+        }
+    }
+    Ok(())
+}
+
 fn unit_sources(units: &BTreeSet<String>) -> io::Result<Vec<UnitSource>> {
     let mut paths = BTreeSet::new();
     for unit in units {
@@ -399,20 +430,7 @@ fn unit_sources(units: &BTreeSet<String>) -> io::Result<Vec<UnitSource>> {
                 "--property=DropInPaths",
             ],
         )?;
-        for line in text.lines() {
-            let (_, values) = line
-                .split_once('=')
-                .ok_or_else(|| io::Error::other("invalid systemd unit source"))?;
-            for path in values.split_whitespace() {
-                if path == "/dev/null" {
-                    continue;
-                }
-                if !valid_source(path) {
-                    return Err(io::Error::other(format!("unsupported unit source: {path}")));
-                }
-                paths.insert(path.to_owned());
-            }
-        }
+        parse_unit_sources(unit, &text, &mut paths, masked)?;
     }
     if paths.len() > 256 {
         return Err(io::Error::other("too many unit sources"));
@@ -1540,6 +1558,45 @@ mod tests {
         current.units.push("unexpected.swap".into());
         current.masks.push(false);
         assert!(!compatible(&original, &current, &record));
+    }
+
+    #[test]
+    fn unit_sources_skip_only_validated_mask_fragments() {
+        let unit = "swap.img.swap";
+        let mask = "/etc/systemd/system/swap.img.swap";
+        let dropin = "/etc/systemd/system/swap.img.swap.d/options.conf";
+        let text = format!("FragmentPath={mask}\nDropInPaths={dropin}\n");
+        let mut paths = BTreeSet::new();
+        parse_unit_sources(unit, &text, &mut paths, |name| {
+            assert_eq!(name, unit);
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(paths, BTreeSet::from([dropin.to_owned()]));
+
+        paths.clear();
+        parse_unit_sources(unit, &text, &mut paths, |_| Ok(false)).unwrap();
+        assert_eq!(paths, BTreeSet::from([mask.to_owned(), dropin.to_owned()]));
+
+        paths.clear();
+        let text = format!("FragmentPath=/etc/systemd/system/other.swap\nDropInPaths={mask}\n");
+        parse_unit_sources(unit, &text, &mut paths, |_| panic!("not a mask fragment")).unwrap();
+        assert_eq!(
+            paths,
+            BTreeSet::from([mask.to_owned(), "/etc/systemd/system/other.swap".to_owned()])
+        );
+        assert!(
+            parse_unit_sources(unit, "FragmentPath=/tmp/other.swap", &mut paths, |_| Ok(
+                true
+            ))
+            .is_err()
+        );
+        assert!(
+            parse_unit_sources(unit, &format!("FragmentPath={mask}"), &mut paths, |_| {
+                Err(io::Error::other("invalid mask"))
+            })
+            .is_err()
+        );
     }
 
     #[test]

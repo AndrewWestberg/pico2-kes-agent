@@ -524,6 +524,9 @@ pub(super) fn open_item(
                     host::HostAction::HostSecurityRecovery {
                         operation_id: op_id,
                         original_plan_digest: digest,
+                        bootstrap: None,
+                        bootstrap_manifest_digest: None,
+                        candidate_accepted: false,
                     },
                     None,
                 ),
