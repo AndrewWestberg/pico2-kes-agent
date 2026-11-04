@@ -7,25 +7,34 @@ export PATH
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [--version TAG | --bundle DIRECTORY] [--role primary|backup] [--help]
+       sh install.sh (--version TAG | --bundle DIRECTORY) --recovery-plan PATH
 Without --version or --bundle, install the latest qualified stable release.
 An explicit version or local bundle may contain a candidate requiring attended review.
+--recovery-plan is only for signed bootstrap recovery of an original host-security operation.
 EOF
 }
 role=primary
 bundle=
 version=
+recovery_plan=
 role_seen=no
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --help) [ "$#" -eq 1 ] || { usage >&2; exit 2; }; usage; exit 0 ;;
         --bundle) [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$bundle" ] && [ -z "$version" ] || { usage >&2; exit 2; }; bundle=$2; shift 2 ;;
         --version) [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$version" ] && [ -z "$bundle" ] || { usage >&2; exit 2; }; version=$2; shift 2 ;;
+        --recovery-plan) [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$recovery_plan" ] || { usage >&2; exit 2; }; recovery_plan=$2; shift 2 ;;
         --role) [ "$#" -ge 2 ] && [ "$role_seen" = no ] || { usage >&2; exit 2; }; role=$2; role_seen=yes; shift 2 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
 case "$role" in primary|backup) ;; *) usage >&2; exit 2 ;; esac
 case "$version" in *[!a-zA-Z0-9._+-]*|[-.+]*) echo 'Invalid release tag.' >&2; exit 2 ;; esac
+if [ -n "$recovery_plan" ]; then
+    [ -n "$bundle" ] || [ -n "$version" ] || { usage >&2; exit 2; }
+    [ "$role_seen" = no ] || { usage >&2; exit 2; }
+    recovery_plan=$(realpath -- "$recovery_plan") || exit 2
+fi
 if ! ( : </dev/tty ) 2>/dev/null; then
     echo 'An attended controlling terminal is required.' >&2; exit 3
 fi
@@ -71,6 +80,19 @@ if [ -n "$missing" ]; then
         [ -x "/usr/bin/$tool" ] || { echo "Prerequisite $tool unavailable." >&2; exit 4; }
     done
     [ -n "$bundle" ] || [ -s /etc/ssl/certs/ca-certificates.crt ] || { echo 'TLS certificates unavailable.' >&2; exit 4; }
+fi
+if [ -n "$recovery_plan" ]; then
+    /usr/bin/python3 -I - "$recovery_plan" <<'PY' || { echo 'Expected a host-security bootstrap recovery plan.' >&2; exit 2; }
+import json, os, stat, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+with os.fdopen(fd, 'rb') as f:
+    st = os.fstat(f.fileno())
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 262144: raise SystemExit(1)
+    plan = json.load(f)
+action = plan.get('action', {})
+if action.get('action') != 'host_security_recovery' or not action.get('bootstrap') or not action.get('bootstrap_manifest_digest'):
+    raise SystemExit(1)
+PY
 fi
 verifier_code=$(cat <<'PY'
 import os, selectors, signal, subprocess, time
@@ -310,7 +332,7 @@ $(cat <<'PY'
 import ctypes, hashlib, json, os, re, stat, subprocess, sys, tempfile
 from pathlib import Path
 
-bundle = Path(sys.argv[1]); explicit = sys.argv[2] == 'yes'; requested = sys.argv[3]
+bundle = Path(sys.argv[1]); explicit = sys.argv[2] == 'yes'; requested = sys.argv[3]; recovery = sys.argv[4] == 'yes'
 def fail(message):
     raise SystemExit(message)
 def read(path, limit):
@@ -364,13 +386,13 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
     if len(binary)!=size or hashlib.sha256(binary).hexdigest()!=digest: fail('manager bytes changed')
     packages=set()
     for requirement in manifest.get('prerequisites',[]):
-        if requirement.get('operation')!='install': continue
+        if recovery or requirement.get('operation')!='install': continue
         for package in requirement.get('packages',[]):
             if (package.get('id'),package.get('version'))==identity:
                 for name in package.get('names',[]):
                     if not isinstance(name,str) or not re.fullmatch('[a-z0-9][a-z0-9+.-]*',name): fail('invalid package name')
                     packages.add(name)
-    if not packages: fail('signed install prerequisites unavailable')
+    if not recovery and not packages: fail('signed install prerequisites unavailable')
     missing=[]
     for package in sorted(packages):
         try: installed = bounded_command(['/usr/bin/dpkg-query','-W','-f=${Status}',package]) == b'install ok installed'
@@ -412,14 +434,24 @@ with tempfile.TemporaryDirectory(prefix='p2kesup-bootstrap-') as tmp:
     print(path)
 PY
 )"
+if [ -n "$recovery_plan" ]; then recovery=yes; else recovery=no; fi
 if [ "$(id -u)" -eq 0 ]; then
-    manager=$(/usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version") || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
+    manager=$(/usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version" "$recovery") || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
 else
-    manager=$(/usr/bin/sudo -- /usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version" <&3) || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
+    manager=$(/usr/bin/sudo -- /usr/bin/python3 -I -c "$root_code" "$bundle" "$explicit" "$version" "$recovery" <&3) || { echo 'Authenticated bootstrap or prerequisites failed.' >&2; exit 4; }
 fi
-echo 'Bootstrap authenticated. Starting the reviewed installation.' >&2
 if [ -n "${work:-}" ]; then keep_bundle=yes; fi
-"$manager" install --bundle "$bundle" --role "$role" <&3 >&3 2>&3
+if [ -n "$recovery_plan" ]; then
+    echo 'Bootstrap authenticated. Starting attended original-operation recovery.' >&2
+    if [ "$(id -u)" -eq 0 ]; then
+        "$manager" host-apply --plan "$recovery_plan" <&3 >&3 2>&3
+    else
+        /usr/bin/sudo -- "$manager" host-apply --plan "$recovery_plan" <&3 >&3 2>&3
+    fi
+else
+    echo 'Bootstrap authenticated. Starting the reviewed installation.' >&2
+    "$manager" install --bundle "$bundle" --role "$role" <&3 >&3 2>&3
+fi
 if [ -n "${work:-}" ]; then keep_bundle=no; fi
 }
 main "$@"

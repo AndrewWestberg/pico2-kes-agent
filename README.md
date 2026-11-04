@@ -333,6 +333,8 @@ Disabling swap reduces the host's memory-pressure margin; disabling sleep affect
 
 Commissioning does not require Cardano or a node-memory acknowledgement. Normal startup still requires the actual literal `cardano-node.service`; setup offers the existing authenticated memory drop-in and explicitly reviews any active producer restart, never starting a stopped producer. The helper checks prerequisites again before service effects. Interrupted security changes resume forward from their original **Activity** record; a provably completed restart is not repeated, and an unprovable restart remains unresolved. Failures show the original record's diagnostic observations.
 
+RC.17 could finish applying these protections and then fail verification with `Too many levels of symbolic links` when systemd reported the newly installed swap mask as its unit source. Keep the original record and applied protections. A corrected signed bootstrap can recover that exact operation with `sh install.sh --bundle /absolute/bundle --recovery-plan /absolute/prepared-plan.json`; the prepared plan must bind the bootstrap manifest and original operation/digest. This is attended recovery, not a replacement security operation or an installed-manager update. Never edit records or remove masks to bypass the failure.
+
 #### Expert policy inspection and manual administration
 
 The following commands and file format are for independent inspection or expert administration, not required steps in guided setup.

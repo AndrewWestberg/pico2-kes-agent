@@ -162,6 +162,12 @@ pub enum HostAction {
     HostSecurityRecovery {
         operation_id: String,
         original_plan_digest: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap_manifest_digest: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        candidate_accepted: bool,
     },
     ReconcileFirstInstall {
         operation_id: String,
@@ -658,7 +664,18 @@ impl HostPlan {
             HostAction::HostSecurityRecovery {
                 operation_id,
                 original_plan_digest,
-            } => id_ok(operation_id) && digest_ok(original_plan_digest),
+                bootstrap,
+                bootstrap_manifest_digest,
+                candidate_accepted,
+            } => {
+                id_ok(operation_id)
+                    && digest_ok(original_plan_digest)
+                    && match (bootstrap, bootstrap_manifest_digest) {
+                        (Some(path), Some(digest)) => path.is_absolute() && digest_ok(digest),
+                        (None, None) => !candidate_accepted,
+                        _ => false,
+                    }
+            }
             HostAction::ReconcileFirstInstall {
                 operation_id,
                 serial,
@@ -1402,10 +1419,24 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
                 println!("{}", line.escape_default());
             }
         }
-        HostAction::HostSecurityRecovery { operation_id, .. } => {
+        HostAction::HostSecurityRecovery {
+            operation_id,
+            original_plan_digest,
+            bootstrap,
+            bootstrap_manifest_digest,
+            candidate_accepted,
+        } => {
             println!(
-                "Resume only the approved host security changes in original operation {operation_id}; no automatic rollback."
+                "Resume only the approved host security changes in original operation {operation_id} (digest {original_plan_digest}); no automatic rollback."
             );
+            if let (Some(bundle), Some(digest)) = (bootstrap, bootstrap_manifest_digest) {
+                println!(
+                    "Recovery bootstrap bundle: {}",
+                    bundle.display().to_string().escape_default()
+                );
+                println!("Bound manifest digest: {digest}");
+                println!("Candidate accepted: {candidate_accepted}");
+            }
         }
         HostAction::WipeBoard { expected_state, .. } => {
             println!(
@@ -1443,6 +1474,9 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             candidate_accepted: true,
             ..
         } | HostAction::FirmwareFirstInstall {
+            candidate_accepted: true,
+            ..
+        } | HostAction::HostSecurityRecovery {
             candidate_accepted: true,
             ..
         }
@@ -1551,6 +1585,12 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             bootstrap_manifest_digest: Some(digest),
             candidate_accepted,
             ..
+        }
+        | HostAction::HostSecurityRecovery {
+            bootstrap: Some(bundle),
+            bootstrap_manifest_digest: Some(digest),
+            candidate_accepted,
+            ..
         } => {
             let verified = super::release::verify_bundle(
                 bundle,
@@ -1586,6 +1626,9 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
                 ..
             } => trusted_recovery_manager(operation_id, original_plan_digest)?,
             HostAction::UninstallRecovery {
+                bootstrap: Some(_), ..
+            }
+            | HostAction::HostSecurityRecovery {
                 bootstrap: Some(_), ..
             } => {
                 verify_running_manager(
@@ -1693,6 +1736,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     if let HostAction::HostSecurityRecovery {
         operation_id,
         original_plan_digest,
+        ..
     } = &plan.action
     {
         check_other_pending_records(&store, &plan.action)?;
@@ -7450,6 +7494,7 @@ fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) ->
         HostAction::HostSecurityRecovery {
             operation_id,
             original_plan_digest,
+            ..
         } => {
             record.action == "host-security"
                 && record.operation_id.to_string() == *operation_id
@@ -7505,6 +7550,82 @@ fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) ->
         }
         _ => false,
     })
+}
+
+#[test]
+fn security_recovery_bootstrap_requires_bound_pair_and_preserves_legacy_digest() {
+    let legacy = r#"{"action":"host_security_recovery","operation_id":"00000000000000000000000000000000","original_plan_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+    let action: HostAction = serde_json::from_str(legacy).unwrap();
+    assert_eq!(serde_json::to_string(&action).unwrap(), legacy);
+    let id = "0123456789abcdef0123456789abcdef";
+    let old = Sha256::digest(format!("[1,\"{id}\",{legacy}]").as_bytes());
+    assert_eq!(plan_digest(id, &action).unwrap(), format!("{old:x}"));
+    assert!(HostPlan::new(action).unwrap().validate().is_ok());
+    for (bootstrap, digest, candidate, valid) in [
+        (
+            Some("/tmp/bundle"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            true,
+            true,
+        ),
+        (Some("/tmp/bundle"), None, false, false),
+        (
+            None,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            false,
+            false,
+        ),
+        (None, None, true, false),
+        (
+            Some("relative"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            false,
+            false,
+        ),
+        (Some("/tmp/bundle"), Some("invalid"), false, false),
+    ] {
+        let action = HostAction::HostSecurityRecovery {
+            operation_id: "00000000000000000000000000000000".into(),
+            original_plan_digest:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            bootstrap: bootstrap.map(PathBuf::from),
+            bootstrap_manifest_digest: digest.map(str::to_owned),
+            candidate_accepted: candidate,
+        };
+        assert_eq!(HostPlan::new(action).unwrap().validate().is_ok(), valid);
+    }
+}
+
+#[test]
+fn security_recovery_gate_binds_original_id_digest_and_action() {
+    let plan = HostPlan::new(HostAction::Service {
+        operation: ServiceAction::Stop,
+        expected_state: "inactive".into(),
+    })
+    .unwrap();
+    let mut record = host_record(&plan, None).unwrap();
+    record.action = "host-security".into();
+    let action = HostAction::HostSecurityRecovery {
+        operation_id: record.operation_id.to_string(),
+        original_plan_digest: record.plan_digest.to_string(),
+        bootstrap: Some(PathBuf::from("/tmp/bundle")),
+        bootstrap_manifest_digest: Some("a".repeat(64)),
+        candidate_accepted: true,
+    };
+    assert!(original_recovery_permits(&action, &record).unwrap());
+    record.operation_id = OperationId::from_bytes([0xff; 16]);
+    assert!(!original_recovery_permits(&action, &record).unwrap());
+    record.operation_id = match &action {
+        HostAction::HostSecurityRecovery { operation_id, .. } => {
+            OperationId::parse_hex(operation_id).unwrap()
+        }
+        _ => unreachable!(),
+    };
+    record.plan_digest = Digest32::parse_hex(&"b".repeat(64)).unwrap();
+    assert!(!original_recovery_permits(&action, &record).unwrap());
+    record.plan_digest = Digest32::parse_hex(&plan.approved_digest).unwrap();
+    record.action = "uninstall".into();
+    assert!(!original_recovery_permits(&action, &record).unwrap());
 }
 
 #[test]
