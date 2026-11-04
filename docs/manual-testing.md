@@ -590,6 +590,7 @@ Manual testing is complete only for the paths actually exercised. Release accept
 | Existing external files/account/group | Use a clean disposable managed host or an explicitly reviewed owner migration; no blind deletion/adoption |
 | RC.15 fresh install reports `No such file or directory` after plan approval, with the service group absent | RC.15 incorrectly treats NSS `ENOENT` for an absent group as fatal. Use a newly signed release containing the group-lookup fix; do not pre-create the group, alter NSS configuration or patch authenticated release files |
 | Socket permission denied after group change | New login/session, verify ownership/membership; no chmod 777 |
+| RC.18 Setup reports `Permission denied (os error 13)` after the commissioning service started successfully | The wizard incorrectly inspected the protected daemon process as the login user. Use the corrected wizard, which obtains read-only, serial-bound admission through the installed privileged helper. Authenticate sudo when prompted; do not relax ptrace/procfs protections, run the entire UI as root, or restart/reconcile an already-completed service-start record |
 | Config valid but pool lacks context | Add the exact live binding to startup config, validate/restart; verify trusted genesis/time |
 | Active swap / MemoryProtection | Correct the actual dedicated-host policy before secret interaction; never disable the check |
 | Missing output after mutation | Inspect/reconcile the original receipt; do not submit another mutation |
