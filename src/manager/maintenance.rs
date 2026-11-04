@@ -17,6 +17,18 @@ pub struct Evidence {
     pub pools: Vec<Value>,
 }
 
+/// Exact host configuration and public observations from the sole authenticated daemon.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WipeEvidence {
+    pub config_sha256: String,
+    pub state_directory: std::path::PathBuf,
+    pub device_info: Value,
+    pub security: Value,
+    pub inventory: Value,
+    pub status: Value,
+}
+
 fn request(
     socket: &Path,
     pid: u32,

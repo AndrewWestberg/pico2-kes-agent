@@ -1,6 +1,6 @@
 use super::{
     foreground, review, setup,
-    widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
+    widgets::{ConfirmMode, review_mode},
 };
 use crate::{
     files,
@@ -13,8 +13,8 @@ use crate::{
     },
 };
 use std::{
-    io,
-    path::{Path, PathBuf},
+    io::{self, Read},
+    path::Path,
     process::Command,
 };
 
@@ -23,21 +23,14 @@ pub(super) enum Action {
     Start,
     Stop,
     Restart,
-    Configuration,
     Edit,
     Diagnostics,
     Export,
-    Inspect,
-    Reconcile,
 }
 pub(super) const ACTIONS: &[(Action, &str)] = &[
     (Action::Start, "Start managed agent"),
     (Action::Stop, "Stop managed agent"),
     (Action::Restart, "Restart managed agent"),
-    (
-        Action::Configuration,
-        "Build or install configuration candidate",
-    ),
     (
         Action::Edit,
         "Edit configuration candidate in /usr/bin/editor",
@@ -49,14 +42,6 @@ pub(super) const ACTIONS: &[(Action, &str)] = &[
     (
         Action::Export,
         "Export public diagnostics to a protected file",
-    ),
-    (
-        Action::Inspect,
-        "Inspect original host plan and actual state",
-    ),
-    (
-        Action::Reconcile,
-        "Reconcile original service/configuration record",
     ),
 ];
 
@@ -77,7 +62,7 @@ pub(super) fn reconcile_record(
         terminal,
         "Read-only host reconciliation",
         lines,
-        ConfirmMode::Enter("stage read-only reconciliation plan"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }
@@ -123,43 +108,9 @@ pub(super) fn run(
                 None,
             )
         }
-        Action::Configuration => {
-            let Some(candidate) = setup::guided_normal_candidate(terminal)? else {
-                return Ok(());
-            };
-            setup::configuration(terminal, worker, socket, false, candidate)
-        }
         Action::Edit => {
-            let suggested =
-                workspace::next_path(WorkspaceKind::Candidates, "edited-config", "json")?
-                    .to_string_lossy()
-                    .into_owned();
-            let mode_opts = [
-                ("normal", "Validate edited file as normal pinned config"),
-                (
-                    "commissioning",
-                    "Validate edited file as commissioning config",
-                ),
-            ];
-            let specs = [
-                FieldSpec::text("New candidate config path", &suggested),
-                FieldSpec::select("Validation mode after editing", "normal", &mode_opts),
-            ];
-            let Some((candidate, commissioning)) = form_validated(
-                terminal,
-                "Edit public configuration candidate",
-                &specs,
-                |values| {
-                    let p = PathBuf::from(values[0].trim());
-                    if !p.is_absolute() {
-                        return Err((Some(0), "Candidate path must be absolute".into()));
-                    }
-                    Ok((p, values[1] == "commissioning"))
-                },
-            )?
-            else {
-                return Ok(());
-            };
+            let candidate =
+                workspace::next_path(WorkspaceKind::Candidates, "edited-config", "json")?;
             let seed_bytes = match crate::manager::setup::current_config_review()? {
                 Some((_, bytes)) => bytes,
                 None => {
@@ -181,7 +132,7 @@ pub(super) fn run(
                     "Working /etc/pico2-kes-agent/config.json is untouched while editing.".into(),
                     "Never enter private keys or passphrases in configuration files.".into(),
                 ],
-                ConfirmMode::Enter("create candidate & open /usr/bin/editor"),
+                ConfirmMode::YesNo { danger: false },
             )? {
                 return Ok(());
             }
@@ -199,6 +150,22 @@ pub(super) fn run(
                     candidate.display()
                 )));
             }
+            let mut edited = Vec::new();
+            files::open_owner_controlled_file(&candidate)?
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut edited)?;
+            if edited.len() > 1024 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Edited configuration exceeds 1 MiB",
+                ));
+            }
+            let json: serde_json::Value =
+                serde_json::from_slice(&edited).map_err(io::Error::other)?;
+            let commissioning = json
+                .pointer("/device/id")
+                .and_then(serde_json::Value::as_str)
+                .is_none();
             setup::configuration(terminal, worker, socket, commissioning, candidate)
         }
         Action::Diagnostics => {
@@ -208,27 +175,10 @@ pub(super) fn run(
                 String::new(),
             ];
             lines.extend(diagnostics.lines().map(str::to_owned));
-            review(terminal, "Public diagnostics", lines, None).map(|_| ())
+            review(terminal, "Public diagnostics", lines).map(|_| ())
         }
         Action::Export => {
-            let suggested = workspace::next_path(WorkspaceKind::Exports, "diagnostics", "txt")?
-                .to_string_lossy()
-                .into_owned();
-            let specs = [FieldSpec::text(
-                "New protected diagnostics output path (0600, no overwrite)",
-                &suggested,
-            )];
-            let Some(destination) =
-                form_validated(terminal, "Export public diagnostics", &specs, |values| {
-                    let p = PathBuf::from(values[0].trim());
-                    if !p.is_absolute() {
-                        return Err((Some(0), "Destination path must be absolute".into()));
-                    }
-                    Ok(p)
-                })?
-            else {
-                return Ok(());
-            };
+            let destination = workspace::next_path(WorkspaceKind::Exports, "diagnostics", "txt")?;
             if !review_mode(
                 terminal,
                 "Review diagnostic export",
@@ -237,7 +187,7 @@ pub(super) fn run(
                     "Only bounded, escaped public observation metadata is exported. Review paths and pool IDs before sharing externally."
                         .into(),
                 ],
-                ConfirmMode::Enter("write diagnostic export"),
+                ConfirmMode::YesNo { danger: false },
             )? {
                 return Ok(());
             }
@@ -246,43 +196,8 @@ pub(super) fn run(
                 terminal,
                 "Diagnostic export published",
                 vec![format!("Exported to {}", destination.display())],
-                None,
             )
             .map(|_| ())
         }
-        Action::Reconcile => {
-            let specs = [
-                FieldSpec::text("Original maintenance operation ID (32 hex)", ""),
-                FieldSpec::text("Original approved plan digest (64 hex)", ""),
-            ];
-            let Some((op_id, digest)) = form_validated(
-                terminal,
-                "Original service/configuration operation",
-                &specs,
-                |values| {
-                    let op = values[0].trim();
-                    let dg = values[1].trim();
-                    if op.len() != 32 || !op.bytes().all(|b| b.is_ascii_hexdigit()) {
-                        return Err((Some(0), "Operation ID must be 32 hex characters".into()));
-                    }
-                    if dg.len() != 64 || !dg.bytes().all(|b| b.is_ascii_hexdigit()) {
-                        return Err((Some(1), "Plan digest must be 64 hex characters".into()));
-                    }
-                    Ok((op.to_owned(), dg.to_owned()))
-                },
-            )?
-            else {
-                return Ok(());
-            };
-            reconcile_record(terminal, worker, socket, op_id, digest)
-        }
-        Action::Inspect => setup::run(
-            1,
-            terminal,
-            worker,
-            crate::manager::model::InstallationRole::Primary,
-            socket,
-            None,
-        ),
     }
 }

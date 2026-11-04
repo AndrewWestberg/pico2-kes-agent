@@ -11,10 +11,6 @@ pub(super) enum View {
     Host,
     Releases,
     Activity,
-    ActivityManual,
-    Setup,
-    SetupExisting,
-    SetupNew,
     DeviceSecurity,
     ProducerHardening,
     Recipients,
@@ -34,10 +30,6 @@ impl View {
             Self::Host => "Host",
             Self::Releases => "Software",
             Self::Activity => "Activity",
-            Self::ActivityManual => "Activity / Manual Recovery",
-            Self::Setup => "Guided Setup",
-            Self::SetupExisting => "Setup / Existing Pico 2",
-            Self::SetupNew => "Setup / Blank Pico 2",
             Self::DeviceSecurity => "Device / OTP Security",
             Self::ProducerHardening => "Host / Producer Hardening",
             Self::Recipients => "Recipients",
@@ -51,10 +43,7 @@ impl View {
         match self {
             Self::Details | Self::PoolActions => Self::Pools,
             Self::DeviceSecurity => Self::Device,
-            Self::Setup | Self::SetupExisting | Self::SetupNew | Self::ProducerHardening => {
-                Self::Host
-            }
-            Self::ActivityManual => Self::Activity,
+            Self::ProducerHardening => Self::Host,
             _ => self,
         }
     }
@@ -85,9 +74,11 @@ pub(super) fn roots(role: InstallationRole) -> &'static [View] {
 pub(super) enum Action {
     Open(View),
     Setup(usize),
+    SetupWizard,
+    AddPool,
+    RotateKes,
     Release(releases::Action),
     Lifecycle(usize),
-    BindSelectedPool,
     Service(usize),
     Security(usize),
     Producer(usize),
@@ -134,81 +125,8 @@ pub(super) fn entries(view: View, role: InstallationRole) -> Vec<Entry> {
     use View as V;
     let primary = role == InstallationRole::Primary;
     match view {
-        V::Setup => vec![
-            Entry::new(
-                "Set up a new blank Pico 2 (step-by-step commissioning)",
-                A::Open(V::SetupNew),
-            ),
-            Entry::new(
-                "Connect an existing commissioned Pico 2 (preserve state)",
-                A::Open(V::SetupExisting),
-            ),
-            Entry::new("Inspect raw host & USB evidence", A::Open(V::Evidence)),
-        ],
-        V::SetupExisting => vec![
-            setup_step(
-                setup::Action::NormalConfig,
-                "1. Build or import normal pinned configuration",
-            ),
-            setup_step(
-                setup::Action::StartNormal,
-                "2. Start normal pico2-kes-agentd service",
-            ),
-            Entry::new(
-                "3. Edit configuration candidate in /usr/bin/editor (optional)",
-                A::Service(
-                    service::ACTIONS
-                        .iter()
-                        .position(|(a, _)| matches!(a, service::Action::Edit))
-                        .unwrap(),
-                ),
-            ),
-            Entry::new("4. Open Pools to verify & bind sockets", A::Open(V::Pools)),
-        ],
-        V::SetupNew => vec![
-            setup_step(
-                setup::Action::FirstInstall,
-                "1. Flash factory firmware (BOOTSEL only; skip if app installed)",
-            ),
-            setup_step(
-                setup::Action::CommissionConfig,
-                "2. Build & install commissioning configuration",
-            ),
-            setup_step(
-                setup::Action::StartCommission,
-                "3. Start restricted commissioning service",
-            ),
-            Entry::new(
-                "   [Optional] Device security / OTP stages",
-                A::Open(V::DeviceSecurity),
-            ),
-            setup_step(
-                setup::Action::Commission,
-                "4. Commission blank Pico 2 (exports device.json)",
-            ),
-            setup_step(
-                setup::Action::StopCommission,
-                "5. Stop restricted commissioning service",
-            ),
-            setup_step(
-                setup::Action::NormalConfig,
-                "6. Build & install normal pinned configuration",
-            ),
-            setup_step(
-                setup::Action::StartNormal,
-                "7. Start normal pico2-kes-agentd service",
-            ),
-            Entry::new(
-                "8. Install HPKE backup recipient & enroll first pool",
-                A::Open(V::PoolActions),
-            ),
-            Entry::new(
-                "   Interrupted step? Open Activity & Original Records",
-                A::Open(V::Activity),
-            ),
-        ],
         V::Device => vec![
-            Entry::new("Guided device setup (blank or existing)", A::Open(V::Setup)),
+            Entry::new("Set up my Pico 2", A::SetupWizard),
             Entry::new(
                 "Preview firmware transfer (read-only)",
                 A::Release(releases::Action::FirmwarePreview),
@@ -223,21 +141,11 @@ pub(super) fn entries(view: View, role: InstallationRole) -> Vec<Entry> {
             ),
         ],
         V::Host => {
-            let mut entries = vec![Entry::new("Guided setup checklist", A::Open(V::Setup))];
+            let mut entries = vec![Entry::new("Set up my Pico 2", A::SetupWizard)];
             entries.extend(
                 service::ACTIONS
                     .iter()
                     .enumerate()
-                    .filter(|(_, (a, _))| {
-                        matches!(
-                            a,
-                            service::Action::Start
-                                | service::Action::Stop
-                                | service::Action::Restart
-                                | service::Action::Configuration
-                                | service::Action::Edit
-                        )
-                    })
                     .map(|(i, (_, label))| Entry::new(label, A::Service(i))),
             );
             entries.push(Entry::new(
@@ -247,22 +155,15 @@ pub(super) fn entries(view: View, role: InstallationRole) -> Vec<Entry> {
             entries
         }
         V::Details => vec![
-            lifecycle_entry(lifecycle::Action::Generate),
-            lifecycle_entry(lifecycle::Action::VerificationKey),
+            Entry::new("Rotate KES key", A::RotateKes),
             lifecycle_entry(lifecycle::Action::Artifact),
-            lifecycle_entry(lifecycle::Action::Certificate),
-            Entry::new(
-                "Bind pool in host config.json (and restart agentd)",
-                A::BindSelectedPool,
-            ),
-            lifecycle_entry(lifecycle::Action::Detail),
+            lifecycle_entry(lifecycle::Action::Recipient),
             lifecycle_entry(lifecycle::Action::Discard),
             lifecycle_entry(lifecycle::Action::Delete),
         ],
         V::PoolActions => vec![
-            lifecycle_entry(lifecycle::Action::Enroll),
+            Entry::new("Add a pool", A::AddPool),
             lifecycle_entry(lifecycle::Action::Recipient),
-            lifecycle_entry(lifecycle::Action::List),
         ],
         V::Releases => {
             let actions = if primary {
@@ -295,63 +196,6 @@ pub(super) fn entries(view: View, role: InstallationRole) -> Vec<Entry> {
                 "Uninstall managed components (advanced)",
                 A::Uninstall,
             ));
-            entries
-        }
-        V::ActivityManual => {
-            let mut entries = vec![
-                setup_step(
-                    setup::Action::InspectPlan,
-                    "Inspect original host plan file (read-only)",
-                ),
-                Entry::new(
-                    "Recover original host component update",
-                    A::Release(releases::Action::Fallback),
-                ),
-            ];
-            if primary {
-                entries.extend(
-                    service::ACTIONS
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (a, _))| {
-                            matches!(
-                                a,
-                                service::Action::Diagnostics
-                                    | service::Action::Export
-                                    | service::Action::Inspect
-                                    | service::Action::Reconcile
-                            )
-                        })
-                        .map(|(i, (_, label))| Entry::new(label, A::Service(i))),
-                );
-                entries.extend(
-                    lifecycle::ACTIONS
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (a, _))| {
-                            matches!(
-                                a,
-                                lifecycle::Action::Receipts | lifecycle::Action::Reconcile
-                            )
-                        })
-                        .map(|(i, (_, label))| Entry::new(label, A::Lifecycle(i))),
-                );
-                entries.push(Entry::new(
-                    "Recover original firmware update by ID",
-                    A::Release(releases::Action::RecoverFirmware),
-                ));
-                entries.push(setup_step(
-                    setup::Action::ReconcileFirstInstall,
-                    "Associate & reconcile original first firmware install",
-                ));
-                entries.extend(
-                    producer::ACTIONS
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (a, _))| matches!(a, producer::Action::Recover))
-                        .map(|(i, (_, label))| Entry::new(label, A::Producer(i))),
-                );
-            }
             entries
         }
         V::DeviceSecurity => provisioning::ACTIONS

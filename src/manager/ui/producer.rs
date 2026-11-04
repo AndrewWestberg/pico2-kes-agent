@@ -16,12 +16,9 @@ use std::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Install,
-    Recover,
 }
-pub(super) const ACTIONS: &[(Action, &str)] = &[
-    (Action::Install, "Install producer memory hardening drop-in"),
-    (Action::Recover, "Recover original producer batch"),
-];
+pub(super) const ACTIONS: &[(Action, &str)] =
+    &[(Action::Install, "Install producer memory hardening drop-in")];
 
 pub(super) fn recover_record(
     terminal: &mut TerminalOwner,
@@ -35,7 +32,7 @@ pub(super) fn recover_record(
         terminal,
         "Recover original producer batch",
         reviewed.lines,
-        ConfirmMode::Enter("stage producer recovery plan"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }
@@ -55,38 +52,20 @@ pub(super) fn run(
             "invalid producer action",
         ));
     }
-    if ACTIONS[action].0 == Action::Recover {
-        let specs = [
-            FieldSpec::text("Original maintenance operation ID (32 hex)", ""),
-            FieldSpec::text("Original approved plan digest (64 hex)", ""),
-        ];
-        let Some((op_id, digest)) =
-            form_validated(terminal, "Original producer operation", &specs, |values| {
-                let op = values[0].trim();
-                let dg = values[1].trim();
-                if op.len() != 32 || !op.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err((Some(0), "Operation ID must be 32 hex characters".into()));
-                }
-                if dg.len() != 64 || !dg.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err((Some(1), "Plan digest must be 64 hex characters".into()));
-                }
-                Ok((op.to_owned(), dg.to_owned()))
-            })?
-        else {
-            return Ok(());
-        };
-        return recover_record(terminal, worker, socket, &op_id, &digest);
-    }
     let restart_opts = [
         ("no", "Do not restart running producer units now"),
         ("yes", "Restart running producer units after daemon-reload"),
     ];
+    let nodes = crate::manager::discovery::node::discover_nodes();
+    let options: Vec<(&str, &str)> = nodes.iter().map(|n| (n.unit.as_str(), "")).collect();
+    if options.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "No Cardano node service units discovered",
+        ));
+    }
     let specs = [
-        FieldSpec::text_hint(
-            "Concrete producer .service names (space-separated, max 64)",
-            "cardano-node.service",
-            "Only systemd memory-hardening drop-ins are installed; node configs are never touched",
-        ),
+        FieldSpec::multiselect("Producer units", "", &options),
         FieldSpec::select(
             "Restart currently active units after installing drop-in",
             "no",
@@ -95,7 +74,7 @@ pub(super) fn run(
     ];
     let Some((mut request, approve_restart)) =
         form_validated(terminal, "Producer memory hardening", &specs, |values| {
-            let names: Vec<_> = values[0].split_whitespace().collect();
+            let names: Vec<_> = values[0].split(',').filter(|s| !s.is_empty()).collect();
             let req = Request {
                 policy_sha256: producer::policy_sha256(),
                 targets: names
@@ -146,7 +125,7 @@ pub(super) fn run(
         terminal,
         "Review producer memory hardening",
         lines,
-        ConfirmMode::Enter("approve drop-in batch & stage host plan"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }

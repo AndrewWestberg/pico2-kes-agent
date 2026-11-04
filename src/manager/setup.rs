@@ -22,6 +22,24 @@ pub struct PublicInput {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenesisImport {
+    pub source: PublicInput,
+    pub dest: PathBuf,
+}
+
+pub fn valid_genesis_destination(path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix("/etc/pico2-kes-agent/genesis") else {
+        return false;
+    };
+    let parts: Vec<_> = relative.components().collect();
+    parts.len() == 2
+        && parts
+            .iter()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
 /// Exact public input and provenance shown to the operator before approval.
 #[derive(Clone, Debug)]
 pub struct ConfigReview {
@@ -57,19 +75,53 @@ fn read_config(path: &Path) -> io::Result<Vec<u8>> {
 /// Validate explicit configuration using the existing daemon parser, without
 /// changing working configuration or inventing network or device inputs.
 pub fn review_config(path: &Path, mode: RunMode) -> io::Result<ConfigReview> {
+    review_config_with_imports(path, mode, &[])
+}
+
+pub fn review_config_with_imports(
+    path: &Path,
+    mode: RunMode,
+    imports: &[GenesisImport],
+) -> io::Result<ConfigReview> {
     let bytes = read_config(path)?;
-    let validation = match Config::from_bytes(&bytes, mode) {
-        Ok(_) => "validated as invoking user; service identity will revalidate before replacement"
-            .to_owned(),
-        Err(crate::config::Error::Invalid("directory ownership or permissions are unsafe")) => {
-            "service-identity validation required; invoking user does not own daemon directories"
-                .to_owned()
+    let mut validation_config: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if validation_config.get("networks").is_none() && imports.is_empty() {
+        validation_config["networks"] = serde_json::json!({});
+    }
+    let networks = validation_config["networks"]
+        .as_object_mut()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing explicit networks"))?;
+    for import in imports {
+        if !valid_genesis_destination(&import.dest)
+            || review_public_input(&import.source.path)? != import.source
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid genesis import",
+            ));
         }
-        Err(crate::config::Error::Io(error)) if error.kind() == io::ErrorKind::PermissionDenied => {
-            "service-identity validation required; invoking user lacks access".to_owned()
+        let mut used = false;
+        for network in networks.values_mut() {
+            for field in ["byron_genesis_file", "shelley_genesis_file"] {
+                if network[field].as_str().map(Path::new) == Some(import.dest.as_path()) {
+                    network[field] = import.source.path.to_string_lossy().into_owned().into();
+                    used = true;
+                }
+            }
         }
-        Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
-    };
+        if !used {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unused genesis import",
+            ));
+        }
+    }
+    let validation_bytes = serde_json::to_vec(&validation_config).map_err(io::Error::other)?;
+    Config::inspect_bytes(&validation_bytes, mode).map_err(io::Error::other)?;
+    let validation =
+        "public configuration validated; root helper must validate runtime ownership and permissions as the service user before replacement"
+            .to_owned();
     if read_config(path)? != bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -78,7 +130,7 @@ pub fn review_config(path: &Path, mode: RunMode) -> io::Result<ConfigReview> {
     }
     let digest = Sha256::digest(&bytes);
     let sha256 = digest.iter().map(|b| format!("{b:02x}")).collect();
-    let inputs = config_inputs(&bytes)?;
+    let inputs = config_inputs_with_imports(&bytes, imports)?;
     Ok(ConfigReview {
         source: path.to_path_buf(),
         sha256,
@@ -150,7 +202,7 @@ pub(super) fn apply_configuration(
     digest: &str,
     previous: Option<&str>,
     commissioning: bool,
-    inputs: &[PublicInput],
+    (inputs, imports): (&[PublicInput], &[GenesisImport]),
     effects: &mut bool,
     runtime_created: &mut bool,
 ) -> io::Result<()> {
@@ -161,13 +213,12 @@ pub(super) fn apply_configuration(
             "candidate changed after review",
         ));
     }
-    if config_inputs(&bytes)? != inputs {
+    if config_inputs_with_imports(&bytes, imports)? != inputs {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "public genesis inputs changed after review",
         ));
     }
-    super::host::validate_service_input_visibility(inputs)?;
     let (_, gid) = service_identity()?;
     let dir = Path::new("/etc/pico2-kes-agent");
     super::host::trusted_ancestry(&dir.join("config.json"))?;
@@ -201,6 +252,14 @@ pub(super) fn apply_configuration(
         Err(error) if error.kind() == io::ErrorKind::NotFound && previous.is_none() => None,
         Err(error) => return Err(error),
     };
+    import_genesis(imports, effects)?;
+    if config_inputs(&bytes)? != inputs {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "imported genesis differs from reviewed input",
+        ));
+    }
+    super::host::validate_service_input_visibility(inputs)?;
     *runtime_created = super::host::ensure_service_runtime(effects)?;
     let name = format!(".p2kesup-candidate-{}", std::process::id());
     let temporary = dir.join(&name);
@@ -584,25 +643,109 @@ pub fn verify_public_inputs(inputs: &[PublicInput]) -> io::Result<()> {
     Ok(())
 }
 
-fn config_inputs(bytes: &[u8]) -> io::Result<Vec<PublicInput>> {
+fn config_inputs_with_imports(
+    bytes: &[u8],
+    imports: &[GenesisImport],
+) -> io::Result<Vec<PublicInput>> {
     let config: serde_json::Value = serde_json::from_slice(bytes).map_err(io::Error::other)?;
-    let networks = config
-        .get("networks")
-        .and_then(serde_json::Value::as_object)
+    if config.get("networks").is_none() && imports.is_empty() {
+        return Ok(Vec::new());
+    }
+    let networks = config["networks"]
+        .as_object()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing explicit networks"))?;
     let mut paths = std::collections::BTreeSet::new();
     for network in networks.values() {
         for field in ["byron_genesis_file", "shelley_genesis_file"] {
-            let path = network
-                .get(field)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing explicit genesis path")
-                })?;
-            paths.insert(PathBuf::from(path));
+            paths.insert(PathBuf::from(network[field].as_str().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing explicit genesis path")
+            })?));
         }
     }
-    paths.iter().map(|path| review_public_input(path)).collect()
+    if imports
+        .iter()
+        .any(|i| !valid_genesis_destination(&i.dest) || !paths.contains(&i.dest))
+        || imports
+            .iter()
+            .enumerate()
+            .any(|(n, i)| imports[..n].iter().any(|j| j.dest == i.dest))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid or duplicate genesis import",
+        ));
+    }
+    paths
+        .iter()
+        .map(|path| match imports.iter().find(|i| &i.dest == path) {
+            Some(i) => {
+                if review_public_input(&i.source.path)? != i.source {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "genesis source changed",
+                    ));
+                }
+                Ok(PublicInput {
+                    path: path.clone(),
+                    sha256: i.source.sha256.clone(),
+                })
+            }
+            None => review_public_input(path),
+        })
+        .collect()
+}
+
+fn import_genesis(imports: &[GenesisImport], effects: &mut bool) -> io::Result<()> {
+    for import in imports {
+        if !valid_genesis_destination(&import.dest)
+            || review_public_input(&import.source.path)? != import.source
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "invalid genesis import",
+            ));
+        }
+        let root = Path::new("/etc/pico2-kes-agent/genesis");
+        super::host::root_directory(root, 0o755)?;
+        let dir = import.dest.parent().unwrap();
+        super::host::root_directory(dir, 0o755)?;
+        let source = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&import.source.path)?;
+        let mut bytes = Vec::new();
+        source.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 16 * 1024 * 1024 || hash(&bytes) != import.source.sha256 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "genesis source changed during import",
+            ));
+        }
+        *effects = true;
+        match crate::files::publish_no_clobber(&import.dest, &bytes, 0o644) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = fs::symlink_metadata(&import.dest)?;
+        if !metadata.is_file()
+            || metadata.uid() != 0
+            || metadata.mode() & 0o7777 != 0o644
+            || metadata.nlink() != 1
+            || review_public_input(&import.dest)?.sha256 != import.source.sha256
+            || review_public_input(&import.source.path)? != import.source
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "genesis destination or source differs from review",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn config_inputs(bytes: &[u8]) -> io::Result<Vec<PublicInput>> {
+    config_inputs_with_imports(bytes, &[])
 }
 
 /// Resolve the restricted daemon's configured socket without trusting a UI path.
@@ -678,5 +821,43 @@ mod socket_tests {
         config["device"]["id"] = "11".repeat(16).into();
         config["device"]["identity_public_key"] = "22".repeat(32).into();
         assert!(require_default_socket(&config).is_err());
+    }
+}
+
+#[cfg(test)]
+mod genesis_import_tests {
+    use super::*;
+
+    #[test]
+    fn import_destination_is_confined_to_network_directory() {
+        assert!(valid_genesis_destination(Path::new(
+            "/etc/pico2-kes-agent/genesis/preprod/byron.json"
+        )));
+        for path in [
+            "/etc/pico2-kes-agent/genesis/byron.json",
+            "/etc/pico2-kes-agent/genesis/../config.json",
+            "/tmp/preprod/byron.json",
+            "/etc/pico2-kes-agent/genesis/net/sub/file.json",
+        ] {
+            assert!(!valid_genesis_destination(Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn import_inputs_bind_source_digest_and_destination() {
+        let source =
+            std::env::temp_dir().join(format!("p2kesup-genesis-test-{}", std::process::id()));
+        fs::write(&source, b"original").unwrap();
+        let dest = PathBuf::from("/etc/pico2-kes-agent/genesis/test/byron.json");
+        let import = GenesisImport {
+            source: review_public_input(&source).unwrap(),
+            dest: dest.clone(),
+        };
+        let config = serde_json::to_vec(&serde_json::json!({"networks":{"test":{"byron_genesis_file":dest,"shelley_genesis_file":dest}}})).unwrap();
+        let inputs = config_inputs_with_imports(&config, std::slice::from_ref(&import)).unwrap();
+        assert_eq!(inputs[0].sha256, import.source.sha256);
+        fs::write(&source, b"changed").unwrap();
+        assert!(config_inputs_with_imports(&config, std::slice::from_ref(&import)).is_err());
+        fs::remove_file(source).unwrap();
     }
 }

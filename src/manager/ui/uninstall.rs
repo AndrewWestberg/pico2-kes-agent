@@ -30,7 +30,7 @@ pub(super) fn recover_record(
         terminal,
         "Review original uninstall recovery",
         lines,
-        ConfirmMode::Enter("stage uninstall recovery plan"),
+        ConfirmMode::YesNo { danger: true },
     )? {
         return Ok(());
     }
@@ -60,12 +60,8 @@ pub(super) fn run(
     worker: &mut Option<Worker>,
     socket: &Path,
     role: InstallationRole,
-    selected_bundle: Option<&PathBuf>,
+    _selected_bundle: Option<&PathBuf>,
 ) -> io::Result<()> {
-    let mode_opts = [
-        ("new", "Select installed host components to remove"),
-        ("recover", "Reconcile an interrupted uninstall record"),
-    ];
     let stop_opts = if role == InstallationRole::Primary {
         &[
             ("no", "Do not stop running pico2-kes-agentd"),
@@ -74,77 +70,54 @@ pub(super) fn run(
     } else {
         &[("no", "Backup role has no agent service")][..]
     };
+    let components = [
+        ("manager", ""),
+        ("daemon", ""),
+        ("cli", ""),
+        ("firmware", ""),
+        ("tool", ""),
+        ("deployment", ""),
+    ];
     let specs = [
-        FieldSpec::select("Workflow", "new", &mode_opts),
-        FieldSpec::text_hint(
-            "Components to remove (comma-separated, for new workflow)",
+        FieldSpec::multiselect(
+            "Components to remove",
             "manager,daemon,cli,firmware,tool,deployment",
-            "Configuration, records, and Pico 2 storage are always preserved",
+            &components,
         ),
         FieldSpec::select("Stop affected agent service", "no", stop_opts),
-        FieldSpec::text_hint(
-            "Original operation ID (only for recover workflow)",
-            "",
-            "32 hex characters",
-        ),
-        FieldSpec::text_hint(
-            "Original approved plan digest (only for recover workflow)",
-            "",
-            "64 hex characters",
-        ),
     ];
-    enum Choice {
-        New(Box<uninstall::UninstallReview>),
-        Recover(String, String),
-    }
-    let Some(choice) =
+    let Some(checked) =
         form_validated(terminal, "Uninstall managed components", &specs, |values| {
-            if values[0] == "recover" {
-                let op = values[3].trim();
-                let dg = values[4].trim();
-                if op.len() != 32 || !op.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err((Some(3), "Operation ID must be 32 hex characters".into()));
-                }
-                if dg.len() != 64 || !dg.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err((Some(4), "Plan digest must be 64 hex characters".into()));
-                }
-                return Ok(Choice::Recover(op.to_owned(), dg.to_owned()));
-            }
-            let selected: Vec<String> = values[1]
+            let selected = values[0]
                 .split(',')
-                .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())
+                .map(str::to_owned)
                 .collect();
-            let stop = values[2] == "yes" && role == InstallationRole::Primary;
-            let checked = uninstall::review_uninstall(selected, stop)
-                .map_err(|e| (Some(1), e.to_string()))?;
-            Ok(Choice::New(Box::new(checked)))
+            uninstall::review_uninstall(
+                selected,
+                values[1] == "yes" && role == InstallationRole::Primary,
+            )
+            .map_err(|e| (Some(0), e.to_string()))
         })?
     else {
         return Ok(());
     };
-    match choice {
-        Choice::Recover(op, dg) => {
-            recover_record(terminal, worker, socket, selected_bundle, &op, &dg)
+    {
+        let mut lines = vec![
+            "Registered files and links to remove (modified/external files block removal):".into(),
+        ];
+        lines.extend(checked.details.iter().map(|l| format!("  Remove: {l}")));
+        lines.push(String::new());
+        lines.push("Preserved operational paths (never erased by uninstall):".into());
+        lines.extend(checked.retained.iter().map(|l| format!("  Retain: {l}")));
+        if !review_mode(
+            terminal,
+            "Review selected uninstall",
+            lines,
+            ConfirmMode::YesNo { danger: true },
+        )? {
+            return Ok(());
         }
-        Choice::New(checked) => {
-            let mut lines = vec![
-                "Registered files and links to remove (modified/external files block removal):"
-                    .into(),
-            ];
-            lines.extend(checked.details.iter().map(|l| format!("  Remove: {l}")));
-            lines.push(String::new());
-            lines.push("Preserved operational paths (never erased by uninstall):".into());
-            lines.extend(checked.retained.iter().map(|l| format!("  Retain: {l}")));
-            if !review_mode(
-                terminal,
-                "Review selected uninstall",
-                lines,
-                ConfirmMode::Enter("approve removal & stage host plan"),
-            )? {
-                return Ok(());
-            }
-            setup::apply(terminal, worker, socket, checked.action, None)
-        }
+        setup::apply(terminal, worker, socket, checked.action, None)
     }
 }

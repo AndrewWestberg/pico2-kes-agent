@@ -23,6 +23,7 @@ use std::{
 };
 
 mod upgrade;
+mod wipe;
 pub use upgrade::{
     review_upgrade_recovery, trusted_upgrade_recovery_manager, verify_installed_ownership,
 };
@@ -37,6 +38,15 @@ pub(super) fn read_confirmation(input: impl io::BufRead) -> io::Result<String> {
         ));
     }
     Ok(line)
+}
+pub(super) fn ask_yes_no(prompt: &str) -> io::Result<bool> {
+    print!("{prompt} [y/N] ");
+    io::stdout().flush()?;
+    Ok(confirmation_is_yes(&read_confirmation(io::stdin().lock())?))
+}
+
+fn confirmation_is_yes(answer: &str) -> bool {
+    matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -133,6 +143,8 @@ pub enum HostAction {
         expected_current_digest: Option<String>,
         commissioning: bool,
         inputs: Vec<super::setup::PublicInput>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        genesis_imports: Vec<super::setup::GenesisImport>,
         recovery_operation: Option<String>,
     },
     CommissionService {
@@ -143,6 +155,13 @@ pub enum HostAction {
     Service {
         operation: ServiceAction,
         expected_state: String,
+    },
+    HostSecurity {
+        request: super::host_security::Request,
+    },
+    HostSecurityRecovery {
+        operation_id: String,
+        original_plan_digest: String,
     },
     ReconcileFirstInstall {
         operation_id: String,
@@ -156,6 +175,14 @@ pub enum HostAction {
         serial: String,
         socket: PathBuf,
         expected_service_state: String,
+    },
+    WipeBoard {
+        serial: String,
+        expected_state: super::maintenance::WipeEvidence,
+    },
+    WipeRecovery {
+        operation_id: String,
+        original_plan_digest: String,
     },
     Provisioning {
         request: super::provisioning::Request,
@@ -222,9 +249,13 @@ impl HostAction {
                 operation: ServiceAction::Restart,
                 ..
             } => "service-restart",
+            Self::HostSecurity { .. } => "host-security",
+            Self::HostSecurityRecovery { .. } => "host-security-recovery",
             Self::ReconcileFirstInstall { .. } => "reconcile-first-install",
             Self::CommissionAdmission { .. } => "commission-admission",
             Self::Provisioning { .. } => "device-security",
+            Self::WipeBoard { .. } => "wipe-board",
+            Self::WipeRecovery { .. } => "wipe-recovery",
             Self::ProducerHardening { .. } => "producer-hardening",
             Self::ProducerRecovery { .. } => "producer-recovery",
             Self::HostReconcile { .. } => "host-reconcile",
@@ -288,6 +319,10 @@ impl HostAction {
             Self::Service { operation, .. } => {
                 format!("{operation:?} managed pico2-kes-agentd.service")
             }
+            Self::HostSecurity { .. } => "Configure approved host security prerequisites".into(),
+            Self::HostSecurityRecovery { operation_id, .. } => {
+                format!("Resume original host security operation {operation_id}")
+            }
             Self::ReconcileFirstInstall {
                 operation_id,
                 serial,
@@ -301,6 +336,12 @@ impl HostAction {
                     "Device security {:?} on board {}",
                     request.action, request.serial
                 )
+            }
+            Self::WipeBoard { serial, .. } => format!(
+                "DESTRUCTIVE: erase all pools and keys on board {serial}; archive host state"
+            ),
+            Self::WipeRecovery { operation_id, .. } => {
+                format!("Resume interrupted wipe {operation_id} forward only")
             }
             Self::ProducerHardening { request } => {
                 format!(
@@ -576,6 +617,7 @@ impl HostPlan {
                 candidate_digest,
                 expected_current_digest,
                 inputs,
+                genesis_imports,
                 commissioning,
                 recovery_operation,
             } => {
@@ -587,6 +629,12 @@ impl HostPlan {
                     && inputs
                         .iter()
                         .all(|i| i.path.is_absolute() && digest_ok(&i.sha256))
+                    && genesis_imports.len() <= 128
+                    && genesis_imports.iter().all(|i| {
+                        i.source.path.is_absolute()
+                            && digest_ok(&i.source.sha256)
+                            && super::setup::valid_genesis_destination(&i.dest)
+                    })
                     && recovery_operation
                         .as_ref()
                         .is_none_or(|id| *commissioning && id_ok(id))
@@ -606,6 +654,11 @@ impl HostPlan {
                     && expected_state.len() <= 512
                     && expected_state.bytes().all(|b| (32..127).contains(&b))
             }
+            HostAction::HostSecurity { request } => request.validate(),
+            HostAction::HostSecurityRecovery {
+                operation_id,
+                original_plan_digest,
+            } => id_ok(operation_id) && digest_ok(original_plan_digest),
             HostAction::ReconcileFirstInstall {
                 operation_id,
                 serial,
@@ -620,6 +673,14 @@ impl HostPlan {
                         .all(|b| (32..127).contains(&b))
             }
             HostAction::Provisioning { request } => request.validate().is_ok(),
+            HostAction::WipeBoard {
+                serial,
+                expected_state,
+            } => serial_ok(serial) && wipe::valid_evidence(serial, expected_state),
+            HostAction::WipeRecovery {
+                operation_id,
+                original_plan_digest,
+            } => id_ok(operation_id) && digest_ok(original_plan_digest),
             HostAction::ProducerHardening { request } => request.validate().is_ok(),
             HostAction::ProducerRecovery {
                 operation_id,
@@ -1049,6 +1110,9 @@ pub(super) fn run_service(
             "commissioning service must be stopped before normal startup",
         ));
     }
+    if running {
+        super::host_security::require_ready(false)?;
+    }
     let action = match operation {
         ServiceAction::Start => "start",
         ServiceAction::Stop => "stop",
@@ -1124,9 +1188,13 @@ fn host_record(plan: &HostPlan, previous: Option<String>) -> io::Result<Maintena
             HostAction::Config { .. } => "config",
             HostAction::CommissionService { .. } => "commission_service",
             HostAction::Service { .. } => "service",
+            HostAction::HostSecurity { .. } => "host-security",
+            HostAction::HostSecurityRecovery { .. } => "host-security-recovery",
             HostAction::ReconcileFirstInstall { .. } => "first_install_postcheck",
             HostAction::CommissionAdmission { .. } => "commission_admission",
             HostAction::Provisioning { .. } => "provisioning",
+            HostAction::WipeBoard { .. } => "wipe-board",
+            HostAction::WipeRecovery { .. } => "wipe-recovery",
             HostAction::ProducerHardening { .. } => "producer-hardening",
             HostAction::ProducerRecovery { .. } => "producer-recovery",
             HostAction::HostReconcile { .. } => "host-reconciliation",
@@ -1256,6 +1324,7 @@ pub(super) fn run_commission_service(
         ));
     }
     if start {
+        super::host_security::require_ready(true)?;
         if service_state("pico2-kes-agentd.service")? != "inactive" {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -1326,13 +1395,48 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         return Ok(());
     }
     println!("\n=== Privileged Host Maintenance Review ===");
-    println!("Summary: {}", plan.action.summary());
-    println!(
-        "Scope details:\n{}",
-        serde_json::to_string_pretty(&plan.action).map_err(io::Error::other)?
-    );
-    println!("\nApproval digest (copy the standalone 64-hex line below):");
-    println!("{}", plan.approved_digest);
+    println!("Summary: {}", plan.action.summary().escape_default());
+    match &plan.action {
+        HostAction::HostSecurity { request } => {
+            for line in request.lines() {
+                println!("{}", line.escape_default());
+            }
+        }
+        HostAction::HostSecurityRecovery { operation_id, .. } => {
+            println!(
+                "Resume only the approved host security changes in original operation {operation_id}; no automatic rollback."
+            );
+        }
+        HostAction::WipeBoard { expected_state, .. } => {
+            println!(
+                "All pools and KES keys on this board will be lost. Stop your block producers first; new operational certificates will be required."
+            );
+            if let Some(pools) = expected_state.inventory["pools"].as_array() {
+                for pool in pools {
+                    println!(
+                        "  Pool: {}",
+                        pool["pool_id"]
+                            .as_str()
+                            .unwrap_or("unavailable")
+                            .escape_default()
+                    );
+                }
+            }
+        }
+        HostAction::Config {
+            genesis_imports, ..
+        } => {
+            for import in genesis_imports {
+                println!(
+                    "  Copy public genesis {} to {}",
+                    import.source.path.display().to_string().escape_default(),
+                    import.dest.display().to_string().escape_default()
+                );
+            }
+        }
+        _ => {}
+    }
+    println!("Plan digest (for your records): {}", plan.approved_digest);
     if matches!(
         &plan.action,
         HostAction::Install {
@@ -1347,10 +1451,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             "Notice: explicit offline candidate acceptance on a disposable host (not release qualification)."
         );
     }
-    print!("Paste or type the digest above to approve this exact scope: ");
-    io::stdout().flush()?;
-    let answer = read_confirmation(io::stdin().lock())?;
-    if answer.trim() != plan.approved_digest {
+    if !ask_yes_no("Proceed with this change?")? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "host plan not approved",
@@ -1365,10 +1466,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         println!(
             "Confirm physically that application {serial} is the same intended board as original transfer {operation_id}; the BOOTSEL CHIPID is not an application identity."
         );
-        print!("Type the exact application serial to attest this association: ");
-        io::stdout().flush()?;
-        let physical = read_confirmation(io::stdin().lock())?;
-        if physical.trim() != serial {
+        if !ask_yes_no("Is this the same physical board?")? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "physical same-board association not confirmed",
@@ -1528,6 +1626,11 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         let original = original_first_install(&store, id)?;
         if !matches!(&plan.action, HostAction::ReconcileFirstInstall { .. })
             && original.original.outcome == "completed"
+            && original
+                .original
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.name == "application-blank-attended")
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -1582,6 +1685,18 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         && request.original_operation.is_some()
     {
         return recover_provisioning(&plan, &store);
+    }
+    if matches!(&plan.action, HostAction::WipeRecovery { .. }) {
+        check_other_pending_records(&store, &plan.action)?;
+        return wipe::recover(&plan, &store);
+    }
+    if let HostAction::HostSecurityRecovery {
+        operation_id,
+        original_plan_digest,
+    } = &plan.action
+    {
+        check_other_pending_records(&store, &plan.action)?;
+        return super::host_security::recover(operation_id, original_plan_digest, &store);
     }
     if let HostAction::ReconcileFirstInstall {
         operation_id,
@@ -1750,19 +1865,30 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     let mut effects = false;
     let mut runtime_created = false;
     let result = match &plan.action {
+        HostAction::HostSecurity { request } => {
+            super::host_security::apply(request, &store, &mut record, &mut effects)
+        }
+        HostAction::WipeBoard {
+            serial,
+            expected_state,
+        } => wipe::apply(serial, expected_state, &store, &mut record, &mut effects),
+        HostAction::WipeRecovery { .. } => {
+            unreachable!("wipe recovery returned before creating a record")
+        }
         HostAction::Config {
             candidate,
             candidate_digest,
             expected_current_digest,
             commissioning,
             inputs,
+            genesis_imports,
             ..
         } => super::setup::apply_configuration(
             candidate,
             candidate_digest,
             expected_current_digest.as_deref(),
             *commissioning,
-            inputs,
+            (inputs, genesis_imports),
             &mut effects,
             &mut runtime_created,
         )
@@ -1854,6 +1980,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         HostAction::HostReconcile { .. }
         | HostAction::UninstallRecovery { .. }
         | HostAction::UpgradeRecovery { .. }
+        | HostAction::HostSecurityRecovery { .. }
         | HostAction::ProducerRecovery { .. } => {
             unreachable!("original host recovery returned before creating a record")
         }
@@ -3111,11 +3238,15 @@ fn report_matching_plan(plan: &HostPlan, store: &RecordStore) -> io::Result<bool
         serde_json::to_string_pretty(&record).map_err(io::Error::other)?
     );
     let observation = match &plan.action {
+        HostAction::HostSecurity { .. } | HostAction::HostSecurityRecovery { .. } => {
+            Ok("Host security changes resume only from the original Activity record; no service start during inspection".into())
+        }
         HostAction::HostReconcile { operation_id, .. } => Ok(format!("read-only reconciliation refers to original host operation {operation_id}")),
         HostAction::UninstallRecovery { operation_id, .. } => Ok(format!("removal recovery refers to original operation {operation_id}; {}", installation_recovery_observation())),
         HostAction::Provisioning { request } => Ok(format!("original OTP record /var/lib/p2kesup/provisioning/{}.json; reopen through Device security; no stage replay", request.serial)),
         HostAction::ProducerHardening { .. } => Ok("producer file/command outcomes are retained in the original checkpoints; no producer query or restart during inspection".into()),
         HostAction::ProducerRecovery { operation_id, .. } => Ok(format!("producer recovery refers to original operation {operation_id}; original approvals and partial outcomes remain authoritative")),
+        HostAction::WipeBoard { .. } | HostAction::WipeRecovery { .. } => Ok("Wipe resumes forward only from its original record".into()),
         HostAction::Config { .. } => configuration_recovery_observation(),
         HostAction::Service { .. } => observed_service_state(false),
         HostAction::UpdateRecovery { .. } => Ok(installation_recovery_observation()),
@@ -5070,12 +5201,8 @@ pub fn firmware_review_temporary(expected_service_state: &str) -> io::Result<Fir
     println!(
         "Temporary firmware observation will start the stopped agent, read public state, and restore it to stopped."
     );
-    println!("Approval digest (copy the standalone 64-hex line below):");
-    println!("{}", plan.approved_digest);
-    print!("Paste or type the digest above to approve: ");
-    io::stdout().flush()?;
-    let answer = read_confirmation(io::stdin().lock())?;
-    if answer.trim() != plan.approved_digest {
+    println!("Plan digest (for your records): {}", plan.approved_digest);
+    if !ask_yes_no("Proceed with this observation?")? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "temporary observation not approved",
@@ -7022,6 +7149,7 @@ mod recovery_scope_tests {
             expected_current_digest: None,
             commissioning: false,
             inputs: Vec::new(),
+            genesis_imports: Vec::new(),
             recovery_operation: Some(id.clone()),
         };
         assert!(!recovery_scope_permits(&normal, &id));
@@ -7248,10 +7376,8 @@ fn reconcile_host_operation(plan: &HostPlan, store: &RecordStore) -> io::Result<
         "Reconciliation outcome: {}; no service command or configuration replacement is performed.",
         observed.1
     );
-    print!("Type {digest} to accept this readback and retain the original history: ");
-    io::stdout().flush()?;
-    let answer = read_confirmation(io::stdin().lock())?;
-    if answer.trim() != digest {
+    println!("Readback digest (for your records): {digest}");
+    if !ask_yes_no("Accept this readback and retain the original history?")? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "readback not approved",
@@ -7321,6 +7447,22 @@ fn recover_provisioning(plan: &HostPlan, store: &RecordStore) -> io::Result<()> 
 
 fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) -> io::Result<bool> {
     Ok(match action {
+        HostAction::HostSecurityRecovery {
+            operation_id,
+            original_plan_digest,
+        } => {
+            record.action == "host-security"
+                && record.operation_id.to_string() == *operation_id
+                && record.plan_digest.to_string() == *original_plan_digest
+        }
+        HostAction::WipeRecovery {
+            operation_id,
+            original_plan_digest,
+        } => {
+            record.action == "wipe-board"
+                && record.operation_id.to_string() == *operation_id
+                && record.plan_digest.to_string() == *original_plan_digest
+        }
         HostAction::UpgradeRecovery {
             operation_id,
             original_plan_digest,
@@ -7395,6 +7537,26 @@ fn privileged_confirmation_stops_at_a_bounded_line() {
     );
     assert_eq!(long.position(), 257);
     assert!(read_confirmation(io::Cursor::new([0xff, b'\n'])).is_err());
+}
+
+#[test]
+fn yes_no_confirmation_accepts_only_affirmative_answers() {
+    for answer in ["y", "Y", "yes", " yes\n"] {
+        assert!(confirmation_is_yes(answer));
+    }
+    for answer in ["", "n", "no", "YES", "yep", "yes please", "1"] {
+        assert!(!confirmation_is_yes(answer));
+    }
+}
+
+#[test]
+fn empty_genesis_imports_preserve_legacy_action_digest() {
+    let legacy = r#"{"action":"config","candidate":"/tmp/config","candidate_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_current_digest":null,"commissioning":false,"inputs":[],"recovery_operation":null}"#;
+    let action: HostAction = serde_json::from_str(legacy).unwrap();
+    assert_eq!(serde_json::to_string(&action).unwrap(), legacy);
+    let id = "0123456789abcdef0123456789abcdef";
+    let old = Sha256::digest(format!("[1,\"{id}\",{legacy}]").as_bytes());
+    assert_eq!(plan_digest(id, &action).unwrap(), format!("{old:x}"));
 }
 
 #[test]

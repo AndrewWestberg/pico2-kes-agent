@@ -1,6 +1,9 @@
 pub mod backup;
 pub mod config_builder;
+pub mod discovery;
 pub mod host;
+pub mod host_security;
+pub mod kes_clock;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod model;

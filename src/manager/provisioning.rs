@@ -445,10 +445,12 @@ pub(super) fn apply(
                 "With both daemon modes stopped, physically select the exact board in BOOTSEL before inspection."
             );
         }
-        print!("Type READY to continue inspection, or anything else to cancel: ");
+        print!("Press Enter when the board is in BOOTSEL: ");
         io::stdout().flush()?;
-        let ready = host::read_confirmation(io::stdin().lock())?;
-        if ready.trim() != "READY" {
+        if !matches!(
+            host::read_confirmation(io::stdin().lock())?.as_str(),
+            "\n" | "\r\n"
+        ) {
             return Err(denied("physical selection cancelled"));
         }
         if host::service_state("pico2-kes-agentd.service")? != "inactive"
@@ -490,13 +492,10 @@ pub(super) fn apply(
             "Review qualification evidence {:?} (SHA-256 {}) against the observed hardware, picotool SHA-256 {}, provisioner SHA-256 {}, and authenticated image in the verified manifest. A4 remains physically unqualified unless independently qualified. No erase or record repair is offered.",
             evidence.path, evidence.sha256, entry.digest, artifact.sha256
         );
-        print!(
-            "Type QUALIFIED {} to attest exact matching physical, tool and image evidence: ",
+        if !host::ask_yes_no(&format!(
+            "Is the physical, tool and image evidence qualified for board {}?",
             request.serial
-        );
-        io::stdout().flush()?;
-        let confirmation = host::read_confirmation(io::stdin().lock())?;
-        if confirmation.trim() != format!("QUALIFIED {}", request.serial) {
+        ))? {
             return Err(denied("matching qualification not confirmed"));
         }
         setup::verify_public_inputs(std::slice::from_ref(evidence))?;

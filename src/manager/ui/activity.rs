@@ -192,6 +192,15 @@ fn file_mtime_us(path: &Path) -> u64 {
         .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
 }
 
+pub(crate) fn first_install_needs_postcheck(record: &MaintenanceRecord) -> bool {
+    record.action == "firmware_transfer"
+        && !matches!(record.outcome.as_str(), "failed-known" | "cancelled")
+        && !record
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.name == "application-blank-attended")
+}
+
 pub(super) fn discover(role: InstallationRole) -> ActivityInventory {
     let mut items = Vec::new();
 
@@ -200,7 +209,8 @@ pub(super) fn discover(role: InstallationRole) -> ActivityInventory {
             match rec {
                 Record::Supported(record) => {
                     let needs_reconcile =
-                        !host::maintenance_outcome_allows_new_action(&record.outcome);
+                        !host::maintenance_outcome_allows_new_action(&record.outcome)
+                            || first_install_needs_postcheck(&record);
                     let timestamp_us = record
                         .checkpoints
                         .last()
@@ -327,7 +337,7 @@ pub(super) fn render_activity(
     area: Rect,
     inventory: &ActivityInventory,
     selected: usize,
-    role: InstallationRole,
+    _role: InstallationRole,
 ) {
     let parts = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
     let (status_line, status_color) = if inventory.unresolved_count > 0 {
@@ -347,11 +357,7 @@ pub(super) fn render_activity(
             Color::Green,
         )
     };
-    let sub_line = if role == InstallationRole::Primary {
-        "Enter: inspect / reconcile selected · m: manual recovery & diagnostics menu · r: refresh"
-    } else {
-        "Enter: inspect / reconcile selected · m: manual recovery & plan menu · r: refresh"
-    };
+    let sub_line = "Enter: inspect / resume selected operation · r: refresh";
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(status_line, tone(status_color).add_modifier(Modifier::BOLD)),
@@ -367,7 +373,7 @@ pub(super) fn render_activity(
                 Line::from("No retained maintenance records, lifecycle receipts, or host plans discovered yet."),
                 Line::default(),
                 Line::styled(
-                    "Press 'm' to open manual diagnostics, plan inspection, or external path recovery.",
+                    "Interrupted operations appear here automatically. Use Host for diagnostics.",
                     tone(Color::DarkGray),
                 ),
             ])
@@ -445,7 +451,7 @@ pub(super) fn open_item(
                     .map(str::to_owned),
             );
             if !*needs_reconcile {
-                review(terminal, "Retained host maintenance record", lines, None)?;
+                review(terminal, "Retained host maintenance record", lines)?;
                 return Ok(());
             }
             let prompt_label = match record.action.as_str() {
@@ -453,9 +459,12 @@ pub(super) fn open_item(
                 "update" => Some("recover original host component update"),
                 "firmware-update" => Some("reconcile original firmware update"),
                 "firmware_transfer" => Some("associate & reconcile factory firmware install"),
+                "wipe-board" => Some("resume original wipe forward"),
+                "provisioning" => Some("inspect or resume original security stage"),
                 "service" | "config" | "commission_service" => {
                     Some("reconcile original service/config state")
                 }
+                "host-security" => Some("recover original host security changes"),
                 "producer-hardening" => Some("recover original producer drop-in batch"),
                 "uninstall" => Some("recover original uninstall record"),
                 _ => None,
@@ -463,15 +472,10 @@ pub(super) fn open_item(
             let Some(label) = prompt_label else {
                 lines.insert(
                     4,
-                    "Guidance     : Use Device -> Security (for OTP stages) or inspect the retained plan file; never create a replacement retry."
+                    "Guidance     : Inspect the retained original plan; never create a replacement retry."
                         .into(),
                 );
-                review(
-                    terminal,
-                    "Unresolved maintenance record (inspect)",
-                    lines,
-                    None,
-                )?;
+                review(terminal, "Unresolved maintenance record (inspect)", lines)?;
                 return Ok(());
             };
             if !review_mode(
@@ -493,9 +497,36 @@ pub(super) fn open_item(
                 "firmware_transfer" => {
                     setup::reconcile_first_install_record(terminal, worker, socket, &op_id)
                 }
+                "wipe-board" => setup::apply(
+                    terminal,
+                    worker,
+                    socket,
+                    host::HostAction::WipeRecovery {
+                        operation_id: op_id,
+                        original_plan_digest: digest,
+                    },
+                    None,
+                ),
+                "provisioning" => super::provisioning::recover_record(
+                    terminal,
+                    worker,
+                    socket,
+                    launched_bundle,
+                    record,
+                ),
                 "service" | "config" | "commission_service" => {
                     service::reconcile_record(terminal, worker, socket, op_id, digest)
                 }
+                "host-security" => setup::apply(
+                    terminal,
+                    worker,
+                    socket,
+                    host::HostAction::HostSecurityRecovery {
+                        operation_id: op_id,
+                        original_plan_digest: digest,
+                    },
+                    None,
+                ),
                 "producer-hardening" => {
                     producer::recover_record(terminal, worker, socket, &op_id, &digest)
                 }
@@ -533,7 +564,7 @@ pub(super) fn open_item(
                     .lines()
                     .map(str::to_owned),
             );
-            review(terminal, "Retained backup record", lines, None)?;
+            review(terminal, "Retained backup record", lines)?;
             Ok(())
         }
         ActivityItem::UnknownRecord { value } => {
@@ -548,7 +579,7 @@ pub(super) fn open_item(
                     .lines()
                     .map(str::to_owned),
             );
-            review(terminal, "Unknown-schema maintenance record", lines, None)?;
+            review(terminal, "Unknown-schema maintenance record", lines)?;
             Ok(())
         }
         ActivityItem::LifecycleRef {
@@ -613,5 +644,43 @@ pub(super) fn open_item(
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_transfer_still_needs_attended_application_postcheck() {
+        let mut record: MaintenanceRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "operation_id": "11".repeat(16),
+            "action": "firmware_transfer",
+            "plan_digest": "22".repeat(32),
+            "selected": null,
+            "approved_scope": [],
+            "previous_service_state": null,
+            "pre_observations": [],
+            "checkpoints": [],
+            "post_observations": [],
+            "outcome": "completed",
+            "bundle_digest": null,
+            "image_digest": null,
+            "physical_selection": null
+        }))
+        .unwrap();
+        assert!(first_install_needs_postcheck(&record));
+        record.outcome = "cancelled".into();
+        assert!(!first_install_needs_postcheck(&record));
+        record.outcome = "completed".into();
+        record
+            .checkpoints
+            .push(crate::manager::model::MaintenanceCheckpoint {
+                name: "application-blank-attended".into(),
+                observed_at_unix_us: 1,
+                evidence: "blank observed".into(),
+            });
+        assert!(!first_install_needs_postcheck(&record));
     }
 }

@@ -837,8 +837,10 @@ def attended(serial, description):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ToolError("applying stages require an interactive terminal", 3)
     print(description)
-    require(input(f"Type the exact device serial {serial}: ").strip() == serial,
-            "device confirmation did not match")
+    print(f"Device serial: {serial}. Is this the selected board? [y/N] ", end="", flush=True)
+    answer = sys.stdin.readline(32)
+    require(answer.endswith("\n") and answer.strip().lower() in ("y", "yes"),
+            "device confirmation not granted")
 
 
 def pause(description):
@@ -2198,7 +2200,9 @@ def erase_state(serial, record_path, apply):
     require(not os.path.lexists(record_path), "erase record already exists; do not replay")
     board = Board(serial)
     before = board.snapshot()
-    require(before["secure_boot"] is False and all(before["rows"][f"{0x40+i:04x}"] == 0 for i in range(8)),
+    require(before["secure_boot"] is False
+            and all(before["rows"][f"{row:04x}"] == 0
+                    for row in (*range(0x40, 0x48), *range(0x80, 0xc0))),
             "state erasure is permitted only while fully unlocked")
     record = {"schema_version": 2, "serial": serial, "profile": PROFILE, "bundle_sha256": None,
               "bootkey_sha256": None, "tool_identity": bind_tool(),

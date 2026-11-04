@@ -150,6 +150,8 @@ p2kesup
 
 Keep `$HOME/.local/bin` ahead of `/usr/bin`. This UI reports `development-unqualified`; **Installed software** still reports the managed release separately. The signed `/usr/bin/p2kesup`, protected helpers, daemon, CLI and registry are not replaced. Privileged operations still use the authenticated installed helper and its unchanged approval checks. Use `/usr/bin/p2kesup` for the signed RC UI; remove the local development copy and run `hash -r` when returning to ordinary release testing.
 
+New privileged workflows require a signed installed helper containing the corresponding action; installing only a development UI cannot add that authority. The RC.17 compatibility input explicitly permits its manager with the exact RC.16 daemon, CLI, firmware, tool and deployment components, allowing a reviewed manager-only update without flashing or starting services. Other mixed tuples remain forbidden unless explicitly authorized by a signed manifest.
+
 For each UI iteration:
 
 1. At 80×24, check the two-column **Overview** (Primary Posture + Device & Pool Fleet, including pin posture, swap preflight, capacity and trusted wall-clock KES expiry) without scrolling. Unknown observations must not become empty or healthy. Readiness covers observed pool conditions, not independent identity attestation, host-policy qualification or node forging.
@@ -170,9 +172,11 @@ sudo usermod -aG pico2-kes-agent "$(id -un)"
 
 Start a **new login session**, check `id`, and reopen with `p2kesup`. Existing shells do not acquire new supplementary groups automatically. Do not make sockets world writable or run ordinary operations as root. The real producer service account also needs controlled group access and a controlled restart to pick it up; follow [host access](../README.md#host-access-and-usb-inspection).
 
-Before commissioning, follow [host memory policies](../README.md#enforce-host-memory-policies-first): no active swap or reboot reactivation; all four sleep targets masked; agent core/swap limits; OS crash-dump prevention; actual hypervisor/snapshot policy; private backup material off-primary. Review RAM capacity before disabling swap. A checkbox or acknowledgement file does not enforce these settings.
+Open **Set up my Pico 2**. Before service startup it reviews host-security prerequisites: active and reboot-managed swap, persistent sleep masks, agent core/swap limits, external snapshot/crash-dump policy and backup-key custody. Review RAM capacity and the host-wide loss of swap/suspend before approving. The authenticated helper applies only the reviewed settings and writes the acknowledgement file with correct ownership and permissions; do not create or edit it manually for ordinary setup.
 
-Use the README's guarded commissioning acknowledgement-file procedure, then check:
+First decline the review: setup must pause without starting a service or changing policy, swap or masks. Then, on the intended disposable test host only, approve the prerequisites and truthful external-policy assertions. Missing external protections must not be asserted merely to pass a check. On interruption select the original **host-security** record in **Activity**; do not create a replacement operation. The service-start helper independently rechecks readiness after approval.
+
+Optional independent read-only checks:
 
 ```bash
 cat /proc/swaps
@@ -181,7 +185,7 @@ systemctl show pico2-kes-agentd.service --property=LimitCORE --property=MemorySw
 sudo /usr/libexec/pico2-kes-agent-host-check --commission
 ```
 
-For normal operation, apply the supplied drop-in to the actual `cardano-node.service` through **Host → Producer memory policy → Install producer memory hardening**, review the restart/disruption, and follow the normal-mode acknowledgements/preflight in the README. Other unit names do not change the literal preflight constraint. Never create a dummy node unit or weaken preflight to make this test pass. Host-wide security-policy edits are deliberate administrator actions, not automatic setup behavior.
+For normal operation, guided setup offers the supplied memory drop-in for the actual `cardano-node.service` and explicitly reviews any active producer restart; a stopped producer is never started. Other unit names do not change the literal preflight constraint. Never create a dummy unit or weaken preflight to pass. Unsupported swap activation sources or conflicting expert configuration block with an explanation rather than being overwritten.
 
 ## 7. Install firmware, or retain an existing compatible blank application
 

@@ -1,0 +1,10 @@
+[
+  {
+    "manager": "current",
+    "daemon": "a4df897fd4e3509e07adda01160203b62b65420e6204935b4a55fe3131120d56",
+    "cli": "903dee80bfdaf7a133c38cc1e4473bbe535994f4065added9ae3d887c8f4caa4",
+    "firmware": "d0c66c0e32b81e96862e267fbe28539080748fe9c2edda3b373b1e395bd0c3cb",
+    "tool": "4223d6a570d4b92ec6e5f4aa3ec44331628eb47d15cc91e40bb1378758ae9520",
+    "deployment": "b44082b0153bf66fd60c272ef2e38a55c5838269aaecea8c937cc981ff6a6d3d"
+  }
+]
