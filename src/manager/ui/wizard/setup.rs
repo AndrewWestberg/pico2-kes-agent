@@ -40,17 +40,13 @@ fn inspect(
             .as_str()
             .ok_or_else(|| io::Error::other("State directory unavailable"))?,
     );
-    let authority = normal_socket
-        .map(|socket| lifecycle::admission(terminal, socket, None))
-        .transpose()?;
-    let socket = match &authority {
-        Some(a) => a.socket.clone(),
+    let commissioning_serial = normal_socket.is_none().then_some(serial);
+    let socket = match normal_socket {
+        Some(socket) => socket.to_path_buf(),
         None => backend::commissioning_socket(serial)?,
     };
-    let peer = match &authority {
-        Some(a) => (a.pid, a.uid),
-        None => host::restricted_daemon_identity()?,
-    };
+    let authority = lifecycle::admission(terminal, &socket, commissioning_serial)?;
+    let peer = (authority.pid, authority.uid);
     let deadline = Instant::now() + Duration::from_secs(5);
     let device_info = backend::observation(&socket, "device.info", deadline, peer)?;
     let security = backend::observation(&socket, "device.security", deadline, peer)?;
@@ -61,14 +57,17 @@ fn inspect(
         serde_json::Value::Null
     };
     let again = backend::observation(&socket, "device.info", deadline, peer)?;
-    let same_peer = match (&authority, normal_socket) {
-        (Some(before), Some(socket)) => lifecycle::admission(terminal, socket, None)? == *before,
-        _ => host::restricted_daemon_identity()? == peer,
-    };
-    if device_info != again || device_info["usb_serial"] != serial || !same_peer
+    let same_peer = lifecycle::admission(terminal, &socket, commissioning_serial)? == authority;
+    if device_info != again
+        || device_info["usb_serial"] != serial
+        || !same_peer
         || backend::current_config_review()?.map(|(d, _)| d) != Some(digest.clone())
-        || authority.as_ref().is_some_and(|a| !matches!(&a.identity, crate::manager::lifecycle::AuthorityIdentity::Normal { device_id, .. } if device_info["device_id"] == *device_id)) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Device or daemon changed during observation"));
+        || matches!(&authority.identity, crate::manager::lifecycle::AuthorityIdentity::Normal { device_id, .. } if device_info["device_id"] != *device_id)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Device or daemon changed during observation",
+        ));
     }
     if device_info["schema_version"] != 1
         || device_info.get("device_id").is_none()
