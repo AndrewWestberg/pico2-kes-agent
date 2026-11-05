@@ -273,34 +273,40 @@ impl HostAction {
     pub fn summary(&self) -> String {
         match self {
             Self::Install { role, bundle, .. } => {
-                format!("Install {role:?} host bundle from {}", bundle.display())
+                format!("Install {role:?} host software from {}", bundle.display())
             }
             Self::Upgrade { bundle, .. } => {
-                format!("Upgrade complete release tuple from {}", bundle.display())
+                format!(
+                    "Update host software and device firmware from {}",
+                    bundle.display()
+                )
             }
             Self::UpgradeRecovery { operation_id, .. } => {
-                format!("Reconcile interrupted tuple upgrade {operation_id}")
+                format!("Check interrupted software update {operation_id}")
             }
             Self::Update { selection, .. } => {
-                format!("Apply component selection {}", selection.tag)
+                format!(
+                    "Install selected software components from {}",
+                    selection.tag
+                )
             }
             Self::UpdateRecovery { operation_id, .. } => {
-                format!("Reconcile interrupted host update {operation_id}")
+                format!("Recover interrupted host software update {operation_id}")
             }
             Self::FirmwareUpdate { serial, .. } => {
-                format!("Update firmware on pinned board {serial}")
+                format!("Prepare firmware update for registered device {serial}")
             }
             Self::FirmwarePreview { .. } => {
-                "Temporary daemon start for read-only firmware pre-state".into()
+                "Temporarily start the agent to check the device before updating".into()
             }
             Self::FirmwareRecovery { operation_id, .. } => {
-                format!("Reconcile original firmware update {operation_id}")
+                format!("Check interrupted device firmware update {operation_id}")
             }
             Self::FirmwareFirstInstall { apply, .. } => {
                 if *apply {
-                    "Apply factory BOOTSEL firmware install".into()
+                    "Install firmware on the connected Pico 2".into()
                 } else {
-                    "Preview factory BOOTSEL firmware install".into()
+                    "Check firmware installation without writing to the device".into()
                 }
             }
             Self::Config {
@@ -317,15 +323,15 @@ impl HostAction {
             }
             Self::CommissionService { start, .. } => {
                 if *start {
-                    "Start restricted commissioning service".into()
+                    "Start the temporary service used to set up the device".into()
                 } else {
-                    "Stop restricted commissioning service".into()
+                    "Stop the temporary device setup service".into()
                 }
             }
             Self::Service { operation, .. } => {
-                format!("{operation:?} managed pico2-kes-agentd.service")
+                format!("{operation:?} the agent service")
             }
-            Self::HostSecurity { .. } => "Configure approved host security prerequisites".into(),
+            Self::HostSecurity { .. } => "Apply host memory and storage protections".into(),
             Self::HostSecurityRecovery { operation_id, .. } => {
                 format!("Resume original host security operation {operation_id}")
             }
@@ -333,15 +339,29 @@ impl HostAction {
                 operation_id,
                 serial,
                 ..
-            } => format!("Associate blank application {serial} with transfer {operation_id}"),
+            } => format!("Check device {serial} after firmware installation {operation_id}"),
             Self::CommissionAdmission { serial, .. } => {
-                format!("Authenticate blank commissioning admission for {serial}")
+                format!("Check that device {serial} is ready for initial setup")
             }
             Self::Provisioning { request } => {
-                format!(
-                    "Device security {:?} on board {}",
-                    request.action, request.serial
-                )
+                let action = match request.action {
+                    super::provisioning::Action::Preview => "Inspect security settings",
+                    super::provisioning::Action::Reopen => "Read the saved security result",
+                    super::provisioning::Action::Prepare => {
+                        "Prepare permanent secure-boot settings"
+                    }
+                    super::provisioning::Action::Enable => "Enable secure boot permanently",
+                    super::provisioning::Action::Lock => {
+                        "Permanently restrict debug and recovery access"
+                    }
+                    super::provisioning::Action::Resume => {
+                        "Continue interrupted security preparation"
+                    }
+                    super::provisioning::Action::Reconcile => {
+                        "Check interrupted security permissions"
+                    }
+                };
+                format!("{action} on device {}", request.serial)
             }
             Self::WipeBoard { serial, .. } => format!(
                 "DESTRUCTIVE: erase all pools and keys on board {serial}; archive host state"
@@ -351,23 +371,26 @@ impl HostAction {
             }
             Self::ProducerHardening { request } => {
                 format!(
-                    "Install producer memory drop-in ({} unit(s))",
+                    "Protect block producer memory ({} service(s))",
                     request.targets.len()
                 )
             }
             Self::ProducerRecovery { operation_id, .. } => {
-                format!("Reconcile producer drop-in batch {operation_id}")
+                format!("Check interrupted block producer protection {operation_id}")
             }
             Self::HostReconcile { operation_id, .. } => {
-                format!("Reconcile original service/configuration record {operation_id}")
+                format!("Check the result of saved operation {operation_id}")
             }
             Self::UninstallRecovery { operation_id, .. } => {
-                format!("Reconcile original uninstall record {operation_id}")
+                format!("Check interrupted software removal {operation_id}")
             }
             Self::Uninstall {
                 selected_components,
                 ..
-            } => format!("Uninstall components: {}", selected_components.join(", ")),
+            } => format!(
+                "Remove selected software: {}",
+                selected_components.join(", ")
+            ),
         }
     }
 }
@@ -1030,6 +1053,216 @@ fn maintenance_lock() -> io::Result<HostLock> {
     Ok(HostLock(file))
 }
 
+fn firmware_lock() -> io::Result<HostLock> {
+    let directory = Path::new("/var/lib/p2kesup/firmware");
+    trusted_ancestry(&directory.join(".lock"))?;
+    let meta = fs::symlink_metadata(directory)?;
+    if !meta.is_dir() || meta.uid() != 0 || meta.mode() & 0o7777 != 0o700 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe firmware directory",
+        ));
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(directory.join(".lock"))?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.uid() != 0 || meta.mode() & 0o7777 != 0o600 || meta.nlink() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe firmware lock",
+        ));
+    }
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(HostLock(file))
+}
+
+fn first_install_record_path(record: &MaintenanceRecord) -> Option<PathBuf> {
+    if record.action != "firmware_transfer" || record.approved_scope.len() != 1 {
+        return None;
+    }
+    let HostAction::FirmwareFirstInstall {
+        bundle,
+        record: path,
+        manifest_digest,
+        apply: true,
+        ..
+    } = serde_json::from_str(&record.approved_scope[0]).ok()?
+    else {
+        return None;
+    };
+    let name = path.file_name()?.to_str()?.strip_suffix(".json")?;
+    if path.parent() != Some(Path::new("/var/lib/p2kesup/firmware"))
+        || name.len() != 32
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || !bundle.is_absolute()
+        || manifest_digest.len() != 64
+        || !manifest_digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || record.bundle_digest.as_deref() != Some(manifest_digest.as_str())
+    {
+        return None;
+    }
+    Some(path)
+}
+
+fn first_install_no_write_shape(record: &MaintenanceRecord) -> Option<PathBuf> {
+    let path = first_install_record_path(record)?;
+    let mut stage = 0;
+    for c in &record.checkpoints {
+        stage = match (stage, c.name.as_str()) {
+            (0, "intent-durable") if c.evidence == record.plan_digest.to_string() => 1,
+            (1, "staged-authenticated")
+                if Some(c.evidence.as_str()) == record.bundle_digest.as_deref() =>
+            {
+                2
+            }
+            (1 | 2, "first-install-not-started") if c.evidence == path.to_string_lossy() => 3,
+            _ => return None,
+        };
+    }
+    if stage == 0 {
+        return None;
+    }
+    Some(path)
+}
+
+pub fn maintenance_record_allows_new_action(record: &MaintenanceRecord) -> bool {
+    if record.action == "firmware_transfer"
+        && matches!(record.outcome.as_str(), "failed-known" | "cancelled")
+    {
+        return first_install_no_write_shape(record).is_some_and(|path| {
+            record
+                .checkpoints
+                .iter()
+                .filter(|c| {
+                    c.name == "first-install-not-started" && c.evidence == path.to_string_lossy()
+                })
+                .count()
+                == 1
+        });
+    }
+    maintenance_outcome_allows_new_action(&record.outcome)
+}
+pub(super) fn maintenance_record_is_resolved(record: &MaintenanceRecord) -> io::Result<bool> {
+    if !maintenance_record_allows_new_action(record) {
+        return Ok(false);
+    }
+    if record.action != "firmware_transfer" || record.outcome == "completed" {
+        return Ok(true);
+    }
+    let _lock = firmware_lock()?;
+    let path = first_install_no_write_shape(record)
+        .ok_or_else(|| io::Error::other("invalid factory evidence"))?;
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+        Ok(_) => Ok(false),
+    }
+}
+
+fn mark_first_install_not_started(record: &mut MaintenanceRecord) -> io::Result<bool> {
+    let Some(path) = first_install_no_write_shape(record) else {
+        return Ok(false);
+    };
+    if record
+        .checkpoints
+        .iter()
+        .any(|c| c.name == "first-install-not-started")
+    {
+        return Ok(false);
+    }
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    record.checkpoints.push(checkpoint(
+        "first-install-not-started",
+        path.to_string_lossy().into_owned(),
+    ));
+    record.outcome = "failed-known".into();
+    Ok(true)
+}
+
+fn missing_firmware_directory_is_safe(record: &MaintenanceRecord) -> bool {
+    record.action != "firmware-update"
+        && !record
+            .checkpoints
+            .iter()
+            .any(|c| c.name == "upgrade-transfer-starting")
+        && (record.action != "firmware_transfer"
+            || (!matches!(record.outcome.as_str(), "completed" | "post-check")
+                && first_install_no_write_shape(record).is_some()
+                && !record
+                    .checkpoints
+                    .iter()
+                    .any(|c| c.name == "staged-authenticated")))
+}
+
+fn ensure_recovery_firmware_directory(store: &RecordStore) -> io::Result<()> {
+    let directory = Path::new("/var/lib/p2kesup/firmware");
+    match fs::symlink_metadata(directory) {
+        Ok(_) => return root_directory(directory, 0o700),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    for item in store.list()? {
+        let record = item.supported()?;
+        if !missing_firmware_directory_is_safe(&record) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "missing firmware directory cannot prove transfer absence",
+            ));
+        }
+    }
+    root_directory(directory, 0o700)
+}
+
+fn reconcile_unstarted_first_installs(store: &RecordStore) -> io::Result<()> {
+    let pending: Vec<_> = store
+        .list()?
+        .into_iter()
+        .filter_map(|item| match item {
+            super::records::Record::Supported(record)
+                if record.action == "firmware_transfer"
+                    && matches!(
+                        record.outcome.as_str(),
+                        "intent-durable"
+                            | "staged-authenticated"
+                            | "uncertain"
+                            | "failed-known"
+                            | "cancelled"
+                    )
+                    && !maintenance_record_allows_new_action(&record) =>
+            {
+                Some(record)
+            }
+            _ => None,
+        })
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    ensure_recovery_firmware_directory(store)?;
+    let _lock = firmware_lock()?;
+    for mut record in pending {
+        if mark_first_install_not_started(&mut record)? {
+            store.update(&record)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn systemctl(arguments: &[&str]) -> io::Result<std::process::Output> {
     let program = Path::new("/usr/bin/systemctl");
     trusted_ancestry(program)?;
@@ -1383,8 +1616,8 @@ pub(super) fn run_commission_service(
     }
 }
 
-/// Privileged finite dispatcher. It re-displays and confirms the exact digest;
-/// plan bytes alone are never approval.
+/// Privileged finite dispatcher. Factory transfer approval is obtained by the
+/// authenticated firmware tool after its target checks; plan bytes alone are not approval.
 pub fn apply_plan(path: &Path) -> io::Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(io::Error::new(
@@ -1411,32 +1644,26 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     if reopen_existing_plan(&plan)? {
         return Ok(());
     }
-    println!("\n=== Privileged Host Maintenance Review ===");
-    println!("Summary: {}", plan.action.summary().escape_default());
+    let factory_install = matches!(
+        &plan.action,
+        HostAction::FirmwareFirstInstall { apply: true, .. }
+    );
+    if factory_install {
+        println!("\n=== Pico 2 firmware installation ===");
+    } else {
+        println!("\n=== Approval required ===");
+        println!("Summary: {}", plan.action.summary().escape_default());
+    }
     match &plan.action {
         HostAction::HostSecurity { request } => {
             for line in request.lines() {
                 println!("{}", line.escape_default());
             }
         }
-        HostAction::HostSecurityRecovery {
-            operation_id,
-            original_plan_digest,
-            bootstrap,
-            bootstrap_manifest_digest,
-            candidate_accepted,
-        } => {
+        HostAction::HostSecurityRecovery { .. } => {
             println!(
-                "Resume only the approved host security changes in original operation {operation_id} (digest {original_plan_digest}); no automatic rollback."
+                "Finish only the host security changes saved in the interrupted operation. Previously applied protections will not be undone."
             );
-            if let (Some(bundle), Some(digest)) = (bootstrap, bootstrap_manifest_digest) {
-                println!(
-                    "Recovery bootstrap bundle: {}",
-                    bundle.display().to_string().escape_default()
-                );
-                println!("Bound manifest digest: {digest}");
-                println!("Candidate accepted: {candidate_accepted}");
-            }
         }
         HostAction::WipeBoard { expected_state, .. } => {
             println!(
@@ -1457,6 +1684,9 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         HostAction::Config {
             genesis_imports, ..
         } => {
+            println!(
+                "Save the validated device and network configuration. This step does not restart the agent or erase device data."
+            );
             for import in genesis_imports {
                 println!(
                     "  Copy public genesis {} to {}",
@@ -1465,9 +1695,179 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
                 );
             }
         }
+        HostAction::Install { .. } => {
+            println!(
+                "Install authenticated host programs and service files. Existing host security policy and saved operation records are preserved."
+            );
+            println!(
+                "This step does not flash or erase the Pico 2. A host already in use must use the software update workflow instead."
+            );
+        }
+        HostAction::Service { operation, .. } => {
+            if matches!(operation, ServiceAction::Stop | ServiceAction::Restart) {
+                println!(
+                    "Signing will be interrupted for pools using this agent. Device keys and pools will not be deleted."
+                );
+            }
+        }
+        HostAction::CommissionService { .. } => {
+            println!(
+                "This service is restricted to device setup; it does not enable normal pool signing."
+            );
+        }
+        HostAction::Update {
+            stop_service,
+            temporary_validation,
+            ..
+        } => {
+            if *stop_service {
+                println!(
+                    "Stop the agent if needed while replacing software. Signing will be interrupted."
+                );
+            }
+            if *temporary_validation {
+                println!("Temporarily run the agent to verify the selected software and device.");
+            }
+            println!("Device keys, pool state and host configuration are preserved.");
+        }
+        HostAction::UpdateRecovery {
+            stop_service,
+            temporary_validation,
+            restore_deployment,
+            ..
+        } => {
+            println!(
+                "Check the saved update and restore the previous authenticated host software when safe. Device firmware and keys will not be rolled back."
+            );
+            if *stop_service {
+                println!("Stop the agent if required; signing will be interrupted.");
+            }
+            if *restore_deployment {
+                println!(
+                    "Restore the previous release's service files and device-access rules if they changed."
+                );
+            }
+            if *temporary_validation {
+                println!("Temporarily run the agent to verify recovery.");
+            }
+        }
+        HostAction::Upgrade { serial, .. } => {
+            println!(
+                "Install the selected signed release. Existing device keys, pools and configuration are preserved."
+            );
+            if let Some(serial) = serial {
+                println!(
+                    "Stop signing while updating device {}. Follow the USB instructions; do not disconnect the device during a write.",
+                    serial.escape_default()
+                );
+            }
+        }
+        HostAction::FirmwareUpdate { serial, .. } => {
+            println!(
+                "Stop the agent and check registered device {} before updating. Signing will be interrupted; device keys and pools are preserved.",
+                serial.escape_default()
+            );
+            println!("The firmware tool will ask before writing and guide any USB reconnection.");
+        }
+        HostAction::Provisioning { request } => {
+            if request.stop_normal || request.stop_commissioning {
+                println!(
+                    "Stop the selected agent/setup services before accessing the device. Signing may be interrupted."
+                );
+            }
+            if matches!(
+                request.action,
+                super::provisioning::Action::Prepare
+                    | super::provisioning::Action::Enable
+                    | super::provisioning::Action::Lock
+                    | super::provisioning::Action::Resume
+            ) {
+                println!(
+                    "The next device step changes permanent security settings. It cannot be undone; locking can permanently restrict debug and recovery access."
+                );
+                println!(
+                    "The device tool will explain and confirm the exact permanent step before writing."
+                );
+            } else {
+                println!(
+                    "Check the saved security state without starting a replacement security operation."
+                );
+            }
+        }
+        HostAction::ProducerHardening { request } => {
+            println!(
+                "Prevent the selected producers from writing private memory to swap or core dumps. Existing unrelated service settings are preserved."
+            );
+            for target in &request.targets {
+                println!(
+                    "  {}: {}",
+                    target.unit.escape_default(),
+                    if target.restart {
+                        "restart if running; block production will be interrupted"
+                    } else {
+                        "install protection without restarting"
+                    }
+                );
+            }
+            println!("Stopped producers will not be started.");
+        }
+        HostAction::Uninstall { stop_service, .. } => {
+            if *stop_service {
+                println!("Stop the agent before removing software. Signing will stop.");
+            }
+            println!(
+                "Remove only the selected release-owned files. Keep configuration, private state, security policy, operation history and device keys."
+            );
+        }
+        HostAction::UpgradeRecovery {
+            temporary_validation,
+            ..
+        } => {
+            println!(
+                "Check the saved software and firmware update and finish compatible host installation when safe. Do not repeat or roll back a firmware write."
+            );
+            if *temporary_validation {
+                println!(
+                    "Temporarily run the agent to verify the device, then restore its original service state."
+                );
+            }
+        }
+        HostAction::FirmwareRecovery {
+            temporary_validation,
+            ..
+        } => {
+            println!(
+                "Check the original firmware update against the connected device. No replacement flash or key rollback is performed."
+            );
+            if *temporary_validation {
+                println!("Temporarily run the agent for this check.");
+            }
+        }
+        HostAction::WipeRecovery { .. } => {
+            println!(
+                "Continue only the original device erase. All targeted pools and keys are lost; the previous state cannot be restored."
+            );
+        }
+        HostAction::ProducerRecovery { .. } => {
+            println!(
+                "Finish only the producer memory protections saved in the original operation. Restart only producers whose restart was originally approved; stopped producers remain stopped."
+            );
+        }
+        HostAction::UninstallRecovery { .. } => {
+            println!(
+                "Finish removing only the software selected in the saved operation. Preserve private state, configuration, operation history and device keys."
+            );
+        }
+        HostAction::HostReconcile { .. } => {
+            println!(
+                "Read the saved operation and current state to determine its result. Do not repeat the original change or erase records."
+            );
+        }
         _ => {}
     }
-    println!("Plan digest (for your records): {}", plan.approved_digest);
+    if !factory_install {
+        println!("The operation and its result will be saved in Activity.");
+    }
     if matches!(
         &plan.action,
         HostAction::Install {
@@ -1483,22 +1883,21 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
     ) {
         println!("Notice: explicitly selected development build; use only on a disposable host.");
     }
-    if !ask_yes_no("Proceed with this change?")? {
+    if factory_install {
+        println!(
+            "Checking the signed firmware and connected device. You will be asked before anything is written."
+        );
+    } else if !matches!(&plan.action, HostAction::ReconcileFirstInstall { .. })
+        && !ask_yes_no("Proceed with this change?")?
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "host plan not approved",
         ));
     }
-    if let HostAction::ReconcileFirstInstall {
-        operation_id,
-        serial,
-        ..
-    } = &plan.action
-    {
-        println!(
-            "Confirm physically that application {serial} is the same intended board as original transfer {operation_id}; the BOOTSEL CHIPID is not an application identity."
-        );
-        if !ask_yes_no("Is this the same physical board?")? {
+    if let HostAction::ReconcileFirstInstall { serial, .. } = &plan.action {
+        println!("Selected device: {serial}. This check will not flash it again.");
+        if !ask_yes_no("Is this the same Pico 2 you just installed firmware on?")? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "physical same-board association not confirmed",
@@ -1660,6 +2059,12 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
         super::setup::service_identity()?.1
     };
     let store = RecordStore::open_host(gid)?;
+    if matches!(
+        &plan.action,
+        HostAction::Install { .. } | HostAction::FirmwareFirstInstall { apply: true, .. }
+    ) {
+        reconcile_unstarted_first_installs(&store)?;
+    }
     if report_matching_plan(&plan, &store)? {
         return Ok(());
     }
@@ -1901,8 +2306,18 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             .map(|_| ());
         }
         super::setup::admit_first_install(original)?;
+        root_directory(Path::new("/var/lib/p2kesup/firmware"), 0o700)?;
     }
     check_other_pending_records(&store, &plan.action)?;
+    if let HostAction::Install { role, .. } = &plan.action
+        && let Ok(registry) = installation_registry()
+        && registry
+            .current
+            .as_ref()
+            .is_some_and(|current| !same_selection(current, verified.as_ref().unwrap().selection()))
+    {
+        prepare_precommission_install(*role, &store, &mut record)?;
+    }
     store.create(&record)?;
     let mut effects = false;
     let mut runtime_created = false;
@@ -1947,20 +2362,46 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             ..
         } => run_commission_service(*start, expected_state, &mut effects),
         HostAction::Install {
+            bundle: _,
             role,
             manifest_digest,
             candidate_accepted,
-            ..
-        } => install_bundle(
-            verified.as_ref().unwrap(),
-            *role,
-            manifest_digest,
-            *candidate_accepted,
-            &store,
-            &mut record,
-            &mut effects,
-        ),
-        HostAction::Update { .. } => update_bundle(&plan, &store, &mut record, &mut effects, None),
+        } => {
+            let verified = verified.as_ref().unwrap();
+            let installed = installation_registry();
+            match installed {
+                Ok(registry)
+                    if registry
+                        .current
+                        .as_ref()
+                        .is_some_and(|current| !same_selection(current, verified.selection())) =>
+                {
+                    precommission_install(&plan, verified, &store, &mut record, &mut effects)
+                }
+                Ok(_) => install_bundle(
+                    verified,
+                    *role,
+                    manifest_digest,
+                    *candidate_accepted,
+                    &store,
+                    &mut record,
+                    &mut effects,
+                ),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => install_bundle(
+                    verified,
+                    *role,
+                    manifest_digest,
+                    *candidate_accepted,
+                    &store,
+                    &mut record,
+                    &mut effects,
+                ),
+                Err(error) => Err(error),
+            }
+        }
+        HostAction::Update { .. } => {
+            update_bundle(&plan, &store, &mut record, &mut effects, None, false)
+        }
         HostAction::Upgrade { .. } => upgrade::apply(
             &plan,
             verified.as_ref().unwrap(),
@@ -2060,6 +2501,25 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             store.update(&record)
         }
         Err(error) => {
+            let firmware_guard = if matches!(
+                &plan.action,
+                HostAction::FirmwareFirstInstall { apply: true, .. }
+            ) {
+                firmware_lock().ok()
+            } else {
+                None
+            };
+            if matches!(
+                &plan.action,
+                HostAction::FirmwareFirstInstall { apply: true, .. }
+            ) {
+                effects = true;
+                if firmware_guard.is_some()
+                    && mark_first_install_not_started(&mut record).unwrap_or(false)
+                {
+                    effects = false;
+                }
+            }
             record.post_observations.push(error.to_string());
             record.outcome = if effects { "uncertain" } else { "failed-known" }.into();
             if let Err(record_error) = store.update(&record) {
@@ -2935,16 +3395,6 @@ fn authenticate_protected_stage(
 /// Bootstrap helper authority is the protected running inode matched to the
 /// authenticated selected manager, not an arbitrary current executable.
 pub fn trusted_bootstrap_manager(bundle: &super::release::VerifiedBundle) -> io::Result<PathBuf> {
-    match fs::symlink_metadata(INSTALLATION_REGISTRY) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "installation registry already exists",
-            ));
-        }
-        Err(error) => return Err(error),
-    }
     verify_running_manager(bundle)?;
     fs::canonicalize("/proc/self/exe")
 }
@@ -3842,7 +4292,7 @@ fn check_other_pending_records(store: &RecordStore, action: &HostAction) -> io::
     for prior in store.list()? {
         match prior {
             super::records::Record::Supported(previous)
-                if maintenance_outcome_allows_new_action(&previous.outcome) => {}
+                if maintenance_record_is_resolved(&previous)? => {}
             super::records::Record::Supported(previous)
                 if previous.action == "firmware_transfer"
                     && recovery_scope_permits(action, &previous.operation_id.to_string()) => {}
@@ -3880,7 +4330,9 @@ fn commissioning_recovery_gate(
             }
             continue;
         }
-        if matches!(previous.outcome.as_str(), "failed-known" | "cancelled") {
+        if maintenance_record_is_resolved(&previous)?
+            && matches!(previous.outcome.as_str(), "failed-known" | "cancelled")
+        {
             continue;
         }
         transfers += 1;
@@ -4449,12 +4901,166 @@ fn component_artifact(path: &str) -> Option<(&str, String)> {
     }
 }
 
+fn precommission_record_allowed(record: &MaintenanceRecord) -> bool {
+    maintenance_record_allows_new_action(record)
+        && (record.action != "firmware_transfer"
+            || matches!(record.outcome.as_str(), "failed-known" | "cancelled"))
+        && record.action != "firmware-update"
+        && !record
+            .checkpoints
+            .iter()
+            .any(|c| c.name == "upgrade-transfer-starting")
+}
+
+fn precommission_gate(store: &RecordStore, current: &MaintenanceRecord) -> io::Result<()> {
+    let denied = || {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "host is not proven uncommissioned",
+        )
+    };
+    if installation_registry()?.role != InstallationRole::Primary
+        || service_state("pico2-kes-agentd.service")? != "inactive"
+        || service_state("pico2-kes-agent-commission.service")? != "inactive"
+    {
+        return Err(denied());
+    }
+    let config = Path::new("/etc/pico2-kes-agent/config.json");
+    trusted_ancestry(config)?;
+    match fs::symlink_metadata(config) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+        Ok(_) => return Err(denied()),
+    }
+    let state = Path::new("/var/lib/pico2-kes-agent");
+    trusted_ancestry(state)?;
+    let meta = fs::symlink_metadata(state)?;
+    let (uid, gid) = super::setup::service_identity()?;
+    if !meta.is_dir() || meta.uid() != uid || meta.gid() != gid || meta.mode() & 0o7777 != 0o700 {
+        return Err(denied());
+    }
+    for entry in fs::read_dir(state)? {
+        let entry = entry?;
+        let meta = fs::symlink_metadata(entry.path())?;
+        if entry.file_name() != "operations.journal"
+            || !meta.is_file()
+            || meta.uid() != uid
+            || meta.nlink() != 1
+            || meta.len() != 0
+        {
+            return Err(denied());
+        }
+    }
+    for entry in fs::read_dir("/var/lib/p2kesup/firmware")? {
+        if entry?.file_name() != ".lock" {
+            return Err(denied());
+        }
+    }
+    for item in store.list()? {
+        let prior = item.supported()?;
+        if prior.operation_id == current.operation_id {
+            continue;
+        }
+        if !precommission_record_allowed(&prior) {
+            return Err(denied());
+        }
+    }
+    Ok(())
+}
+
+fn prepare_precommission_install(
+    role: InstallationRole,
+    store: &RecordStore,
+    record: &mut MaintenanceRecord,
+) -> io::Result<()> {
+    if role != InstallationRole::Primary {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "precommission replacement requires primary role",
+        ));
+    }
+    root_directory(Path::new("/var/lib/p2kesup/firmware"), 0o700)?;
+    let _firmware_lock = firmware_lock()?;
+    precommission_gate(store, record)?;
+    let previous = installation_registry()?
+        .current
+        .ok_or_else(|| io::Error::other("installed tuple unavailable"))?;
+    let link = fs::read_link("/usr/lib/pico2-kes-agent/current")?;
+    record
+        .pre_observations
+        .push(serde_json::to_string(&(previous, link)).map_err(io::Error::other)?);
+    record.previous_service_state = Some(observed_service_state(false)?);
+    record
+        .checkpoints
+        .push(checkpoint("precommission-update", registry_digest()?));
+    Ok(())
+}
+
+fn precommission_install(
+    plan: &HostPlan,
+    bundle: &super::release::VerifiedBundle,
+    store: &RecordStore,
+    record: &mut MaintenanceRecord,
+    effects: &mut bool,
+) -> io::Result<String> {
+    let HostAction::Install {
+        bundle: path,
+        role,
+        candidate_accepted,
+        ..
+    } = &plan.action
+    else {
+        return Err(io::Error::other("expected an installation plan"));
+    };
+    if *role != InstallationRole::Primary {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "precommission replacement requires primary role",
+        ));
+    }
+    root_directory(Path::new("/var/lib/p2kesup/firmware"), 0o700)?;
+    let _firmware_lock = firmware_lock()?;
+    precommission_gate(store, record)?;
+    let (prior_digest, precommission) = original_update_digest(record)?;
+    if !precommission
+        || registry_digest()? != prior_digest
+        || record.previous_service_state.as_deref() != Some(observed_service_state(false)?.as_str())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "precommission host changed after review",
+        ));
+    }
+    let service = record
+        .previous_service_state
+        .clone()
+        .ok_or_else(|| io::Error::other("service observation missing"))?;
+    let update = HostPlan {
+        schema_version: plan.schema_version,
+        plan_id: plan.plan_id.clone(),
+        approved_digest: plan.approved_digest.clone(),
+        action: HostAction::Update {
+            authorizing_bundle: path.to_path_buf(),
+            sources: vec![path.to_path_buf()],
+            candidate_source: candidate_accepted.then(|| path.to_path_buf()),
+            selection: bundle.selection().clone(),
+            expected_registry_digest: prior_digest,
+            expected_service_state: Some(service),
+            stop_service: false,
+            pre_state: None,
+            temporary_validation: false,
+        },
+    };
+    update_bundle(&update, store, record, effects, None, true)
+}
+
 fn update_bundle(
     plan: &HostPlan,
     store: &RecordStore,
     record: &mut MaintenanceRecord,
     effects: &mut bool,
     coordinated: Option<&HostPlan>,
+    precommission: bool,
 ) -> io::Result<String> {
     let HostAction::Update {
         authorizing_bundle,
@@ -4486,6 +5092,7 @@ fn update_bundle(
         .find(|c| c.component == "firmware")
         .ok_or_else(|| io::Error::other("reviewed firmware selection missing"))?;
     if coordinated.is_none()
+        && !precommission
         && (old_firmware.digest != next_firmware.digest
             || old_firmware.manifest_digest != next_firmware.manifest_digest)
     {
@@ -4671,7 +5278,7 @@ fn update_bundle(
             "daemon/deployment change requires approved stop",
         ));
     }
-    if registry.role == InstallationRole::Primary && disruptive {
+    if registry.role == InstallationRole::Primary && disruptive && !precommission {
         if !prior_active && service_state("pico2-kes-agentd.service")? != "inactive" {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -4829,33 +5436,35 @@ fn update_bundle(
                 "selected service sandbox differs from validator",
             ));
         }
-        let daemon = actual
-            .components
-            .iter()
-            .find(|c| c.component == "daemon")
-            .unwrap();
-        let executable = root
-            .join("components/daemon")
-            .join(daemon.digest.to_string())
-            .join("pico2-kes-agentd");
-        let config = Path::new("/etc/pico2-kes-agent/config.json");
-        let metadata = fs::symlink_metadata(config)?;
-        if !metadata.is_file()
-            || metadata.uid() != 0
-            || metadata.mode() & 0o022 != 0
-            || metadata.nlink() != 1
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "unsafe working configuration",
+        if !precommission {
+            let daemon = actual
+                .components
+                .iter()
+                .find(|c| c.component == "daemon")
+                .unwrap();
+            let executable = root
+                .join("components/daemon")
+                .join(daemon.digest.to_string())
+                .join("pico2-kes-agentd");
+            let config = Path::new("/etc/pico2-kes-agent/config.json");
+            let metadata = fs::symlink_metadata(config)?;
+            if !metadata.is_file()
+                || metadata.uid() != 0
+                || metadata.mode() & 0o022 != 0
+                || metadata.nlink() != 1
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "unsafe working configuration",
+                ));
+            }
+            check_configuration_with_daemon(config, false, &executable)?;
+            record.checkpoints.push(checkpoint(
+                "candidate-config",
+                "selected daemon accepted current configuration as service identity".into(),
             ));
+            store.update(record)?;
         }
-        check_configuration_with_daemon(config, false, &executable)?;
-        record.checkpoints.push(checkpoint(
-            "candidate-config",
-            "selected daemon accepted current configuration as service identity".into(),
-        ));
-        store.update(record)?;
     }
     if let Some(original) = coordinated {
         return upgrade::activate_prepared(
@@ -4892,6 +5501,9 @@ fn update_bundle(
         )?;
     }
     File::open(&generation)?.sync_all()?;
+    if precommission {
+        precommission_gate(store, record)?;
+    }
     let temporary = root.join(format!(".current-{}", record.operation_id));
     std::os::unix::fs::symlink(format!("generations/{}", plan.approved_digest), &temporary)?;
     *effects = true;
@@ -5837,8 +6449,7 @@ fn recover_firmware(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
     for record in store.list()? {
         match record {
             super::records::Record::Supported(item)
-                if item.operation_id == id
-                    || maintenance_outcome_allows_new_action(&item.outcome) => {}
+                if item.operation_id == id || maintenance_record_is_resolved(&item)? => {}
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -6124,6 +6735,85 @@ fn recover_firmware(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
     store.update(&original)
 }
 
+fn original_update_digest(record: &MaintenanceRecord) -> io::Result<(String, bool)> {
+    if record.approved_scope.len() != 1 {
+        return Err(io::Error::other("original update scope invalid"));
+    }
+    let action: HostAction =
+        serde_json::from_str(&record.approved_scope[0]).map_err(io::Error::other)?;
+    match action {
+        HostAction::Update {
+            expected_registry_digest,
+            ..
+        } if record.action == "update" => Ok((expected_registry_digest, false)),
+        HostAction::Install {
+            bundle,
+            role: InstallationRole::Primary,
+            manifest_digest,
+            ..
+        } if record.action == "install"
+            && bundle.is_absolute()
+            && record.bundle_digest.as_deref() == Some(manifest_digest.as_str())
+            && record
+                .selected
+                .as_ref()
+                .is_some_and(|s| s.manifest_digest.to_string() == manifest_digest) =>
+        {
+            let mut checkpoints = record
+                .checkpoints
+                .iter()
+                .filter(|c| c.name == "precommission-update");
+            let digest = checkpoints
+                .next()
+                .ok_or_else(|| io::Error::other("precommission provenance missing"))?
+                .evidence
+                .clone();
+            if checkpoints.next().is_some()
+                || digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || !record
+                    .previous_service_state
+                    .as_deref()
+                    .is_some_and(|s| service_state_matches(s, "inactive"))
+            {
+                return Err(io::Error::other("invalid precommission provenance"));
+            }
+            Ok((digest, true))
+        }
+        _ => Err(io::Error::other("original update scope invalid")),
+    }
+}
+pub(super) fn precommission_install_recovered(record: &MaintenanceRecord) -> bool {
+    if record.schema_version != 1 || record.outcome != "failed-known" {
+        return false;
+    }
+    let Ok((prior_digest, true)) = original_update_digest(record) else {
+        return false;
+    };
+    let checkpoints = &record.checkpoints;
+    if checkpoints.len() < 3 {
+        return false;
+    }
+    let last = &checkpoints[checkpoints.len() - 1];
+    let post = &checkpoints[checkpoints.len() - 2];
+    last.name == "precommission-update-recovered"
+        && last.evidence == prior_digest
+        && checkpoints
+            .iter()
+            .filter(|c| c.name == "precommission-update-recovered")
+            .count()
+            == 1
+        && post.name == "post-check"
+        && (post
+            .evidence
+            .starts_with("original tuple and service unchanged; recovery approval ")
+            || post
+                .evidence
+                .starts_with("explicit binary fallback approved by "))
+}
+
 fn original_update(
     store: &RecordStore,
     id: &str,
@@ -6132,7 +6822,7 @@ fn original_update(
     let id =
         OperationId::parse_hex(id).map_err(|_| io::Error::other("invalid original operation"))?;
     let record = store.load(&id)?.supported()?;
-    if record.action != "update"
+    if original_update_digest(&record).is_err()
         || record.plan_digest.to_string() != digest
         || maintenance_outcome_allows_new_action(&record.outcome)
     {
@@ -6227,20 +6917,7 @@ fn recovery_service_observation(
         Ok(state) => Ok(Some(state)),
         Err(_) => {
             check_service_overrides()?;
-            let action: HostAction = serde_json::from_str(
-                record
-                    .approved_scope
-                    .first()
-                    .ok_or_else(|| io::Error::other("original update scope missing"))?,
-            )
-            .map_err(io::Error::other)?;
-            let HostAction::Update {
-                expected_registry_digest,
-                ..
-            } = action
-            else {
-                return Err(io::Error::other("original update scope invalid"));
-            };
+            let (expected_registry_digest, _) = original_update_digest(record)?;
             let path = Path::new("/var/lib/p2kesup/staging")
                 .join(record.operation_id.to_string())
                 .join("prior-registry.json");
@@ -6311,7 +6988,7 @@ fn recover_update(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
         match prior {
             super::records::Record::Supported(item)
                 if item.operation_id == record.operation_id
-                    || maintenance_outcome_allows_new_action(&item.outcome) => {}
+                    || maintenance_record_is_resolved(&item)? => {}
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -6320,19 +6997,13 @@ fn recover_update(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
             }
         }
     }
-    let original_action: HostAction = serde_json::from_str(
-        record
-            .approved_scope
-            .first()
-            .ok_or_else(|| io::Error::other("original update scope missing"))?,
-    )
-    .map_err(io::Error::other)?;
-    let HostAction::Update {
-        expected_registry_digest: prior_digest,
-        ..
-    } = original_action
-    else {
-        return Err(io::Error::other("original update scope invalid"));
+    let (prior_digest, precommission) = original_update_digest(&record)?;
+    let _firmware_guard = if precommission {
+        let guard = firmware_lock()?;
+        precommission_gate(store, &record)?;
+        Some(guard)
+    } else {
+        None
     };
     let current = installation_registry()?;
     let observed = recovery_service_observation(current.role, &record, &previous)?;
@@ -6360,7 +7031,7 @@ fn recover_update(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
                     && a.build_id == b.build_id
             })
         });
-    let needs_live = current.role == InstallationRole::Primary && !unchanged;
+    let needs_live = current.role == InstallationRole::Primary && !unchanged && !precommission;
     if current.role == InstallationRole::Primary {
         let original_state = record
             .previous_service_state
@@ -6408,6 +7079,12 @@ fn recover_update(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
                     plan.approved_digest
                 ),
             ));
+            if precommission {
+                record.checkpoints.push(checkpoint(
+                    "precommission-update-recovered",
+                    prior_digest.clone(),
+                ));
+            }
             record.outcome = "failed-known".into();
             return store.update(&record);
         }
@@ -6798,6 +7475,11 @@ fn recover_update(plan: &HostPlan, store: &RecordStore) -> io::Result<()> {
             plan.approved_digest
         ),
     ));
+    if precommission {
+        record
+            .checkpoints
+            .push(checkpoint("precommission-update-recovered", prior_digest));
+    }
     record.outcome = "failed-known".into();
     store.update(&record)
 }
@@ -7394,6 +8076,31 @@ fn reconcile_host_operation(plan: &HostPlan, store: &RecordStore) -> io::Result<
             "original plan digest differs",
         ));
     }
+    if record.action == "firmware_transfer" {
+        if !matches!(
+            record.outcome.as_str(),
+            "intent-durable" | "staged-authenticated" | "uncertain" | "failed-known" | "cancelled"
+        ) || first_install_no_write_shape(&record).is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "original factory transfer is not a pre-write candidate",
+            ));
+        }
+        ensure_recovery_firmware_directory(store)?;
+        let _firmware_lock = firmware_lock()?;
+        if !mark_first_install_not_started(&mut record)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "factory transfer has evidence or cannot be proven not started",
+            ));
+        }
+        store.update(&record)?;
+        println!(
+            "Original operation {operation_id} reconciled as not started; no device write was performed."
+        );
+        return Ok(());
+    }
     let original: HostAction = serde_json::from_str(
         record
             .approved_scope
@@ -7519,10 +8226,13 @@ fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) ->
             operation_id,
             original_plan_digest,
         } => {
-            matches!(
+            (matches!(
                 record.action.as_str(),
                 "service" | "commission_service" | "config"
-            ) && record.operation_id.to_string() == *operation_id
+            ) || (record.action == "firmware_transfer"
+                && !matches!(record.outcome.as_str(), "completed" | "post-check")
+                && first_install_no_write_shape(record).is_some()))
+                && record.operation_id.to_string() == *operation_id
                 && record.plan_digest.to_string() == *original_plan_digest
         }
         HostAction::ProducerRecovery {
@@ -7548,6 +8258,121 @@ fn original_recovery_permits(action: &HostAction, record: &MaintenanceRecord) ->
         }
         _ => false,
     })
+}
+
+#[test]
+fn precommission_recovery_binds_original_install_and_prior_registry() {
+    let manifest = "a".repeat(64);
+    let plan = HostPlan::new(HostAction::Install {
+        bundle: PathBuf::from("/tmp/bundle"),
+        role: InstallationRole::Primary,
+        manifest_digest: manifest.clone(),
+        candidate_accepted: false,
+    })
+    .unwrap();
+    let mut record = host_record(&plan, Some("state=inactive;".into())).unwrap();
+    record.bundle_digest = Some(manifest.clone());
+    record.selected = Some(super::model::ReleaseSelection {
+        tag: String::new(),
+        version: String::new(),
+        source_commit: String::new(),
+        channel: String::new(),
+        qualification: super::model::Qualification::Qualified,
+        platform: String::new(),
+        components: Vec::new(),
+        manifest_digest: Digest32::parse_hex(&manifest).unwrap(),
+    });
+    assert!(original_update_digest(&record).is_err());
+    record
+        .checkpoints
+        .push(checkpoint("precommission-update", "b".repeat(64)));
+    assert_eq!(
+        original_update_digest(&record).unwrap(),
+        ("b".repeat(64), true)
+    );
+    assert!(!precommission_install_recovered(&record));
+    record.outcome = "failed-known".into();
+    assert!(!precommission_install_recovered(&record));
+    record.checkpoints.push(checkpoint(
+        "post-check",
+        "original tuple and service unchanged; recovery approval abc".into(),
+    ));
+    record
+        .checkpoints
+        .push(checkpoint("precommission-update-recovered", "b".repeat(64)));
+    assert!(precommission_install_recovered(&record));
+    record.checkpoints.last_mut().unwrap().evidence = "c".repeat(64);
+    assert!(!precommission_install_recovered(&record));
+    record.checkpoints.pop();
+    record.checkpoints.pop();
+    record.previous_service_state = Some("state=active;".into());
+    assert!(original_update_digest(&record).is_err());
+    record.previous_service_state = Some("state=inactive;".into());
+    record.bundle_digest = Some("c".repeat(64));
+    assert!(original_update_digest(&record).is_err());
+    record.bundle_digest = Some(manifest);
+    record
+        .checkpoints
+        .push(checkpoint("precommission-update", "b".repeat(64)));
+    assert!(original_update_digest(&record).is_err());
+}
+
+#[test]
+fn factory_no_write_evidence_gates_pending_and_precommission() {
+    let path = PathBuf::from("/var/lib/p2kesup/firmware/0123456789abcdef0123456789abcdef.json");
+    let digest = "a".repeat(64);
+    let plan = HostPlan::new(HostAction::FirmwareFirstInstall {
+        bundle: PathBuf::from("/tmp/bundle"),
+        manifest_digest: digest.clone(),
+        candidate_accepted: false,
+        record: path.clone(),
+        apply: true,
+    })
+    .unwrap();
+    let mut record = host_record(&plan, None).unwrap();
+    record.bundle_digest = Some(digest);
+    record.outcome = "uncertain".into();
+    assert!(!maintenance_record_allows_new_action(&record));
+    assert!(!precommission_record_allowed(&record));
+    assert!(missing_firmware_directory_is_safe(&record));
+    record
+        .checkpoints
+        .push(checkpoint("staged-authenticated", "a".repeat(64)));
+    assert!(!missing_firmware_directory_is_safe(&record));
+    record.checkpoints.pop();
+    let recovery = HostAction::HostReconcile {
+        operation_id: record.operation_id.to_string(),
+        original_plan_digest: record.plan_digest.to_string(),
+    };
+    assert!(original_recovery_permits(&recovery, &record).unwrap());
+    record.outcome = "failed-known".into();
+    assert!(!maintenance_record_allows_new_action(&record));
+    record.checkpoints.push(checkpoint(
+        "first-install-not-started",
+        path.display().to_string(),
+    ));
+    assert!(maintenance_record_allows_new_action(&record));
+    assert!(precommission_record_allowed(&record));
+    record.outcome = "cancelled".into();
+    assert!(maintenance_record_allows_new_action(&record));
+    record
+        .checkpoints
+        .push(checkpoint("transfer-starting", String::new()));
+    assert!(!maintenance_record_allows_new_action(&record));
+    assert!(!precommission_record_allowed(&record));
+    assert!(!original_recovery_permits(&recovery, &record).unwrap());
+    record.checkpoints.pop();
+    record.checkpoints.last_mut().unwrap().evidence = "/tmp/other".into();
+    assert!(!maintenance_record_allows_new_action(&record));
+    record.outcome = "completed".into();
+    assert!(!precommission_record_allowed(&record));
+    record.action = "firmware-update".into();
+    assert!(!precommission_record_allowed(&record));
+    record.action = "upgrade".into();
+    record
+        .checkpoints
+        .push(checkpoint("upgrade-transfer-starting", String::new()));
+    assert!(!precommission_record_allowed(&record));
 }
 
 #[test]

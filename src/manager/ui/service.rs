@@ -31,10 +31,7 @@ pub(super) const ACTIONS: &[(Action, &str)] = &[
     (Action::Start, "Start managed agent"),
     (Action::Stop, "Stop managed agent"),
     (Action::Restart, "Restart managed agent"),
-    (
-        Action::Edit,
-        "Edit configuration candidate in /usr/bin/editor",
-    ),
+    (Action::Edit, "Edit configuration manually (advanced)"),
     (
         Action::Diagnostics,
         "Inspect bounded public diagnostic history",
@@ -54,7 +51,6 @@ pub(super) fn reconcile_record(
 ) -> io::Result<()> {
     let lines = vec![
         format!("Original operation : {operation_id}"),
-        format!("Original plan SHA  : {original_plan_digest}"),
         "The privileged helper will independently read current service/configuration state without replaying start/stop/restart or overwriting config."
             .into(),
     ];
@@ -62,7 +58,7 @@ pub(super) fn reconcile_record(
         terminal,
         "Read-only host reconciliation",
         lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }

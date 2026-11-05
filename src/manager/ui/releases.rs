@@ -64,15 +64,15 @@ pub(super) const BACKUP_ACTIONS: &[Action] = &[
 impl Action {
     pub fn label(self) -> &'static str {
         match self {
-            Self::TupleUpgrade => "Upgrade or switch complete release tuple (recommended)",
-            Self::Browse => "Inspect authenticated release inventory & freshness",
+            Self::TupleUpgrade => "Update all software and firmware (recommended)",
+            Self::Browse => "Show available signed releases",
             Self::Refresh => "Refresh approved releases / reverify offline cache",
             Self::Prerelease => "Toggle signed prerelease opt-in (never candidates)",
             Self::Offline => "Toggle online / offline discovery",
             Self::Select => "Select independent host component versions (advanced)",
-            Self::FirmwarePreview => "Preview authenticated firmware transfer (read-only)",
-            Self::FirmwareUpdate => "Update pinned Pico 2 firmware only",
-            Self::Reexec => "Re-exec installed p2kesup manager",
+            Self::FirmwarePreview => "Check a firmware update without transferring it",
+            Self::FirmwareUpdate => "Update this Pico 2's firmware only",
+            Self::Reexec => "Restart the p2kesup manager",
             Self::Remove => "Remove cached release bundle (preserves records)",
         }
     }
@@ -163,14 +163,11 @@ impl State {
         }
         for (index, offer) in self.offers.iter().enumerate() {
             lines.push(format!(
-                "{}: {} [{}] source={} age={}s manifest={} bundle={}",
+                "{}: {} [{}], last checked {}s ago",
                 index + 1,
                 offer.selection.tag,
                 offer.selection.channel,
-                offer.source,
-                offer.age().as_secs(),
-                offer.selection.manifest_digest,
-                offer.bundle.display()
+                offer.age().as_secs()
             ));
         }
         lines
@@ -229,7 +226,7 @@ impl State {
             terminal,
             "Confirm cache removal",
             vec![
-                format!("Manifest SHA-256: {digest}"),
+                format!("Release: {}", self.offers.iter().find(|o| o.selection.manifest_digest.to_string() == digest).map(|o| o.selection.tag.as_str()).unwrap_or("selected release")),
                 "Removes only this cached release entry. Installed binaries, configs, receipts, and maintenance records remain untouched."
                     .into(),
                 "Offline installation/upgrade of this release will require reacquiring authenticated bundle bytes."
@@ -308,7 +305,7 @@ pub(super) fn tuple_upgrade(
 ) -> io::Result<Option<PathBuf>> {
     let store = RecordStore::open_host(crate::manager::setup::service_identity()?.1)?;
     if store.list()?.iter().any(|record| match record {
-        Record::Supported(record) => !host::maintenance_outcome_allows_new_action(&record.outcome),
+        Record::Supported(record) => !host::maintenance_record_allows_new_action(record),
         Record::Unknown(_) => true,
     }) {
         return Err(io::Error::other(
@@ -361,7 +358,7 @@ pub(super) fn tuple_upgrade(
         ),
     ];
     let Some((bundle_path, allow_candidate)) =
-        form_validated(terminal, "Coordinated release tuple upgrade", &specs, |v| {
+        form_validated(terminal, "Choose a complete release update", &specs, |v| {
             let chosen = if v[0] == "custom" {
                 v[1].trim()
             } else {
@@ -390,7 +387,7 @@ pub(super) fn tuple_upgrade(
     if host::same_selection(current, verified_bundle.selection()) {
         review(
             terminal,
-            "Release tuple already installed",
+            "Release already installed",
             vec![
                 format!(
                     "Managed {:?} installation is already on {}.",
@@ -466,28 +463,18 @@ fn resume_upgrade_with_worker(
 ) -> io::Result<()> {
     let plan = host::HostPlan::new(action)?;
     let path = workspace::next_path(WorkspaceKind::Plans, "upgrade-recovery-plan", "json")?;
-    let mut lines = vec![
+    let lines = vec![
         format!("Original operation : {operation}"),
-        format!("Recovery plan file : {}", path.display()),
-        format!("Plan SHA-256       : {}", plan.approved_digest),
-        String::new(),
         "Reconciles only the original upgrade operation without reflashing or rolling back Pico 2 state."
             .into(),
         "A stopped service may be started temporarily for validation and will be restored to its original state."
             .into(),
-        String::new(),
     ];
-    lines.extend(
-        serde_json::to_string_pretty(&plan)
-            .map_err(io::Error::other)?
-            .lines()
-            .map(str::to_owned),
-    );
     if !review_mode(
         terminal,
         "Recover original upgrade",
         lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -553,7 +540,7 @@ fn upgrade_direct_with_worker(
     if candidate
         && !review_mode(
             terminal,
-            "Explicit candidate admission",
+            "Use an unapproved signed release?",
             vec![
                 "This signed candidate is not an approved release. Proceed only on a disposable host; all state and hardware checks remain mandatory."
                     .into(),
@@ -625,8 +612,6 @@ fn upgrade_direct_with_worker(
             bundle.selection().source_commit
         ),
         format!("Installation role : {role:?}"),
-        format!("Retained plan     : {}", plan_path.display()),
-        format!("Plan SHA-256      : {}", plan.approved_digest),
         String::new(),
         "Component transitions:".into(),
     ];
@@ -642,22 +627,15 @@ fn upgrade_direct_with_worker(
         ));
     }
     lines.push(String::new());
-    lines.push(
-        "The complete signed tuple is installed together. Physical firmware transfer is attended; interrupted operations retain their original record in Activity (6) or via p2kesup upgrade --resume."
-            .into(),
-    );
-    lines.push(String::new());
-    lines.extend(
-        serde_json::to_string_pretty(&plan)
-            .map_err(io::Error::other)?
-            .lines()
-            .map(str::to_owned),
-    );
+    lines.push("All components in this signed release will be installed together. If interrupted, recover the original operation in Activity (6).".into());
+    if role == InstallationRole::Primary {
+        lines.push("Follow the physical instructions for the firmware transfer.".into());
+    }
     if !review_mode(
         terminal,
-        "Review complete tuple upgrade",
+        "Review software and firmware update",
         lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -858,7 +836,7 @@ pub(super) fn component_update(
 
     let Some((selection, stop_service)) = form_validated(
         terminal,
-        "Select exact signed component tuple",
+        "Select signed component versions",
         &comp_specs,
         |values| {
             let firmware = current
@@ -949,7 +927,7 @@ pub(super) fn component_update(
         terminal,
         "Review host component update",
         lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }
@@ -1118,9 +1096,7 @@ fn capture_firmware_review(
 ) -> io::Result<Option<host::FirmwareReview>> {
     let temporary = !service.starts_with("state=active;");
     let mut lines = vec![
-        format!("Observed managed service: {service}"),
-        "Reads complete pinned public pre-state through the sole authenticated daemon (no flash, lifecycle mutation, or pin replacement)."
-            .into(),
+        "The tool will check the connected device and its current state before updating; this does not change the device.".into(),
     ];
     if temporary {
         lines.push(
@@ -1128,12 +1104,14 @@ fn capture_firmware_review(
                 .into(),
         );
     }
-    if !review_mode(
-        terminal,
-        "Capture protected maintenance pre-state",
-        lines,
-        ConfirmMode::YesNo { danger: false },
-    )? {
+    if temporary
+        && !review_mode(
+            terminal,
+            "Capture protected maintenance pre-state",
+            lines,
+            ConfirmMode::YesNo { danger: false },
+        )?
+    {
         return Ok(None);
     }
     let id = new_id()?;
@@ -1157,26 +1135,6 @@ fn capture_firmware_review(
     }
     let path = Path::new("/var/lib/p2kesup/reviews").join(format!("{id}.json"));
     let preview: host::FirmwareReview = root_json(&path)?;
-    let mut lines = vec![
-        format!("Protected review : {}", path.display()),
-        format!("Pinned device ID : {}", preview.device_id),
-        format!("Pinned serial    : {}", preview.serial),
-        String::new(),
-    ];
-    lines.extend(
-        serde_json::to_string_pretty(&preview)
-            .map_err(io::Error::other)?
-            .lines()
-            .map(str::to_owned),
-    );
-    if !review_mode(
-        terminal,
-        "Verify observed pinned pre-state",
-        lines,
-        ConfirmMode::YesNo { danger: false },
-    )? {
-        return Ok(None);
-    }
     Ok(Some(preview))
 }
 
@@ -1257,22 +1215,15 @@ pub(super) fn firmware_update(
     let record = Path::new("/var/lib/p2kesup/firmware").join(format!("{}.json", new_id()?));
     let lines = vec![
         format!("Target release    : {}", target_selection.tag),
-        format!("Pinned USB serial : {}", preview.serial),
-        format!("Pinned device ID  : {}", preview.device_id),
-        format!("Transfer record   : {}", record.display()),
-        format!(
-            "Prior service     : {} (temporary validation={temporary_validation})",
-            preview.service_state
-        ),
-        String::new(),
-        "Stops pico2-kes-agentd for attended firmware-only transfer and verifies identical pin, live build, storage, and forward state afterward. Interrupted work reconciles in Activity (6)."
-            .into(),
+        format!("Pico 2 serial: {}", preview.serial),
+        "The agent will stop while firmware is transferred. Follow the physical instructions for this board; the tool will verify its identity and stored state afterward.".into(),
+        "If interrupted, open Activity to recover the original operation.".into(),
     ];
     if !review_mode(
         terminal,
         "Attended existing-device firmware update",
         lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }
@@ -1350,17 +1301,15 @@ pub(super) fn recover_firmware_record(
         "Original firmware recovery observation",
         vec![
             format!("Original operation : {}", record.operation_id),
-            format!("Original plan SHA  : {}", record.plan_digest),
-            format!(
-                "Service now        : {expected_service_state} (original: {:?})",
-                record.previous_service_state
-            ),
-            format!("Temporary startup  : {temporary_validation}"),
-            String::new(),
-            "Reconciles only this original record using current pin/build/storage and accounted public forward transitions (no flash writes, reset, re-pin, or OTP)."
+            if temporary_validation {
+                "The agent may be started temporarily to check recovery, then returned to its original state.".into()
+            } else {
+                "The tool will check the device and service without reflashing the board.".into()
+            },
+            "Recovery checks the original operation and the selected records; it does not reset or change the board's identity or security locks."
                 .into(),
         ],
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }
@@ -1385,7 +1334,13 @@ pub(super) fn recover_update_record(
     socket: &Path,
     record: &MaintenanceRecord,
 ) -> io::Result<()> {
-    if record.action != "update" {
+    if record.action != "update"
+        && !(record.action == "install"
+            && record
+                .checkpoints
+                .iter()
+                .any(|c| c.name == "precommission-update"))
+    {
         return Err(io::Error::other("original record is not a host update"));
     }
     let mut action = host::review_update_recovery(
@@ -1401,46 +1356,24 @@ pub(super) fn recover_update_record(
     } = &mut action
     {
         let need_temp = needs_temporary_service(service, record.previous_service_state.as_deref());
-        let yes_no = [
-            ("yes", "Approve if required for compatible recovery"),
-            ("no", "Decline"),
-        ];
-        let mut specs = vec![
-            FieldSpec::readonly("Current service state", service),
-            FieldSpec::select(
-                "Allow stopping pico2-kes-agentd for compatible binary fallback",
-                "yes",
-                &yes_no,
-            ),
-            FieldSpec::select(
-                "Restore release-owned deployment units/rules if changed",
-                "yes",
-                &yes_no,
-            ),
+        let mut lines = vec![
+            "The tool will recover the original update. If needed, it may stop the agent and restore its installed service files.".into(),
+            "Your configuration, device identity, and Pico 2 storage are preserved.".into(),
         ];
         if need_temp {
-            specs.push(FieldSpec::select(
-                "Allow temporary service run for validation",
-                "yes",
-                &yes_no,
-            ));
+            lines.push("The agent may be started temporarily to check recovery, then returned to its original state.".into());
         }
-        let Some(choices) =
-            form_validated(terminal, "Host update recovery options", &specs, |v| {
-                Ok((
-                    v[1] == "yes",
-                    v[2] == "yes",
-                    need_temp && v.get(3).is_some_and(|s| s == "yes"),
-                ))
-            })?
-        else {
+        if !review_mode(
+            terminal,
+            "Recover the original update",
+            lines,
+            ConfirmMode::Enter("continue to approval"),
+        )? {
             return Ok(());
-        };
-        *stop_service = choices.0;
-        *restore_deployment = choices.1;
-        if need_temp {
-            *temporary_validation = choices.2;
         }
+        *stop_service = true;
+        *restore_deployment = true;
+        *temporary_validation = need_temp;
     }
     setup::apply(terminal, worker, socket, action, None)
 }

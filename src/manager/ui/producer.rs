@@ -1,5 +1,5 @@
 use super::{
-    review, setup,
+    setup,
     widgets::{ConfirmMode, FieldSpec, form_validated, review_mode},
 };
 use crate::manager::{
@@ -32,7 +32,7 @@ pub(super) fn recover_record(
         terminal,
         "Recover original producer batch",
         reviewed.lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }
@@ -94,38 +94,28 @@ pub(super) fn run(
     };
 
     let mut lines = vec![
-        format!("Policy SHA-256: {}", request.policy_sha256),
-        "Drop-in content to install (root:root 0644):".into(),
+        "Install memory protection for the selected node services. Existing managed settings will be replaced.".into(),
+        "Target services:".into(),
     ];
-    lines.extend(
-        include_str!("../../../deploy/cardano-node-memory-hardening.conf")
-            .lines()
-            .map(|line| format!("  {line}")),
-    );
-    lines.push(String::new());
-    lines.push("Target units:".into());
     for target in &mut request.targets {
         target.existing = producer::inspect(&target.unit)?;
-        let path = producer::destination(&target.unit)?;
+        producer::destination(&target.unit)?;
         let is_active = host::service_state(&target.unit).is_ok_and(|s| s == "active");
         target.restart = approve_restart && is_active;
         let state_desc = match &target.existing {
             None => "create new drop-in".to_owned(),
-            Some(e) => format!("replace reviewed inode {} (mode {:04o})", e.inode, e.mode),
+            Some(_) => "replace existing settings".to_owned(),
         };
         lines.push(format!(
-            "  {} -> {} ({state_desc}; restart={})",
-            target.unit,
-            path.display(),
-            target.restart
+            "  {} ({state_desc}; restart={})",
+            target.unit, target.restart
         ));
     }
-    let _ = review;
     if !review_mode(
         terminal,
         "Review producer memory hardening",
         lines,
-        ConfirmMode::YesNo { danger: false },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }

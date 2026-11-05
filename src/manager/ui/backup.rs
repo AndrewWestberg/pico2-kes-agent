@@ -69,7 +69,7 @@ pub(super) fn run(
             .into(),
         "Passphrase custody: pico2-kes-agent directly owns the foreground terminal for passphrase entry; p2kesup never captures passphrases or plaintext keys."
             .into(),
-        "Independent verification: verify device, pool, incarnation, generation, and verification-key bindings against your independent custody records."
+        "Use backup and identity files from your independently trusted custody records; the tool checks their device, pool, generation, and verification-key bindings."
             .into(),
         "Plaintext restore warning: restoration writes unencrypted KES signing material (0600) and does not revoke other copies or extend OpCert lifetime—fence all producers before using a restored key."
             .into(),
@@ -271,10 +271,33 @@ pub(super) fn run(
         Action::Transfer => unreachable!(),
     };
     let confirm_mode = ConfirmMode::YesNo { danger };
+    let display_lines = if let backup::Action::Restore {
+        verification_key,
+        identity,
+        artifact,
+        recipient,
+        output,
+        ..
+    } = &request
+    {
+        vec![
+            "Restore an unencrypted KES signing key on this isolated backup host.".into(),
+            "Fence all producers before using the restored key. This does not revoke other copies or extend the certificate lifetime.".into(),
+            "Select the backup for the intended pool from independently trusted custody records; the tool verifies the device and key bindings.".into(),
+            format!("Encrypted backup: {artifact}"),
+            format!("Trusted device identity: {identity}"),
+            format!("KES verification key: {verification_key}"),
+            format!("Private recipient key: {recipient}"),
+            format!("Plaintext output: {output}"),
+            "Existing outputs are never overwritten. If interrupted, keep any output files and check Activity before attempting another restore.".into(),
+        ]
+    } else {
+        lines.clone()
+    };
     if !review_mode(
         terminal,
-        "Review exact backup operation",
-        lines.clone(),
+        "Review backup operation",
+        display_lines.clone(),
         confirm_mode,
     )? {
         return Ok(());
@@ -314,7 +337,7 @@ pub(super) fn run(
             return Err(error);
         }
     };
-    let mut outcome = lines;
+    let mut outcome = display_lines;
     let summary = if status.success() {
         backup::record_outcome(
             &store,
@@ -322,7 +345,7 @@ pub(super) fn run(
             "completed",
             "Foreground CLI reported success",
         )?;
-        "Foreground CLI reported success.".to_string()
+        "Backup operation completed.".to_string()
     } else {
         backup::record_outcome(
             &store,
@@ -331,7 +354,7 @@ pub(super) fn run(
             "Foreground CLI did not report success; inspect outputs before retrying",
         )?;
         format!(
-            "Foreground CLI did not report success ({status}); inspect the attended CLI result and outputs before retrying."
+            "Backup operation did not finish successfully ({status}). Keep any output files and check the saved operation in Activity before retrying."
         )
     };
     outcome.push(String::new());

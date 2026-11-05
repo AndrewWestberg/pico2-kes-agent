@@ -1,6 +1,6 @@
 use super::{
     lifecycle, producer, releases, review, safe, service, setup, uninstall,
-    widgets::{ConfirmMode, review_mode, tone},
+    widgets::{ConfirmMode, review_details, tone},
 };
 use crate::manager::{
     host::{self, HostPlan},
@@ -27,6 +27,10 @@ use std::{
 
 #[derive(Clone, Debug)]
 pub(super) enum ActivityItem {
+    Unavailable {
+        source: &'static str,
+        error: String,
+    },
     HostRecord {
         record: Box<MaintenanceRecord>,
         needs_reconcile: bool,
@@ -61,6 +65,7 @@ pub(super) enum ActivityItem {
 impl ActivityItem {
     pub fn needs_reconcile(&self) -> bool {
         match self {
+            Self::Unavailable { .. } => true,
             Self::HostRecord {
                 needs_reconcile, ..
             }
@@ -75,6 +80,7 @@ impl ActivityItem {
 
     fn timestamp_us(&self) -> u64 {
         match self {
+            Self::Unavailable { .. } => u64::MAX,
             Self::HostRecord { timestamp_us, .. }
             | Self::BackupRecord { timestamp_us, .. }
             | Self::LifecycleRef { timestamp_us, .. }
@@ -85,6 +91,7 @@ impl ActivityItem {
 
     fn badge_and_color(&self) -> (&'static str, Color) {
         match self {
+            Self::Unavailable { .. } => ("[CHECK]    ", Color::Yellow),
             Self::HostRecord {
                 record,
                 needs_reconcile,
@@ -96,7 +103,7 @@ impl ActivityItem {
                 ..
             } => {
                 if *needs_reconcile {
-                    ("[RECONCILE]", Color::Yellow)
+                    ("[CHECK]    ", Color::Yellow)
                 } else if record.outcome.contains("fail") {
                     ("[FAILED]   ", Color::Red)
                 } else {
@@ -117,22 +124,12 @@ impl ActivityItem {
 
     fn summary_text(&self) -> String {
         match self {
-            Self::HostRecord { record, .. } => {
-                let op_short = workspace::short_id(&record.operation_id.to_string());
+            Self::Unavailable { source, .. } => format!("{source}: could not read saved history"),
+            Self::HostRecord { record, .. } | Self::BackupRecord { record, .. } => {
                 format!(
-                    "host/{:<18} {} · {}",
-                    safe(&record.action),
-                    safe(&op_short),
-                    safe(&record.outcome)
-                )
-            }
-            Self::BackupRecord { record, .. } => {
-                let op_short = workspace::short_id(&record.operation_id.to_string());
-                format!(
-                    "backup/{:<16} {} · {}",
-                    safe(&record.action),
-                    safe(&op_short),
-                    safe(&record.outcome)
+                    "{} · {}",
+                    safe(action_label(&record.action)),
+                    workspace::short_id(&record.operation_id.to_string()),
                 )
             }
             Self::UnknownRecord { value } => {
@@ -150,7 +147,7 @@ impl ActivityItem {
             } => {
                 let op_short = workspace::short_id(op_id);
                 let state = if *pending {
-                    "needs CLI reconcile"
+                    "needs checking"
                 } else {
                     "recorded"
                 };
@@ -194,23 +191,83 @@ fn file_mtime_us(path: &Path) -> u64 {
 
 pub(crate) fn first_install_needs_postcheck(record: &MaintenanceRecord) -> bool {
     record.action == "firmware_transfer"
-        && !matches!(record.outcome.as_str(), "failed-known" | "cancelled")
+        && !(matches!(record.outcome.as_str(), "failed-known" | "cancelled")
+            && host::maintenance_record_allows_new_action(record))
         && !record
             .checkpoints
             .iter()
             .any(|checkpoint| checkpoint.name == "application-blank-attended")
 }
 
+fn action_label(action: &str) -> &str {
+    match action {
+        "install" => "Install software",
+        "update" => "Update host software",
+        "upgrade" => "Update software and firmware",
+        "firmware_transfer" => "Install device firmware",
+        "firmware-update" => "Update device firmware",
+        "commission_service" => "Prepare device setup",
+        "config" => "Save configuration",
+        "service" => "Change agent service",
+        "host-security" => "Protect host memory",
+        "producer-hardening" => "Protect block producer memory",
+        "provisioning" => "Configure device security",
+        "wipe-board" => "Erase device keys and pools",
+        "uninstall" => "Remove host software",
+        _ => action,
+    }
+}
+
+fn maintenance_lines(record: &MaintenanceRecord, needs_reconcile: bool) -> Vec<String> {
+    let action = record
+        .approved_scope
+        .first()
+        .and_then(|scope| serde_json::from_str::<host::HostAction>(scope).ok())
+        .map_or_else(
+            || action_label(&record.action).to_owned(),
+            |action| action.summary(),
+        );
+    let status = if needs_reconcile {
+        "Needs checking before another attempt"
+    } else {
+        match record.outcome.as_str() {
+            "completed" => "Completed",
+            "cancelled" => "Cancelled",
+            "failed-known" => "Stopped; no recovery pending",
+            _ => "Recorded",
+        }
+    };
+    let mut lines = vec![format!("Action: {action}"), format!("Status: {status}")];
+    if let Some(message) = record.post_observations.last()
+        && !message.trim_start().starts_with(['{', '['])
+    {
+        lines.push(format!(
+            "Last result: {}",
+            message.chars().take(512).collect::<String>()
+        ));
+    }
+    if needs_reconcile {
+        lines.push("Continue below to check the saved operation safely. p2kesup will ask before making changes; do not start a replacement operation.".into());
+    }
+    lines
+}
+
 pub(super) fn discover(role: InstallationRole) -> ActivityInventory {
     let mut items = Vec::new();
 
-    if let Ok(records) = RecordStore::list_host_readonly() {
+    let host_records = RecordStore::list_host_readonly();
+    if let Err(error) = &host_records {
+        items.push(ActivityItem::Unavailable {
+            source: "Host history",
+            error: error.to_string(),
+        });
+    }
+    if let Ok(records) = host_records {
         for rec in records {
             match rec {
                 Record::Supported(record) => {
-                    let needs_reconcile =
-                        !host::maintenance_outcome_allows_new_action(&record.outcome)
-                            || first_install_needs_postcheck(&record);
+                    let needs_reconcile = !host::maintenance_record_allows_new_action(&record)
+                        || first_install_needs_postcheck(&record);
                     let timestamp_us = record
                         .checkpoints
                         .last()
@@ -228,14 +285,18 @@ pub(super) fn discover(role: InstallationRole) -> ActivityInventory {
         }
     }
 
-    if role == InstallationRole::Backup
-        && let Ok(records) = RecordStore::list_backup_readonly()
-    {
+    let backup_records = (role == InstallationRole::Backup).then(RecordStore::list_backup_readonly);
+    if let Some(Err(error)) = &backup_records {
+        items.push(ActivityItem::Unavailable {
+            source: "Backup history",
+            error: error.to_string(),
+        });
+    }
+    if let Some(Ok(records)) = backup_records {
         for rec in records {
             match rec {
                 Record::Supported(record) => {
-                    let needs_reconcile =
-                        !host::maintenance_outcome_allows_new_action(&record.outcome);
+                    let needs_reconcile = !host::maintenance_record_allows_new_action(&record);
                     let timestamp_us = record
                         .checkpoints
                         .last()
@@ -343,7 +404,7 @@ pub(super) fn render_activity(
     let (status_line, status_color) = if inventory.unresolved_count > 0 {
         (
             format!(
-                "[!] {} operation(s) need reconciliation — press Enter on a highlighted item to reconcile its original ID",
+                "[!] {} item(s) need checking — select an item and press Enter to continue safely",
                 inventory.unresolved_count
             ),
             Color::Yellow,
@@ -351,13 +412,13 @@ pub(super) fn render_activity(
     } else {
         (
             format!(
-                "[OK] No interrupted operations pending ({} retained record/plan/receipt item(s))",
+                "[OK] No interrupted operations pending ({} saved item(s))",
                 inventory.items.len()
             ),
             Color::Green,
         )
     };
-    let sub_line = "Enter: inspect / resume selected operation · r: refresh";
+    let sub_line = "Enter: view result or continue safely · r: refresh";
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(status_line, tone(status_color).add_modifier(Modifier::BOLD)),
@@ -370,18 +431,14 @@ pub(super) fn render_activity(
     if inventory.items.is_empty() {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("No retained maintenance records, lifecycle receipts, or host plans discovered yet."),
+                Line::from("No saved operations yet."),
                 Line::default(),
                 Line::styled(
                     "Interrupted operations appear here automatically. Use Host for diagnostics.",
                     tone(Color::DarkGray),
                 ),
             ])
-            .block(
-                Block::default()
-                    .title(" Activity & Original Records ")
-                    .borders(Borders::ALL),
-            ),
+            .block(Block::default().title(" Activity ").borders(Borders::ALL)),
             parts[1],
         );
         return;
@@ -409,7 +466,7 @@ pub(super) fn render_activity(
             .block(
                 Block::default()
                     .title(format!(
-                        " Activity & Original Records ({} total) ",
+                        " Activity ({} saved items) ",
                         inventory.items.len()
                     ))
                     .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))
@@ -430,6 +487,14 @@ pub(super) fn open_item(
     launched_bundle: Option<&PathBuf>,
 ) -> io::Result<()> {
     match item {
+        ActivityItem::Unavailable { source, error } => {
+            review(terminal, source, vec![
+                "p2kesup cannot read the saved operation history, so it cannot establish whether an earlier action finished.".into(),
+                format!("Reason: {error}"),
+                "If you just installed p2kesup, log out and back in to refresh your access, then reopen it. Otherwise request support with the reason above. Do not reset or delete records.".into(),
+            ])?;
+            Ok(())
+        }
         ActivityItem::HostRecord {
             record,
             needs_reconcile,
@@ -437,51 +502,61 @@ pub(super) fn open_item(
         } => {
             let op_id = record.operation_id.to_string();
             let digest = record.plan_digest.to_string();
-            let mut lines = vec![
-                format!("Operation ID : {op_id}"),
-                format!("Action       : {}", record.action),
-                format!("Outcome      : {}", record.outcome),
-                format!("Plan SHA-256 : {digest}"),
-                String::new(),
-            ];
-            lines.extend(
-                serde_json::to_string_pretty(record)
-                    .map_err(io::Error::other)?
-                    .lines()
-                    .map(str::to_owned),
-            );
+            let mut lines = maintenance_lines(record, *needs_reconcile);
+            let details = serde_json::to_string_pretty(record)
+                .map_err(io::Error::other)?
+                .lines()
+                .map(str::to_owned)
+                .collect();
             if !*needs_reconcile {
-                review(terminal, "Retained host maintenance record", lines)?;
+                review_details(
+                    terminal,
+                    "Operation result",
+                    lines,
+                    details,
+                    ConfirmMode::None,
+                )?;
                 return Ok(());
             }
             let prompt_label = match record.action.as_str() {
-                "upgrade" => Some("reconcile original tuple upgrade"),
-                "update" => Some("recover original host component update"),
-                "firmware-update" => Some("reconcile original firmware update"),
-                "firmware_transfer" => Some("associate & reconcile factory firmware install"),
-                "wipe-board" => Some("resume original wipe forward"),
-                "provisioning" => Some("inspect or resume original security stage"),
-                "service" | "config" | "commission_service" => {
-                    Some("reconcile original service/config state")
+                "upgrade" => Some("check the software and firmware update"),
+                "update" => Some("check the host software update"),
+                "install"
+                    if record
+                        .checkpoints
+                        .iter()
+                        .any(|c| c.name == "precommission-update") =>
+                {
+                    Some("check the setup software update")
                 }
-                "host-security" => Some("recover original host security changes"),
-                "producer-hardening" => Some("recover original producer drop-in batch"),
-                "uninstall" => Some("recover original uninstall record"),
+                "firmware-update" => Some("check the device firmware update"),
+                "firmware_transfer" => Some("check whether firmware installation started"),
+                "wipe-board" => Some("check the interrupted device erase"),
+                "provisioning" => Some("check the device security step"),
+                "service" | "config" | "commission_service" => {
+                    Some("check the service and configuration")
+                }
+                "host-security" => Some("check the host security changes"),
+                "producer-hardening" => Some("check the producer memory protection"),
+                "uninstall" => Some("check software removal"),
                 _ => None,
             };
             let Some(label) = prompt_label else {
-                lines.insert(
-                    4,
-                    "Guidance     : Inspect the retained original plan; never create a replacement retry."
-                        .into(),
-                );
-                review(terminal, "Unresolved maintenance record (inspect)", lines)?;
+                lines.push("Automatic recovery is unavailable for this record. Keep it and use its technical details when requesting support; do not delete it or repeat the action.".into());
+                review_details(
+                    terminal,
+                    "Operation needs checking",
+                    lines,
+                    details,
+                    ConfirmMode::None,
+                )?;
                 return Ok(());
             };
-            if !review_mode(
+            if !review_details(
                 terminal,
-                "Reconcile unresolved maintenance record",
+                "Continue interrupted operation",
                 lines,
+                details,
                 ConfirmMode::Enter(label),
             )? {
                 return Ok(());
@@ -491,11 +566,19 @@ pub(super) fn open_item(
                     releases::recover_upgrade_record(terminal, worker, socket, &op_id, &digest)
                 }
                 "update" => releases::recover_update_record(terminal, worker, socket, record),
+                "install"
+                    if record
+                        .checkpoints
+                        .iter()
+                        .any(|c| c.name == "precommission-update") =>
+                {
+                    releases::recover_update_record(terminal, worker, socket, record)
+                }
                 "firmware-update" => {
                     releases::recover_firmware_record(terminal, worker, socket, record)
                 }
                 "firmware_transfer" => {
-                    setup::reconcile_first_install_record(terminal, worker, socket, &op_id)
+                    setup::reconcile_first_install_record(terminal, worker, socket, &op_id, &digest)
                 }
                 "wipe-board" => setup::apply(
                     terminal,
@@ -549,40 +632,44 @@ pub(super) fn open_item(
             needs_reconcile,
             ..
         } => {
-            let mut lines = vec![
-                format!("Backup operation ID : {}", record.operation_id),
-                format!("Action              : {}", record.action),
-                format!("Outcome             : {}", record.outcome),
-            ];
+            let mut lines = maintenance_lines(record, *needs_reconcile);
             if *needs_reconcile {
                 lines.push(
-                    "Guidance            : Inspect the destination path(s) on this backup host before creating a new recipient or restore."
+                    "Keep any files already created on this backup host. Do not create a replacement recipient or restore until the original destination files have been checked."
                         .into(),
                 );
             }
-            lines.push(String::new());
-            lines.extend(
-                serde_json::to_string_pretty(record)
-                    .map_err(io::Error::other)?
-                    .lines()
-                    .map(str::to_owned),
-            );
-            review(terminal, "Retained backup record", lines)?;
+            let details = serde_json::to_string_pretty(record)
+                .map_err(io::Error::other)?
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            review_details(
+                terminal,
+                "Backup operation",
+                lines,
+                details,
+                ConfirmMode::None,
+            )?;
             Ok(())
         }
         ActivityItem::UnknownRecord { value } => {
-            let mut lines = vec![
-                "Record uses an unrecognized schema version; p2kesup displays it read-only and blocks conflicting mutations until upgraded."
-                    .into(),
-                String::new(),
+            let lines = vec![
+                "This saved record was written in a format this version cannot understand.".into(),
+                "Use the installed p2kesup version that created it, or request support with the technical details. Keep the original record; do not delete it or repeat the action.".into(),
             ];
-            lines.extend(
-                serde_json::to_string_pretty(value)
-                    .map_err(io::Error::other)?
-                    .lines()
-                    .map(str::to_owned),
-            );
-            review(terminal, "Unknown-schema maintenance record", lines)?;
+            let details = serde_json::to_string_pretty(value)
+                .map_err(io::Error::other)?
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            review_details(
+                terminal,
+                "Unrecognized record format",
+                lines,
+                details,
+                ConfirmMode::None,
+            )?;
             Ok(())
         }
         ActivityItem::LifecycleRef {
@@ -595,27 +682,25 @@ pub(super) fn open_item(
             if *pending {
                 return lifecycle::reconcile_reference(terminal, worker, socket, reference);
             }
-            let mut lines = vec![
-                format!("Reference file : {}", reference.display()),
-                format!("Receipt file   : {}", receipt_path.display()),
-                format!("Action         : {action}"),
-                String::new(),
+            let lines = vec![
+                format!("Action: {action}"),
+                "The saved result is available. You can check it against the agent without repeating the original change.".into(),
+                format!("Saved result: {}", receipt_path.display()),
             ];
-            if let Ok(rec) = mgr_lifecycle::load_public_receipt(receipt_path) {
-                lines.extend(
-                    serde_json::to_string_pretty(&rec)
-                        .map_err(io::Error::other)?
-                        .lines()
-                        .map(str::to_owned),
-                );
-            }
-            if review_mode(
+            let details = match mgr_lifecycle::load_public_receipt(receipt_path) {
+                Ok(receipt) => serde_json::to_string_pretty(&receipt)
+                    .map_err(io::Error::other)?
+                    .lines()
+                    .map(str::to_owned)
+                    .collect(),
+                Err(error) => vec![format!("Could not read saved result: {error}")],
+            };
+            if review_details(
                 terminal,
-                "Retained lifecycle receipt",
+                "Saved operation result",
                 lines,
-                ConfirmMode::Enter(
-                    "re-verify / reconcile receipt against daemon (or Esc to close)",
-                ),
+                details,
+                ConfirmMode::Enter("check the saved result with the agent"),
             )? {
                 lifecycle::reconcile_reference(terminal, worker, socket, reference)?;
             }
@@ -629,19 +714,20 @@ pub(super) fn open_item(
             ..
         } => {
             let lines = vec![
-                format!("Plan file    : {}", path.display()),
-                format!("Plan ID      : {plan_id}"),
-                format!("Summary      : {summary}"),
-                format!("Plan SHA-256 : {approved_digest}"),
-                String::new(),
-                "Inspection is strictly read-only: host-inspect checks current host state against this plan without replaying it."
-                    .into(),
+                format!("Planned action: {summary}"),
+                "This is a saved plan, not proof that the action ran. Check the current host without making changes.".into(),
             ];
-            if review_mode(
+            let details = vec![
+                format!("Plan file: {}", path.display()),
+                format!("Plan ID: {plan_id}"),
+                format!("Plan digest: {approved_digest}"),
+            ];
+            if review_details(
                 terminal,
-                "Retained host plan",
+                "Saved plan",
                 lines,
-                ConfirmMode::Enter("run read-only privileged host-inspect"),
+                details,
+                ConfirmMode::Enter("check current host state (read-only)"),
             )? {
                 setup::inspect_plan_file(terminal, worker, socket, path)?;
             }
@@ -653,6 +739,19 @@ pub(super) fn open_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_history_routes_to_activity_not_new_setup() {
+        let items = [ActivityItem::Unavailable {
+            source: "Host history",
+            error: "Permission denied".into(),
+        }];
+        let unresolved = items.iter().filter(|item| item.needs_reconcile()).count();
+        assert_eq!(
+            super::super::status::next_step(None, unresolved),
+            super::super::status::NextStep::Activity,
+        );
+    }
 
     #[test]
     fn completed_transfer_still_needs_attended_application_postcheck() {
@@ -675,7 +774,36 @@ mod tests {
         .unwrap();
         assert!(first_install_needs_postcheck(&record));
         record.outcome = "cancelled".into();
+        assert!(first_install_needs_postcheck(&record));
+        let path = PathBuf::from(format!(
+            "/var/lib/p2kesup/firmware/{}.json",
+            "44".repeat(16)
+        ));
+        record.bundle_digest = Some("33".repeat(32));
+        record.approved_scope = vec![
+            serde_json::to_string(&host::HostAction::FirmwareFirstInstall {
+                bundle: "/bundle".into(),
+                manifest_digest: "33".repeat(32),
+                candidate_accepted: true,
+                record: path.clone(),
+                apply: true,
+            })
+            .unwrap(),
+        ];
+        record.checkpoints = vec![
+            crate::manager::model::MaintenanceCheckpoint {
+                name: "intent-durable".into(),
+                observed_at_unix_us: 1,
+                evidence: record.plan_digest.to_string(),
+            },
+            crate::manager::model::MaintenanceCheckpoint {
+                name: "first-install-not-started".into(),
+                observed_at_unix_us: 2,
+                evidence: path.display().to_string(),
+            },
+        ];
         assert!(!first_install_needs_postcheck(&record));
+        record.checkpoints.clear();
         record.outcome = "completed".into();
         record
             .checkpoints

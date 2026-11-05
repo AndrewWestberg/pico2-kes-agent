@@ -21,7 +21,6 @@ pub(super) fn recover_record(
     let checked = uninstall::review_uninstall_recovery(operation_id, plan_digest)?;
     let mut lines = vec![
         format!("Original operation: {operation_id}"),
-        format!("Original plan SHA : {plan_digest}"),
         "Recovery never stops a newly changed service; configuration, records, identities, and Pico 2 storage remain untouched."
             .into(),
     ];
@@ -30,7 +29,7 @@ pub(super) fn recover_record(
         terminal,
         "Review original uninstall recovery",
         lines,
-        ConfirmMode::YesNo { danger: true },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }
@@ -114,7 +113,7 @@ pub(super) fn run(
             terminal,
             "Review selected uninstall",
             lines,
-            ConfirmMode::YesNo { danger: true },
+            ConfirmMode::Enter("continue to approval"),
         )? {
             return Ok(());
         }

@@ -154,17 +154,20 @@ pub(super) fn pin_posture(snapshot: Option<&Snapshot>) -> (PinPosture, String, C
         (_, Some(pin), Some(dev)) => match dev.get("device_id").and_then(Value::as_str) {
             Some(live_id) if live_id == pin => (
                 PinPosture::Matched,
-                format!("Pinned & matched ({})", workspace::short_id(live_id)),
+                format!(
+                    "Registered device matched ({})",
+                    workspace::short_id(live_id)
+                ),
                 Color::Green,
             ),
             Some(live_id) => (
                 PinPosture::Mismatch,
-                format!("MISMATCH ({} != pin)", workspace::short_id(live_id)),
+                format!("Wrong device ({})", workspace::short_id(live_id)),
                 Color::Red,
             ),
             None => (
                 PinPosture::Mismatch,
-                "Blank device (pin expected!)".into(),
+                "Blank device; expected the registered device".into(),
                 Color::Red,
             ),
         },
@@ -172,20 +175,23 @@ pub(super) fn pin_posture(snapshot: Option<&Snapshot>) -> (PinPosture, String, C
             if let Some(live_id) = dev.get("device_id").and_then(Value::as_str) {
                 (
                     PinPosture::ObservedUnpinned,
-                    format!("Unpinned ({})", workspace::short_id(live_id)),
+                    format!(
+                        "Not registered on this host ({})",
+                        workspace::short_id(live_id)
+                    ),
                     Color::Yellow,
                 )
             } else {
                 (
                     PinPosture::Commissioning,
-                    "Blank / commissioning".into(),
+                    "Blank device; setup in progress".into(),
                     Color::Yellow,
                 )
             }
         }
         (_, Some(pin), None) => (
             PinPosture::Unverified,
-            format!("Pin {} (live unverified)", workspace::short_id(pin)),
+            format!("Expected {}; device not verified", workspace::short_id(pin)),
             Color::Yellow,
         ),
         (_, None, Some(dev)) => {
@@ -783,11 +789,11 @@ pub(super) fn manager_needs_reexec(local: Option<&LocalOverview>, elapsed: Durat
 }
 
 pub(super) const BACKUP_OVERVIEW_ACTIONS: &[&str] = &[
-    "Create protected HPKE backup recipient keypair",
-    "Emergency plaintext KES restore (local)",
-    "Public recipient transfer & custody guidance",
-    "Software releases & tuple updates",
-    "Activity & retained backup records",
+    "Create a protected backup recipient key",
+    "Restore a backup to a plaintext KES key",
+    "Transfer the public recipient key safely",
+    "Software releases and updates",
+    "Activity and saved backup results",
 ];
 
 pub(super) fn render_overview(
@@ -914,7 +920,7 @@ pub(super) fn render_overview(
 
     let (rec_text, rec_color) = if unresolved_records > 0 {
         (
-            format!("{unresolved_records} need reconcile [!]"),
+            format!("{unresolved_records} need checking [!]"),
             Color::Yellow,
         )
     } else {
@@ -1020,19 +1026,16 @@ pub(super) fn render_overview(
     // Banner + CTA + Soonest expiry
     let step = next_step(snapshot, unresolved_records);
     let cta_text = match step {
-        NextStep::Activity => "Reconcile interrupted operation in Activity (6)",
+        NextStep::Activity => "Check interrupted operation in Activity (6)",
         NextStep::Setup => "Set up my Pico 2 (s)",
-        NextStep::Host => "Inspect or start pico2-kes-agentd in Host (4)",
+        NextStep::Host => "Check or start the agent in Host (4)",
         NextStep::Pools => "Open Pools to add a pool or rotate its KES key (2)",
         NextStep::Refresh => "Refresh host & device observations (r)",
     };
     let (banner_title, banner_color) = if svc_color == Color::Red {
         (" [!!] pico2-kes-agentd failed ", Color::Red)
     } else if unresolved_records > 0 {
-        (
-            " [!] Unresolved operation needs reconciliation ",
-            Color::Yellow,
-        )
+        (" [!] Interrupted operation needs checking ", Color::Yellow)
     } else if access == Some(ConfigAccess::Absent)
         || cfg_summary.is_some_and(|c| c.pinned_device_id.is_none())
     {
@@ -1052,10 +1055,10 @@ pub(super) fn render_overview(
         cta_text,
         "Jump -> 2 Pools (KES pools & rotations)",
         "Set up my Pico 2 (new or existing board)",
-        "Jump -> 4 Host (service, config, producer hardening)",
-        "Jump -> 3 Device (firmware & OTP security)",
-        "Jump -> 5 Software (tuple upgrades & releases)",
-        "Jump -> 6 Activity (records, plans & receipts)",
+        "Jump -> 4 Host (service, configuration, memory protection)",
+        "Jump -> 3 Device (firmware and permanent security settings)",
+        "Jump -> 5 Software (updates and releases)",
+        "Jump -> 6 Activity (saved operations and results)",
     ];
     let chosen_label = jump_labels.get(selected).copied().unwrap_or(cta_text);
     frame.render_widget(
@@ -1104,7 +1107,7 @@ pub(super) fn render_overview(
 
     let right_lines = vec![
         kv_line("USB", usb_text, usb_color),
-        kv_line("Pin/ID", pin_text, pin_color),
+        kv_line("Identity", pin_text, pin_color),
         kv_line("Serial", serial_text, Color::Cyan),
         kv_line("Firmware", fw_text, Color::Cyan),
         kv_line("Capacity", cap_text, fleet_color),
@@ -1114,7 +1117,7 @@ pub(super) fn render_overview(
     frame.render_widget(
         Paragraph::new(right_lines).block(
             Block::default()
-                .title(" Device (non-attested) & Pools ")
+                .title(" Device status & Pools ")
                 .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL),
         ),
@@ -1612,7 +1615,7 @@ pub(super) fn render_pool_detail(
 pub(super) fn render_device(frame: &mut Frame<'_>, area: Rect, snapshot: Option<&Snapshot>) {
     let mut lines = Vec::new();
     let (_, pin_text, pin_col) = pin_posture(snapshot);
-    lines.push(kv_line("Pin/ID", pin_text, pin_col));
+    lines.push(kv_line("Identity", pin_text, pin_col));
     if let Some(s) = snapshot {
         let elapsed = s.captured_at.elapsed();
         let info = s
@@ -1640,7 +1643,7 @@ pub(super) fn render_device(frame: &mut Frame<'_>, area: Rect, snapshot: Option<
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
-                .title(" Device (firmware report — non-attested) ")
+                .title(" Device status (reported by firmware) ")
                 .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL),
         ),

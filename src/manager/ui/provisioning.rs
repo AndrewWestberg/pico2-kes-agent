@@ -26,10 +26,19 @@ pub(super) enum Action {
     Reconcile,
 }
 pub(super) const ACTIONS: &[(Action, &str)] = &[
-    (Action::Preview, "Read-only security preview"),
-    (Action::Prepare, "Prepare one stage"),
-    (Action::Enable, "Enable one stage"),
-    (Action::Lock, "Lock one stage"),
+    (
+        Action::Preview,
+        "Check device security without changing the board",
+    ),
+    (
+        Action::Prepare,
+        "Permanently set the firmware signing authority",
+    ),
+    (Action::Enable, "Permanently require signed firmware"),
+    (
+        Action::Lock,
+        "Permanently restrict debugging and recovery access",
+    ),
 ];
 
 pub(super) fn recover_record(
@@ -43,12 +52,18 @@ pub(super) fn recover_record(
         return Err(io::Error::other("Not a provisioning record"));
     }
     let choices = [
-        ("reopen", "Read original record"),
-        ("resume", "Resume admitted preparation"),
-        ("reconcile", "Reconcile permission uncertainty"),
+        ("reopen", "Open the original record"),
+        (
+            "resume",
+            "Continue the interrupted signing-authority preparation",
+        ),
+        (
+            "reconcile",
+            "Check the uncertain security change on the same board",
+        ),
     ];
     let specs = [FieldSpec::select("Recovery action", "reopen", &choices)];
-    let Some(choice) = form_validated(terminal, "Provisioning recovery", &specs, |v| {
+    let Some(choice) = form_validated(terminal, "Recover device security", &specs, |v| {
         Ok(v[0].clone())
     })?
     else {
@@ -163,7 +178,7 @@ fn run_action(
     if matches!(action, Action::Enable | Action::Lock) && (!commission_active || normal_active) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "enable and lock require the sole restricted commissioning observation service already running for fresh blank admission; start it explicitly through setup, without commissioning",
+            "To enable or lock device security, the setup service must be running and the normal agent must be stopped. Start the setup service through setup without creating a device identity first.",
         ));
     }
     let stop_normal = normal_active && !matches!(action, Action::Reopen);
@@ -192,30 +207,33 @@ fn run_action(
     };
     request.validate()?;
 
-    let lines = vec![
-        format!("Stage: {:?}; exact serial: {}", request.action, request.serial),
-        format!(
-            "Authenticated distribution: {}; verification evidence: {:?}",
-            request.manifest_digest, request.evidence
-        ),
-        format!(
-            "Normal service: {}; commissioning service: {}",
-            request.normal_state, request.commissioning_state
-        ),
-        format!(
-            "Approved service stops: normal {}; commissioning {}. No automatic restart or commissioning.",
-            stop_normal, stop_commissioning
-        ),
-        "WARNING: OTP stages are optional and hardware-irreversible. Unlocked use remains fully supported."
-            .into(),
-        "The foreground firmware tool owns interactive prompts, physical transitions, and the protected record."
-            .into(),
+    let description = match action {
+        Action::Preview => "Check device security without changing the board",
+        Action::Prepare => "Permanently set the firmware signing authority",
+        Action::Enable => "Permanently require firmware signed by the selected authority",
+        Action::Lock => "Permanently restrict debugging and recovery access",
+        Action::Reopen => "Open the original device-security record",
+        Action::Resume => "Continue the interrupted signing-authority preparation",
+        Action::Reconcile => "Check the uncertain security change on the same board",
+    };
+    let mut lines = vec![
+        format!("{description}; Pico 2 serial: {}", request.serial),
+        "Device security is optional. Setting the signing authority, requiring signed firmware, and restricting access are permanent and cannot be undone. Unlocked use remains supported.".into(),
+        "Follow the firmware tool's prompts and physical instructions for the selected board.".into(),
     ];
+    if stop_normal {
+        lines.push(
+            "The normal agent service will be stopped and will not restart automatically.".into(),
+        );
+    }
+    if stop_commissioning {
+        lines.push("The setup service will be stopped and will not restart automatically.".into());
+    }
     if !review_mode(
         terminal,
         "Review optional irreversible device security",
         lines,
-        ConfirmMode::YesNo { danger: true },
+        ConfirmMode::Enter("continue to approval"),
     )? {
         return Ok(());
     }

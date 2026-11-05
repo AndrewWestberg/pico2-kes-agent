@@ -99,11 +99,11 @@ pub(crate) fn run(
     if !review_mode(
         terminal,
         "Restart agent",
-        vec![format!(
-            "The pool is bound to {}. Restart the agent to apply the configuration before rotating.",
-            pool_socket.display()
-        )],
-        ConfirmMode::YesNo { danger: false },
+        vec![
+            format!("The pool is bound to {}. The agent must restart to apply the configuration before rotating.", pool_socket.display()),
+            "Restarting interrupts the agent and can temporarily interrupt producers using it. You can decline the restart at the next confirmation.".into(),
+        ],
+        ConfirmMode::Enter("continue"),
     )? {
         return Ok(());
     }

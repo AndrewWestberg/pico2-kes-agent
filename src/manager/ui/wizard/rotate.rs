@@ -253,7 +253,14 @@ pub(crate) fn run(
         ],
         2,
     );
-    instructions.extend([format!("Current KES period: {} (slot {}; next period in {}h {}m)", clock.period, clock.slot, minutes / 60, minutes % 60), format!("Copy {} to the cold machine and run there:", vkey.display()), format!("cardano-cli conway node issue-op-cert --kes-verification-key-file {name} --cold-signing-key-file cold.skey --operational-certificate-issue-counter-file cold.counter --kes-period {} --out-file node.cert", clock.period), format!("Copy {} to your backup host.", backup.display()), "p2kesup never runs this cold-machine command.".into()]);
+    instructions.extend([
+        format!("Current KES period: {} (slot {}; next period in {}h {}m)", clock.period, clock.slot, minutes / 60, minutes % 60),
+        format!("Copy {} to the cold machine and run there:", vkey.display()),
+        format!("cardano-cli conway node issue-op-cert --kes-verification-key-file {name} --cold-signing-key-file cold.skey --operational-certificate-issue-counter-file cold.counter --kes-period {} --out-file node.cert", clock.period),
+        "Keep cold.skey and cold.counter on the cold machine. Copy the resulting node.cert back to this host.".into(),
+        format!("Copy the encrypted backup {} to your backup host.", backup.display()),
+        "p2kesup never runs this cold-machine command.".into(),
+    ]);
     if !review_mode(
         terminal,
         "Cold machine instructions",
