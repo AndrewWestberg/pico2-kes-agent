@@ -19,6 +19,13 @@ use std::{
     process::Command,
 };
 
+fn release_status(qualification: Qualification) -> &'static str {
+    match qualification {
+        Qualification::Candidate => "candidate",
+        Qualification::Qualified => "approved",
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     TupleUpgrade,
@@ -59,7 +66,7 @@ impl Action {
         match self {
             Self::TupleUpgrade => "Upgrade or switch complete release tuple (recommended)",
             Self::Browse => "Inspect authenticated release inventory & freshness",
-            Self::Refresh => "Refresh qualified releases / reverify offline cache",
+            Self::Refresh => "Refresh approved releases / reverify offline cache",
             Self::Prerelease => "Toggle signed prerelease opt-in (never candidates)",
             Self::Offline => "Toggle online / offline discovery",
             Self::Select => "Select independent host component versions (advanced)",
@@ -111,7 +118,7 @@ impl State {
         match release_discovery::start(cache.clone(), self.prerelease, self.online) {
             Ok(worker) => {
                 self.worker = Some(worker);
-                self.status = "Checking qualified releases (independent 10-second deadline)".into();
+                self.status = "Checking approved releases (independent 10-second deadline)".into();
             }
             Err(error) => self.status = error.to_string(),
         }
@@ -273,7 +280,7 @@ fn candidate_review(
                 "Only this launched local bundle may introduce candidate components: {}",
                 path.display()
             ),
-            "Signature, exact tuple, persistent-state readability, hardware, and independent postchecks remain mandatory. Candidate is not qualified."
+            "Signature, exact tuple, persistent-state readability, hardware, and independent postchecks remain mandatory. This candidate is not an approved release."
                 .into(),
         ],
         ConfirmMode::YesNo { danger: false },
@@ -548,7 +555,7 @@ fn upgrade_direct_with_worker(
             terminal,
             "Explicit candidate admission",
             vec![
-                "This signed candidate is not qualified. Proceed only on a disposable host; all state and hardware checks remain mandatory."
+                "This signed candidate is not an approved release. Proceed only on a disposable host; all state and hardware checks remain mandatory."
                     .into(),
             ],
             ConfirmMode::YesNo { danger: false },
@@ -612,9 +619,9 @@ fn upgrade_direct_with_worker(
     let mut lines = vec![
         format!("Installed release : {}", current.tag),
         format!(
-            "Selected release  : {} ({:?}); source {}",
+            "Selected release  : {} ({}); source {}",
             bundle.selection().tag,
-            bundle.selection().qualification,
+            release_status(bundle.selection().qualification),
             bundle.selection().source_commit
         ),
         format!("Installation role : {role:?}"),
@@ -793,11 +800,11 @@ pub(super) fn component_update(
                     (
                         idx.to_string(),
                         format!(
-                            "Source {}: {} ({} {:?})",
+                            "Source {}: {} ({} {})",
                             idx + 1,
                             ver,
                             src.selection().tag,
-                            src.selection().qualification
+                            release_status(src.selection().qualification)
                         ),
                     )
                 })

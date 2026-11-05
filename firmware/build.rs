@@ -24,7 +24,7 @@ fn main() {
     });
     let [version, build_id, commit] = match values {
         [None, None, None] => [
-            "development-unqualified".to_owned(),
+            "development".to_owned(),
             "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
             "0000000000000000000000000000000000000000".to_owned(),
         ],

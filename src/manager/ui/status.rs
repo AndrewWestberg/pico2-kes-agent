@@ -932,7 +932,7 @@ pub(super) fn render_overview(
         })
         .unwrap_or_else(|| "unknown".into());
 
-    // Right column: Device (non-attested) & Fleet
+    // Right column: Device (non-attested) & Pools
     let (usb_text, usb_color): (&str, Color) =
         match local.and_then(|l| l.usb_mode.value.filter(|_| fresh(&l.usb_mode, elapsed))) {
             Some(DeviceMode::Application) => ("Application (1209:4b45)", Color::Green),
@@ -1043,14 +1043,14 @@ pub(super) fn render_overview(
             .unwrap_or(Assessment::Unknown)
         {
             Assessment::Ready => (" [OK] Primary KES Agent Ready ", Color::Green),
-            Assessment::Attention => (" [!] Fleet or Host Attention Needed ", Color::Yellow),
+            Assessment::Attention => (" [!] Pools or Host Attention Needed ", Color::Yellow),
             Assessment::Unknown => (" [?] Observation Incomplete or Stale ", Color::Yellow),
         }
     };
     let (expiry_line, expiry_color) = soonest_expiry_summary(snapshot);
     let jump_labels = [
         cta_text,
-        "Jump -> 2 Pools (KES fleet & rotations)",
+        "Jump -> 2 Pools (KES pools & rotations)",
         "Set up my Pico 2 (new or existing board)",
         "Jump -> 4 Host (service, config, producer hardening)",
         "Jump -> 3 Device (firmware & OTP security)",
@@ -1108,13 +1108,13 @@ pub(super) fn render_overview(
         kv_line("Serial", serial_text, Color::Cyan),
         kv_line("Firmware", fw_text, Color::Cyan),
         kv_line("Capacity", cap_text, fleet_color),
-        kv_line("Fleet", fleet_line1, fleet_color),
+        kv_line("Pools", fleet_line1, fleet_color),
         kv_line("States", fleet_line2, fleet_color),
     ];
     frame.render_widget(
         Paragraph::new(right_lines).block(
             Block::default()
-                .title(" Device (non-attested) & Fleet ")
+                .title(" Device (non-attested) & Pools ")
                 .title_style(tone(Color::Cyan).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL),
         ),
@@ -1318,7 +1318,7 @@ pub(super) fn render_pools(
             }
         }
         let mut meta = format!(
-            "Fleet: {}/64 · {rdy} RDY · {exp} EXP · {unb} UNB · {oth} ATT/UNK · Sort: {}",
+            "Pools: {}/64 · {rdy} RDY · {exp} EXP · {unb} UNB · {oth} ATT/UNK · Sort: {}",
             s.pools.len(),
             filter.sort.label()
         );
@@ -1330,7 +1330,7 @@ pub(super) fn render_pools(
         }
         meta
     } else {
-        "Fleet: membership or host binding observation stale/unavailable (never implies 0 pools)"
+        "Pools: membership or host binding observation stale/unavailable (never implies 0 pools)"
             .into()
     };
 
@@ -1710,7 +1710,7 @@ pub(super) fn software_lines(
             })
             .collect();
         format!(
-            "{} qualified offer(s): {}",
+            "{} approved offer(s): {}",
             release_state.offers.len(),
             tags.join(", ")
         )

@@ -90,9 +90,9 @@ Requirements:
 
 ## Install and operate with p2kesup
 
-`p2kesup` is the attended, source-free operator interface. This implementation is development-unqualified; neither these instructions nor an authenticated candidate establish release or hardware acceptance. Use a qualified release when one is actually published.
+`p2kesup` is the attended, source-free operator interface. This implementation is development software; a signed development build is not a production release. Use a supported release for production.
 
-For a complete ordered RC tag/build, authenticated installation, setup, lifecycle, recovery and whole-system test sequence, start with the [manual testing runbook](docs/manual-testing.md). It names the required host roles, exact commands and stop conditions; it does not claim release qualification.
+For a complete ordered RC tag/build, authenticated installation, setup, lifecycle, recovery and whole-system test sequence, start with the [manual testing runbook](docs/manual-testing.md). It names the required host roles, exact commands and stop conditions; it does not establish production readiness.
 
 ### Install p2kesup
 
@@ -102,13 +102,13 @@ The launcher itself is trusted from the project's HTTPS-hosted default branch. D
 curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh
 ```
 
-This selects the latest qualified stable release. To select an explicit RC for reviewed acceptance on a disposable host:
+This selects the latest approved stable release. To select an explicit RC for reviewed acceptance on a disposable host:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh -s -- --version v0.1.0-rc.12
 ```
 
-Use `--role backup` on an isolated backup host, or `--bundle /absolute/path` for an already obtained offline distribution. Explicit candidate tags or bundles require attended disposable-host acceptance and review; they are not qualified releases. The bootstrap reviews proposed dependencies, privileges and installation changes, and installs the persistent command directly after approval, rather than requiring a menu installation. It reads interactive confirmations from `/dev/tty` even when piped and refuses noninteractive mutation. Signature, inventory, inner firmware, compatibility and applicable hardware checks remain mandatory. Offline verification cannot establish current global revocation status or the latest release.
+Use `--role backup` on an isolated backup host, or `--bundle /absolute/path` for an already obtained offline distribution. Explicit candidate tags or bundles require attended disposable-host acceptance and review; they are not production releases. The bootstrap reviews proposed dependencies, privileges and installation changes, and installs the persistent command directly after approval, rather than requiring a menu installation. It reads interactive confirmations from `/dev/tty` even when piped and refuses noninteractive mutation. Signature, inventory, inner firmware, compatibility and applicable hardware checks remain mandatory. Offline verification cannot establish current global revocation status or the latest release.
 
 Reopen with `p2kesup`, or `p2kesup --role backup` on the separate backup host, then perform device setup when ready. `--socket PATH` selects the primary management socket and `--bundle DIRECTORY` selects an offline bundle; standalone `p2kesup --help` and `p2kesup --version --json` need no service. Use an attended terminal at least 80×24: arrows or j/k select, Tab/Shift-Tab changes section, 1–6 jumps to a section, `d` opens the 4-tab technical evidence drawer (`1–4` or `Tab`), Enter opens/reviews, Esc cancels, `r` refreshes, `?` opens help, and `q` quits when not applying. Text fields support full cursor editing (`Left`/`Right`/`Home`/`End`/`Delete`/`Ctrl+U`/`Ctrl+W`), `< >` cycles selector choices, and validation errors keep typed values intact. Labels remain meaningful with `NO_COLOR=1`.
 
@@ -170,8 +170,8 @@ Outputs:
 All three host executables support standalone `--version` and `--version --json`
 without configuration, a daemon connection or a device. JSON identifies
 `schema_version`, `component`, `version`, `build_id` and `source_commit`.
-Ordinary source builds report `development-unqualified`; `--release` alone
-does not establish release identity or qualification. Release builders supply
+Ordinary source builds report `development`; `--release` alone
+does not establish release identity or production readiness. Release builders supply
 `P2KES_BUILD_VERSION`, `P2KES_BUILD_ID` and `P2KES_SOURCE_COMMIT` together and
 bind those values to authenticated distribution metadata.
 

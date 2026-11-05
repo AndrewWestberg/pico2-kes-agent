@@ -137,13 +137,13 @@ fn run_action(
     ) {
         let kinds = [FileKind::Any];
         let specs = [FieldSpec::file(
-            "Qualification evidence (Space to choose)",
+            "Verification evidence (Space to choose)",
             "",
             &kinds,
         )];
-        let Some(path) = form_validated(terminal, "Select qualification evidence", &specs, |v| {
+        let Some(path) = form_validated(terminal, "Select verification evidence", &specs, |v| {
             if v[0].is_empty() {
-                Err((Some(0), "Choose a qualification evidence file".into()))
+                Err((Some(0), "Choose a verification evidence file".into()))
             } else {
                 Ok(PathBuf::from(&v[0]))
             }
@@ -195,7 +195,7 @@ fn run_action(
     let lines = vec![
         format!("Stage: {:?}; exact serial: {}", request.action, request.serial),
         format!(
-            "Authenticated distribution: {}; qualification evidence: {:?}",
+            "Authenticated distribution: {}; verification evidence: {:?}",
             request.manifest_digest, request.evidence
         ),
         format!(

@@ -64,7 +64,7 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
             let verified = release::verify_bundle(&bundle, Admission::AttendedCandidate)
                 .map_err(|_| qualified_error)?;
             println!(
-                "This signed bundle is a candidate, not a qualified release. Install only on a disposable host."
+                "This signed bundle is a candidate, not an approved release. Install only on a disposable host."
             );
             if !host::ask_yes_no("Proceed with this candidate installation?")? {
                 return Err(io::Error::new(
@@ -917,7 +917,7 @@ fn event_loop(
                                 "  r                     : Refresh host, daemon, device & activity state".into(),
                                 "  q                     : Quit p2kesup".into(),
                                 String::new(),
-                                "Pools Fleet Shortcuts (View 2)".into(),
+                                "Pool Shortcuts (View 2)".into(),
                                 "  n : Add a pool          R : Rotate KES key       b : Repair pool binding".into(),
                                 "  a : Global pool actions  f : Toggle attention-only  o : Cycle sort  / : Filter".into(),
                                 String::new(),
@@ -980,7 +980,7 @@ fn event_loop(
                     _ => {
                         let hint = match view {
                             View::DeviceSecurity => {
-                                "OTP security stages are irreversible; separate qualification evidence and confirmation apply."
+                                "OTP security stages are irreversible; separate verification evidence and confirmation apply."
                             }
                             View::ProducerHardening => {
                                 "Installs systemd memory-hardening drop-ins only; Cardano node configs/sockets are never touched."

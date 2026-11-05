@@ -18,9 +18,9 @@ fn main() {
     });
     let [version, build_id, commit] = match values {
         [None, None, None] => [
-            "development-unqualified".to_owned(),
-            "development-unqualified".to_owned(),
-            "development-unqualified".to_owned(),
+            "development".to_owned(),
+            "development".to_owned(),
+            "development".to_owned(),
         ],
         [Some(version), Some(build_id), Some(commit)] => {
             assert!(

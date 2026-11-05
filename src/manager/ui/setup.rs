@@ -75,7 +75,7 @@ pub(super) fn bundle(
                 .map_err(|_| qualified_error)?;
             if !review_mode(
                 terminal,
-                "Candidate bundle is not qualified",
+                "Candidate bundle requires attended review",
                 vec![
                     format!("Bundle: {}", path.display()),
                     "Use this signed candidate for attended acceptance on a disposable host?"

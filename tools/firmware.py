@@ -6,6 +6,7 @@ import fcntl
 import json
 import hashlib
 import os
+import pwd
 import re
 import subprocess
 import shutil
@@ -1368,15 +1369,15 @@ def bind_distribution_tool(bundle):
 
 
 def qualification_evidence():
-    reference = input("Public reference for the reviewed applicable physical, tool and image qualification evidence "
+    reference = input("Public reference for the reviewed applicable physical, tool and image evidence "
                       "(absolute file path or public reference): ").strip()
     require(reference and len(reference) <= 4096 and all(ord(c) >= 32 and ord(c) != 127 for c in reference),
-            "qualification evidence reference required")
+            "evidence reference required")
     evidence = {"reference": reference}
     path = Path(reference)
     if path.is_absolute() or reference.startswith("./") or path.exists():
         content = bounded_file(path, MAX_RECORD)
-        require(content, "qualification evidence file is empty")
+        require(content, "evidence file is empty")
         evidence["sha256"] = sha256(content)
     return evidence
 
@@ -1421,8 +1422,24 @@ def first_install_history(record_path, bundle, *,
     record_path, directory = Path(record_path), Path(directory)
     require(record_path.parent == directory and re.fullmatch(r"[0-9a-f]{32}\.json", record_path.name),
             "first-install record must use the protected firmware directory")
-    for path in (config.parent, journal.parent, records, directory):
+    for path in (config.parent, journal.parent.parent, records, directory):
         protected_ancestry(path, owner)
+    journal_owner = owner
+    try:
+        state = journal.parent.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if state.st_uid != owner:
+            try:
+                journal_owner = pwd.getpwnam("pico2-kes-agent").pw_uid
+            except KeyError:
+                raise ValueError("unsafe evidence directory ancestry") from None
+            require(stat.S_ISDIR(state.st_mode) and state.st_uid == journal_owner
+                    and stat.S_IMODE(state.st_mode) == 0o700,
+                    "unsafe evidence directory ancestry")
+        else:
+            protected_ancestry(journal.parent, owner)
     for path, mode in ((records, 0o750), (directory, 0o700)):
         metadata = path.lstat()
         require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == owner
@@ -1450,7 +1467,7 @@ def first_install_history(record_path, bundle, *,
     except FileNotFoundError:
         pass
     else:
-        require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == owner
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid in (owner, journal_owner)
                 and metadata.st_nlink == 1 and metadata.st_mode & 0o022 == 0 and metadata.st_size == 0,
                 "existing or unsafe lifecycle journal excludes first-install")
     active = 0
@@ -1574,7 +1591,7 @@ def _first_install(bundle, record_path, apply=False):
     require(len(matches) == 1, "missing or ambiguous BOOTSEL CHIPID")
     chipid = matches[0].decode("ascii")
     info = parse_bootsel_info(data, chipid)
-    require(info["stepping"] == "A2", "hardware stepping lacks qualification")
+    require(info["stepping"] == "A2", "unsupported hardware stepping")
     board = Board(chipid)
     snapshot = board.snapshot()
     public_policy(snapshot, manifest["bootkey_sha256"], "prepare")
@@ -1587,7 +1604,7 @@ def _first_install(bundle, record_path, apply=False):
             and os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp(),
             "first-install requires a direct foreground terminal")
     if identity["distribution_qualification"] == "candidate":
-        require(input("This authenticated release is a candidate, not qualified. "
+        require(input("This authenticated release is a candidate. "
                       "Type DISPOSABLE only after explicit offline selection for reviewed disposable-host acceptance: ").strip()
                 == "DISPOSABLE", "candidate acceptance not confirmed")
     config = Path("/etc/pico2-kes-agent/config.json")
@@ -1596,13 +1613,13 @@ def _first_install(bundle, record_path, apply=False):
         require(type(configuration) is dict and type(configuration.get("device")) is dict,
                 "cannot establish existing device configuration")
         require(not configuration["device"].get("usb_serial"), "existing device pin excludes first-install")
-    print("Review the applicable qualification evidence for this exact observed hardware, tool and authenticated image:")
+    print("Review the applicable evidence for this exact observed hardware, tool and authenticated image:")
     print(json.dumps({"physical_chipid": chipid, "hardware": snapshot, "tool_identity": identity,
                       "bundle_sha256": bundle_digest, "uf2_sha256": image_digest}, sort_keys=True))
     evidence = qualification_evidence()
     require(input("Having reviewed that evidence and factory eligibility, prior pins and maintenance records, "
-                  "type FACTORY only if applicable qualification is established and no contradictory evidence exists: ").strip() == "FACTORY",
-            "factory and qualification review not confirmed")
+                  "type FACTORY only if evidence establishes this hardware, tool and image are suitable and no contradictory evidence exists: ").strip() == "FACTORY",
+            "factory and evidence review not confirmed")
     attended(chipid, "Confirm the physically selected factory board; this CHIPID is not an application pin.")
     mount = mounted_bootsel(chipid)
     try:
@@ -1881,7 +1898,7 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
             "pinned identity or reviewed device changed")
     security = evidence.get("security")
     require(type(security) is dict and security.get("stepping") == "A2",
-            "qualified hardware evidence unavailable")
+            "supported hardware evidence unavailable")
     parent = Path(f"/proc/{os.getppid()}/exe").resolve(strict=True)
     parent_meta = parent.stat()
     require(str(parent).startswith("/usr/lib/pico2-kes-agent/components/manager/")
@@ -1924,7 +1941,7 @@ def update(bundle, serial, record_path, apply=False):
     preview = {"apply": False, "serial": serial, "bundle_sha256": bundle_digest,
                "uf2_sha256": image_digest, "firmware_region": [FIRMWARE_START, FIRMWARE_END],
                "preserved_state_region": [FIRMWARE_END, STATE_END],
-               "outcome": "preview only; pinned pre-state and attended hardware qualification required"}
+               "outcome": "preview only; pinned pre-state and attended hardware evidence review required"}
     if not apply:
         return preview
     require(sys.stdin.isatty() and sys.stdout.isatty()
@@ -1938,14 +1955,14 @@ def update(bundle, serial, record_path, apply=False):
                                       expected=manifest["bootkey_sha256"] if security.get("profile") == PROFILE else None)
         require(security["profile"] in ("unlocked", PROFILE), "incomplete security profile")
         if identity["distribution_qualification"] == "candidate":
-            require(input("This authenticated release is a candidate, not qualified. Type DISPOSABLE only "
+            require(input("This authenticated release is a candidate. Type DISPOSABLE only "
                           "for explicitly reviewed disposable-host acceptance: ").strip() == "DISPOSABLE",
                     "candidate acceptance not confirmed")
         print(json.dumps({"serial": serial, "hardware": security, "tool_identity": identity,
                           "bundle_sha256": bundle_digest, "uf2_sha256": image_digest}, sort_keys=True))
         evidence = qualification_evidence()
-        require(input("After reviewing qualification for this hardware, tool and image, type QUALIFIED: ").strip()
-                == "QUALIFIED", "qualification review not confirmed")
+        require(input("After reviewing the evidence for this hardware, tool and image, type REVIEWED: ").strip()
+                == "REVIEWED", "evidence review not confirmed")
         attended(serial, "Confirm the exact previously pinned board; no OTP or erase is performed.")
         pause("With the daemon stopped, hold BOOTSEL while reconnecting this exact board and mount its volume.")
         picoboot = security["profile"] == "unlocked"

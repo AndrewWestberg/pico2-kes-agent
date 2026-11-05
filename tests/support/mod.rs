@@ -967,7 +967,7 @@ impl DeviceTransport for Emulator {
                 self.encode(&Response::FirmwareInfo(wire::FirmwareInfo {
                     device: record.map(|value| value.device()),
                     serial: self.serial,
-                    version: "development-unqualified",
+                    version: "development",
                     build_id: [0; 32],
                     source_commit: "0000000000000000000000000000000000000000",
                     protocol_major: wire::MAJOR,

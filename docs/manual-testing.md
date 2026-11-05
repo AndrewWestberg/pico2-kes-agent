@@ -132,7 +132,7 @@ pico2-kes-agentd --version --json
 p2kesup
 ```
 
-Versions/source/build IDs must match the signed candidate, not `development-unqualified`. Installed version and running process version are separate observations.
+Versions/source/build IDs must match the signed candidate, not `development`. Installed version and running process version are separate observations.
 
 Navigation: 1–6 or Tab/Shift-Tab changes sections; `d` opens the 4-tab technical evidence drawer (`1–4` or `Tab`); arrows or j/k select; Enter opens/reviews; Esc backs out; `r` refreshes; `?` helps. In a form, `Up`/`Down`/`Tab`/`Shift-Tab` moves between fields, `< >` cycles selector choices, `Left`/`Right`/`Home`/`End`/`Backspace`/`Delete`/`Ctrl+U`/`Ctrl+W` edit at the cursor, and validation errors keep typed values intact; fields are not shell-expanded, so paste `/home/operator/...`, **not** `$OPS/...` or `~/...`. `q` inside a text field is a character, not a general cancel key.
 
@@ -148,13 +148,13 @@ command -v p2kesup
 p2kesup
 ```
 
-Keep `$HOME/.local/bin` ahead of `/usr/bin`. This UI reports `development-unqualified`; **Installed software** still reports the managed release separately. The signed `/usr/bin/p2kesup`, protected helpers, daemon, CLI and registry are not replaced. Privileged operations still use the authenticated installed helper and its unchanged approval checks. Use `/usr/bin/p2kesup` for the signed RC UI; remove the local development copy and run `hash -r` when returning to ordinary release testing.
+Keep `$HOME/.local/bin` ahead of `/usr/bin`. This UI reports `development`; **Installed software** still reports the managed release separately. The signed `/usr/bin/p2kesup`, protected helpers, daemon, CLI and registry are not replaced. Privileged operations still use the authenticated installed helper and its unchanged approval checks. Use `/usr/bin/p2kesup` for the signed RC UI; remove the local development copy and run `hash -r` when returning to ordinary release testing.
 
 Ordinary privileged workflows require a signed installed helper containing the corresponding action; installing only a development UI cannot add that authority. The compatibility input permits the current manager with the exact RC.16 daemon, CLI, firmware, tool and deployment components, allowing a reviewed manager-only update without flashing or starting services. Other mixed tuples remain forbidden unless explicitly authorized by a signed manifest. An authenticated, protected bootstrap helper may instead recover an exact original host-security operation through a separately reviewed manifest-bound recovery plan; it does not replace the installed manager.
 
 For each UI iteration:
 
-1. At 80×24, check the two-column **Overview** (Primary Posture + Device & Pool Fleet, including pin posture, swap preflight, capacity and trusted wall-clock KES expiry) without scrolling. Unknown observations must not become empty or healthy. Readiness covers observed pool conditions, not independent identity attestation, host-policy qualification or node forging.
+1. At 80×24, check the two-column **Overview** (Primary Posture + Device (non-attested) & Pools, including pin posture, swap preflight, capacity and trusted wall-clock KES expiry) without scrolling. Unknown observations must not become empty or healthy. Readiness covers observed pool conditions, not independent identity attestation, host-policy acceptance or node forging.
 2. Press Enter on the **Next** action banner, then choose existing-device or blank-device setup. Missing configuration must not select commissioning automatically. Setup status comes from current observations; eligibility and configuration validation remain separate checks on each reviewed action.
 3. Visit all six primary sections; in **Pools**, inspect the 1-row-per-pool table and exercise `n` (enroll), `b` (bind unbound pool), `a` (global pool actions), `f` (attention-only toggle), `o` (sort order), `/` (substring filter), or Enter on a selected pool for its side-by-side Active/Staged slot cards and lifecycle actions. Refresh must preserve the exact pool/incarnation selection, including when the displayed order changes. A vanished target must not become a different selected pool.
 4. Press `d` for the 4-tab evidence drawer, then Esc. Cancel a configuration form. Try a nonexistent candidate and verify inline validation refusal without losing typed form text or writing files. Review standalone root approval digests at 80 columns.
@@ -198,6 +198,8 @@ Setup preselects the installed release's retained authenticated source directory
 - **Factory/BOOTSEL-only board:** Host → Continue setup → Set up a new blank device → **Install firmware (BOOTSEL only; skip compatible app)**. Review the new original record, authenticated image and exact physical BOOTSEL/mount association. Preview first; then follow the foreground tool's attended apply/physical instructions. It may write firmware only in `[0x10000000,0x10100000)` and must preserve `[0x10100000,0x10308000)`. Do not manually copy a different UF2, select by volume label alone, erase flash or run a competing USB tool.
 - **Already running compatible blank application:** skip transfer and proceed to its restricted-daemon blank/build observation.
 - **Already commissioned/populated device:** do not use either blank setup path. Retain the original pin/config/journal and use a separately authorized compatible maintenance operation. Missing identity files do not make a device factory-new.
+
+Factory preflight accepts the installer-created `/var/lib/pico2-kes-agent` owned by the service account with mode `0700`, while checking its root-owned ancestry separately. An existing nonempty journal, unsafe owner or permissions, or a symlink still blocks installation. Do not change ownership or loosen permissions to bypass a refusal.
 
 Retain the original first-install tool record and manager plan. A completed copy/flush alone does not prove application readiness. On interruption choose **Reconcile original first install with attended blank-application evidence**, after restoring the admitted observation setup below; never start a new record to hide uncertainty.
 

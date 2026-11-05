@@ -656,7 +656,7 @@ fn obtain(
         )
     {
         return Err(invalid(
-            "release tag, channel or qualification differs from authenticated manifest",
+            "release tag, channel or admission status differs from authenticated manifest",
         ));
     }
     let digest = format!("{:x}", Sha256::digest(&bytes));
