@@ -465,7 +465,7 @@ fn platform_support(release: &str, arch: &str) -> String {
     format!(
         "{id} {version} / {arch}: {}",
         if selected {
-            "selected support target; installation prerequisites and release qualification not established"
+            "selected support target; installation prerequisites and release approval not established"
         } else {
             "unsupported installation platform; read-only diagnostics only"
         }

@@ -8,7 +8,7 @@ usage() {
     cat <<'EOF'
 Usage: sh install.sh [--version TAG | --bundle DIRECTORY] [--role primary|backup] [--help]
        sh install.sh (--version TAG | --bundle DIRECTORY) --recovery-plan PATH
-Without --version or --bundle, install the latest qualified stable release.
+Without --version or --bundle, install the latest approved stable release.
 An explicit version or local bundle may contain a candidate requiring attended review.
 --recovery-plan is only for signed bootstrap recovery of an original host-security operation.
 EOF
@@ -180,7 +180,7 @@ if [ -z "$bundle" ]; then
         printf 'Download explicit release %s, which may be a candidate? Type DOWNLOAD to continue: ' "$version" >&3
         explicit=yes
     else
-        printf 'Discover the latest qualified stable release? Type DOWNLOAD to continue: ' >&3
+        printf 'Discover the latest approved stable release? Type DOWNLOAD to continue: ' >&3
         explicit=no
     fi
     IFS= read -r choice <&3 || exit 3
@@ -247,7 +247,7 @@ try:
     bind_bootstrap(manifest,work)
     identity=manifest.get('release',{})
     signed_tag=identity.get('tag')
-    if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('qualified','candidate') or not isinstance(signed_tag,str) or identity.get('version')!=signed_tag or tag!=(('qualified-' if manifest['qualification']=='qualified' else '')+signed_tag) or (not requested and (manifest.get('qualification')!='qualified' or identity.get('channel')!='stable')): raise ValueError('signed release identity or qualification mismatch')
+    if manifest.get('schema_version')!=1 or manifest.get('purpose')!='pico2-kes-agent-distribution-v1' or manifest.get('qualification') not in ('qualified','candidate') or not isinstance(signed_tag,str) or identity.get('version')!=signed_tag or tag!=(('qualified-' if manifest['qualification']=='qualified' else '')+signed_tag) or (not requested and (manifest.get('qualification')!='qualified' or identity.get('channel')!='stable')): raise ValueError('signed release identity or admission status mismatch')
     entries={}
     for item in manifest.get('artifacts',[]):
         name=item.get('path'); size=item.get('size_bytes'); digest=item.get('sha256')

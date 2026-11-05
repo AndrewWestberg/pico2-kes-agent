@@ -823,7 +823,9 @@ fn verify_snapshot(
         || (manifest.qualification == Qualification::Candidate
             && !matches!(admission, Admission::AttendedCandidate))
     {
-        return Err(invalid("unsupported distribution or qualification"));
+        return Err(invalid(
+            "unsupported distribution or release admission status",
+        ));
     }
     match (manifest.qualification, &manifest.promotion) {
         (Qualification::Candidate, None) => {}

@@ -254,7 +254,7 @@ pub(super) fn apply(
     if let Some(evidence) = &request.evidence {
         setup::verify_public_inputs(std::slice::from_ref(evidence))?;
         if fs::metadata(&evidence.path)?.len() == 0 {
-            return Err(denied("qualification evidence is empty"));
+            return Err(denied("verification evidence is empty"));
         }
     }
     let tool = host::trusted_firmware_tool()?;
@@ -340,7 +340,7 @@ pub(super) fn apply(
     record.checkpoints.push(host::checkpoint(
         "provisioning-review",
         format!(
-            "normal: {normal}; commissioning: {commission}; qualification {:?}",
+            "normal: {normal}; commissioning: {commission}; verification evidence {:?}",
             request.evidence
         ),
     ));
@@ -489,14 +489,14 @@ pub(super) fn apply(
     }
     if let Some(evidence) = &request.evidence {
         println!(
-            "Review qualification evidence {:?} (SHA-256 {}) against the observed hardware, picotool SHA-256 {}, provisioner SHA-256 {}, and authenticated image in the verified manifest. A4 remains physically unqualified unless independently qualified. No erase or record repair is offered.",
+            "Review verification evidence {:?} (SHA-256 {}) against the observed hardware, picotool SHA-256 {}, provisioner SHA-256 {}, and authenticated image in the verified manifest. A4 hardware support remains unverified unless independently verified. No erase or record repair is offered.",
             evidence.path, evidence.sha256, entry.digest, artifact.sha256
         );
         if !host::ask_yes_no(&format!(
-            "Is the physical, tool and image evidence qualified for board {}?",
+            "Does the physical, tool and image evidence verify board {}?",
             request.serial
         ))? {
-            return Err(denied("matching qualification not confirmed"));
+            return Err(denied("matching evidence not confirmed"));
         }
         setup::verify_public_inputs(std::slice::from_ref(evidence))?;
     }
@@ -564,7 +564,7 @@ pub(super) fn apply(
         ));
     }
     Ok(format!(
-        "{stage} observed complete in original {}; application reports are not independent attestation; qualification remains separate. Commission only as a separate ordinary action after lock; no daemon restart is automatic",
+        "{stage} observed complete in original {}; application reports are not independent attestation; independent hardware verification remains separate. Commission only as a separate ordinary action after lock; no daemon restart is automatic",
         tool_record.display()
     ))
 }

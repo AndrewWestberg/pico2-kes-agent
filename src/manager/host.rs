@@ -1481,9 +1481,7 @@ pub fn apply_plan(path: &Path) -> io::Result<()> {
             ..
         }
     ) {
-        println!(
-            "Notice: explicit offline candidate acceptance on a disposable host (not release qualification)."
-        );
+        println!("Notice: explicitly selected development build; use only on a disposable host.");
     }
     if !ask_yes_no("Proceed with this change?")? {
         return Err(io::Error::new(

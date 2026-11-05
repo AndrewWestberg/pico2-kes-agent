@@ -526,6 +526,61 @@ class FirstInstallTests(unittest.TestCase):
                 firmware.first_install_history(target, root / "bundle", config=config, journal=journal,
                                                records=records, directory=firmware_dir, owner=os.geteuid())
 
+    def test_history_accepts_only_protected_service_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            records, firmware_dir, state = root / "records", root / "firmware", root / "state"
+            records.mkdir(mode=0o750)
+            firmware_dir.mkdir(mode=0o700)
+            state.mkdir(mode=0o700)
+            journal = state / "operations.journal"
+            journal.touch(mode=0o600)
+            target = firmware_dir / ("b" * 32 + ".json")
+            service_uid = os.geteuid() + 10000
+            original_lstat = Path.lstat
+            owners = {state: service_uid, journal: service_uid}
+
+            def lstat(path, *args, **kwargs):
+                metadata = original_lstat(path, *args, **kwargs)
+                if path in owners:
+                    values = list(metadata)
+                    values[4] = owners[path]
+                    return os.stat_result(values)
+                return metadata
+
+            def check():
+                firmware.first_install_history(target, root / "bundle", config=root / "config",
+                                               journal=journal, records=records,
+                                               directory=firmware_dir, owner=os.geteuid())
+
+            with mock.patch.object(Path, "lstat", lstat), \
+                 mock.patch.object(firmware.pwd, "getpwnam", return_value=mock.Mock(pw_uid=service_uid)):
+                check()
+                owners[state] = service_uid + 1
+                with self.assertRaisesRegex(ValueError, "unsafe evidence directory ancestry"):
+                    check()
+                owners[state] = service_uid
+                state.chmod(0o770)
+                with self.assertRaisesRegex(ValueError, "unsafe evidence directory ancestry"):
+                    check()
+                state.chmod(0o700)
+                owners[journal] = service_uid + 1
+                with self.assertRaisesRegex(ValueError, "unsafe lifecycle journal"):
+                    check()
+                owners[journal] = service_uid
+                journal.write_bytes(b"existing operation")
+                with self.assertRaisesRegex(ValueError, "unsafe lifecycle journal"):
+                    check()
+                journal.unlink()
+                state.rmdir()
+                state.symlink_to(root, target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "unsafe evidence directory ancestry"):
+                    check()
+                state.unlink()
+                owners[root] = service_uid
+                with self.assertRaisesRegex(ValueError, "unsafe evidence directory ancestry"):
+                    check()
+
     def test_first_install_history_rejects_upgrade_transfer_evidence(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(firmware, "protected_ancestry"):
             root = Path(directory)
@@ -759,7 +814,7 @@ class UpdateTests(unittest.TestCase):
                         mock.patch.object(firmware.os, "ttyname", return_value="/dev/tty"),
                         mock.patch.object(firmware.os, "tcgetpgrp", return_value=1),
                         mock.patch.object(firmware.os, "getpgrp", return_value=1),
-                        mock.patch("builtins.input", return_value="QUALIFIED"),
+                        mock.patch("builtins.input", return_value="REVIEWED"),
                     ):
                         stack.enter_context(patch)
                     with self.assertRaises((ValueError, OSError)):
