@@ -493,17 +493,114 @@ class FirstInstallTests(unittest.TestCase):
             self.assertFalse(record.exists())
             save.assert_not_called()
 
-    def test_qualification_evidence_requires_reference_and_hashes_file(self):
-        with mock.patch("builtins.input", return_value=""):
-            with self.assertRaises(ValueError):
-                firmware.qualification_evidence()
-        with tempfile.TemporaryDirectory() as directory:
-            evidence = Path(directory) / "qualification.txt"
-            evidence.write_bytes(b"public evidence")
-            with mock.patch("builtins.input", return_value=str(evidence)):
-                result = firmware.qualification_evidence()
-            self.assertEqual(result, {"reference": str(evidence),
-                                      "sha256": firmware.sha256(b"public evidence")})
+
+    def test_parent_candidate_admission_and_safe_cancelled_history(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(firmware, "protected_ancestry"):
+            root = Path(directory)
+            records, firmware_dir, staging = root / "records", root / "firmware", root / "staging"
+            records.mkdir(mode=0o750)
+            firmware_dir.mkdir(mode=0o700)
+            operation, old = "a" * 32, "b" * 32
+            bundle = staging / operation / "firmware"
+            bundle.mkdir(parents=True)
+            distribution = bundle.parent / "distribution.json"
+            distribution.write_text('{"qualification":"candidate"}')
+            digest = firmware.sha256(distribution.read_bytes())
+            target, old_tool = firmware_dir / (operation + ".json"), firmware_dir / (old + ".json")
+            action = {"action": "firmware_first_install", "apply": True, "record": str(target),
+                      "manifest_digest": digest, "candidate_accepted": True}
+            def record(op, scope, outcome, checkpoints):
+                return {"schema_version": 1, "operation_id": op, "action": "firmware_transfer",
+                        "plan_digest": "c" * 64, "selected": None, "approved_scope": [json.dumps(scope)],
+                        "previous_service_state": None, "pre_observations": [], "checkpoints": checkpoints,
+                        "post_observations": [], "outcome": outcome, "bundle_digest": digest,
+                        "image_digest": None, "physical_selection": None}
+            active = record(operation, action, "intent-durable", [{"name": "staged-authenticated", "evidence": digest}])
+            previous = record(old, dict(action, record=str(old_tool)), "cancelled",
+                              [{"name": name, "evidence": evidence, "observed_at_unix_us": 1}
+                               for name, evidence in (("intent-durable", "c" * 64),
+                                                      ("staged-authenticated", digest),
+                                                      ("first-install-not-started", str(old_tool)))])
+            def save(op, value):
+                path = records / (op + ".json")
+                path.write_text(json.dumps(value))
+                path.chmod(0o640)
+            def check():
+                return firmware.first_install_history(target, bundle, config=root / "config", journal=root / "journal",
+                                                      records=records, directory=firmware_dir, staging=staging,
+                                                      owner=os.geteuid())
+            manager = Path("/usr/lib/pico2-kes-agent/components/manager/fixture/p2kesup")
+            resolve = Path.resolve
+            stat_path = Path.stat
+            def resolve_parent(path, *args, **kwargs):
+                return manager if str(path) == f"/proc/{os.getppid()}/exe" else resolve(path, *args, **kwargs)
+            def manager_stat(path, *args, **kwargs):
+                return mock.Mock(st_uid=0, st_mode=0o100755) if path == manager else stat_path(path, *args, **kwargs)
+            save(operation, active)
+            save(old, previous)
+            with mock.patch.object(Path, "resolve", resolve_parent), mock.patch.object(Path, "stat", manager_stat):
+                check()
+                for value in (False, None, "true"):
+                    action["candidate_accepted"] = value
+                    active["approved_scope"] = [json.dumps(action)]
+                    save(operation, active)
+                    with self.assertRaises(ValueError):
+                        check()
+                action["candidate_accepted"] = True
+                active["approved_scope"] = [json.dumps(action)]
+                save(operation, active)
+                previous["checkpoints"][-1]["evidence"] = str(target)
+                save(old, previous)
+                with self.assertRaises(ValueError):
+                    check()
+                previous["checkpoints"][-1]["evidence"] = str(old_tool)
+                previous["outcome"] = "uncertain"
+                save(old, previous)
+                with self.assertRaises(ValueError):
+                    check()
+                previous["outcome"] = "failed-known"
+                save(old, previous)
+                check()
+                previous["checkpoints"].pop(1)
+                save(old, previous)
+                check()
+                previous["checkpoints"].append(dict(previous["checkpoints"][-1]))
+                save(old, previous)
+                with self.assertRaises(ValueError):
+                    check()
+                previous["checkpoints"].pop()
+                save(old, previous)
+                recovered = record(old, {"action": "install", "role": "primary",
+                                         "bundle": "/signed/bundle", "manifest_digest": digest},
+                                   "failed-known",
+                                   [{"name": "precommission-update", "evidence": "d" * 64},
+                                    {"name": "post-check", "evidence": "original tuple and service unchanged; recovery approval operator"},
+                                    {"name": "precommission-update-recovered", "evidence": "d" * 64}])
+                recovered.update(action="install", selected={"manifest_digest": digest},
+                                 previous_service_state="state=inactive;")
+                save(old, recovered)
+                check()
+                for change in ("missing", "mismatch", "order", "duplicate", "active", "selection"):
+                    bad = copy.deepcopy(recovered)
+                    if change == "missing":
+                        bad["checkpoints"].pop()
+                    elif change == "mismatch":
+                        bad["checkpoints"][-1]["evidence"] = "e" * 64
+                    elif change == "order":
+                        bad["checkpoints"].reverse()
+                    elif change == "duplicate":
+                        bad["checkpoints"].insert(1, dict(bad["checkpoints"][0]))
+                    elif change == "active":
+                        bad["previous_service_state"] = "state=active;"
+                    else:
+                        bad["selected"]["manifest_digest"] = "e" * 64
+                    save(old, bad)
+                    with self.assertRaises(ValueError):
+                        check()
+                save(old, previous)
+                old_tool.write_text("{}")
+                with self.assertRaises(ValueError):
+                    check()
 
     def test_history_rejects_other_record_and_missing_config_with_journal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -555,7 +652,8 @@ class FirstInstallTests(unittest.TestCase):
 
             with mock.patch.object(Path, "lstat", lstat), \
                  mock.patch.object(firmware.pwd, "getpwnam", return_value=mock.Mock(pw_uid=service_uid)):
-                check()
+                with self.assertRaisesRegex(ValueError, "original approved first-install intent"):
+                    check()
                 owners[state] = service_uid + 1
                 with self.assertRaisesRegex(ValueError, "unsafe evidence directory ancestry"):
                     check()
@@ -601,10 +699,12 @@ class FirstInstallTests(unittest.TestCase):
                 return firmware.first_install_history(target, root / "bundle", config=root / "config",
                                                       journal=root / "journal", records=records,
                                                       directory=firmware_dir, owner=os.geteuid())
-            check()
+            with self.assertRaisesRegex(ValueError, "original approved first-install intent"):
+                check()
             prior["outcome"] = "failed-known"
             prior["checkpoints"] = [{"name": "service-quiesced"}]
-            check()
+            with self.assertRaisesRegex(ValueError, "original approved first-install intent"):
+                check()
             prior["checkpoints"].append({"name": "upgrade-transfer-starting",
                                          "evidence": str(firmware_dir / (operation + ".json"))})
             with self.assertRaises(ValueError):
@@ -614,7 +714,8 @@ class FirstInstallTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 check()
             prior["checkpoints"].append({"name": "upgrade-not-transferred", "evidence": "d" * 64})
-            check()
+            with self.assertRaisesRegex(ValueError, "original approved first-install intent"):
+                check()
             prior["checkpoints"].append({"name": "upgrade-publish-starting"})
             with self.assertRaises(ValueError):
                 check()
@@ -626,6 +727,35 @@ class FirstInstallTests(unittest.TestCase):
             (firmware_dir / (operation + ".json")).write_text("{}")
             with self.assertRaises(ValueError):
                 check()
+
+    def test_mount_discovery_uses_usb_ancestry_and_rejects_ambiguity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb, other, blocks = root / "usb", root / "other", root / "blocks"
+            (usb / "disk").mkdir(parents=True)
+            (other / "disk").mkdir(parents=True)
+            blocks.mkdir()
+            (blocks / "8:1").symlink_to(usb / "disk")
+            (blocks / "8:2").symlink_to(other / "disk")
+            mountinfo = root / "mountinfo"
+            mountinfo.write_text("1 0 8:1 / /media/Pico\\040Drive rw - vfat /dev/a rw\n"
+                                 "2 0 8:2 / /media/other rw - vfat /dev/b rw\n")
+            self.assertEqual(firmware.bootsel_volumes(usb, mountinfo=mountinfo, blocks=blocks),
+                             [Path("/media/Pico Drive")])
+            entry = root / "selected"
+            entry.mkdir()
+            (entry / "busnum").write_text("1")
+            (entry / "devnum").write_text("2")
+            with mock.patch.object(firmware, "selected_usb_board", return_value=("2e8a", "000f", 1, 2)), \
+                 mock.patch.object(firmware, "Board"), \
+                 mock.patch.object(Path, "iterdir", return_value=iter([entry])), \
+                 mock.patch.object(firmware, "bootsel_volumes", side_effect=[[], [root / "a", root / "b"]]), \
+                 mock.patch.object(firmware, "pause") as pause, \
+                 mock.patch.object(firmware.os, "open") as opened:
+                with self.assertRaisesRegex(ValueError, "multiple mounted volumes"):
+                    firmware.mounted_bootsel("0123456789abcdef")
+                pause.assert_called_once()
+                opened.assert_not_called()
 
     def test_pinned_mount_rejects_detached_and_replaced_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -657,7 +787,7 @@ class FirstInstallTests(unittest.TestCase):
         manifest = {"artifacts": [
             {"name": firmware.ARTIFACTS[1], "sha256": firmware.sha256(image)},
             {"name": "firmware.py", "sha256": firmware.sha256(manifest_bytes)}],
-            "bootkey_sha256": "b" * 64}
+            "bootkey_sha256": "b" * 64, "tag": "v1"}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             record = root / "record"
@@ -687,16 +817,28 @@ class FirstInstallTests(unittest.TestCase):
                     mock.patch.object(firmware.os, "ttyname", return_value="/dev/tty"),
                     mock.patch.object(firmware.os, "tcgetpgrp", return_value=1),
                     mock.patch.object(firmware.os, "getpgrp", return_value=1),
-                    mock.patch("builtins.input", side_effect=["reviewed qualification report", "FACTORY"]),
                     mock.patch.object(Path, "exists", return_value=False),
                 ):
                     stack.enter_context(patch)
                 board = stack.enter_context(mock.patch.object(firmware, "Board"))
                 board.return_value.snapshot.return_value = {}
+                for failure in (ValueError("denied"), KeyboardInterrupt()):
+                    firmware.attended.side_effect = failure
+                    with self.assertRaises(type(failure)):
+                        firmware.first_install(root, record, True)
+                    self.assertFalse(record.exists())
+                    mount.open_output.assert_not_called()
+                    self.assertFalse(firmware.WRITES_ATTEMPTED)
+                firmware.attended.side_effect = None
                 with self.assertRaises(FileExistsError):
                     firmware.first_install(root, record, True)
             saved = json.loads(record.read_text())
             self.assertEqual(saved["checkpoints"], ["intent", "transfer-started"])
+            self.assertEqual(saved["physical_chipid"], "0123456789abcdef")
+            self.assertEqual(saved["hardware"], {})
+            self.assertEqual(saved["tool_identity"], {"distribution_qualification": "qualified"})
+            self.assertEqual(saved["uf2_sha256"], firmware.sha256(image))
+            self.assertNotIn("qualification_evidence", saved)
             self.assertEqual((root / firmware.ARTIFACTS[1]).read_bytes(), b"occupied")
 
     def test_ambiguous_board_rejected(self):
@@ -775,7 +917,8 @@ class UpdateTests(unittest.TestCase):
             {"name": firmware.ARTIFACTS[1], "sha256": firmware.sha256(image)},
             {"name": "firmware.py", "sha256": firmware.sha256(b"manifest")}],
             "bootkey_sha256": "b" * 64}
-        for failure, checkpoints in (("mount", None), ("copy", ["intent", "transfer-started"]),
+        for failure, checkpoints in (("mount", None), ("approval", None), ("revalidate", None),
+                                     ("copy", ["intent", "transfer-started"]),
                                      ("flush", ["intent", "transfer-started", "transfer-complete"])):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -805,7 +948,6 @@ class UpdateTests(unittest.TestCase):
                         mock.patch.object(firmware, "bind_distribution_tool", return_value={"distribution_qualification": "qualified"}),
                         mock.patch.object(firmware, "attended"),
                         mock.patch.object(firmware, "pause"),
-                        mock.patch.object(firmware, "qualification_evidence", return_value={"reference": "reviewed"}),
                         mock.patch.object(firmware, "mounted_bootsel", return_value=mount),
                         mock.patch.object(firmware.sys.stdin, "isatty", return_value=True),
                         mock.patch.object(firmware.sys.stdout, "isatty", return_value=True),
@@ -814,15 +956,25 @@ class UpdateTests(unittest.TestCase):
                         mock.patch.object(firmware.os, "ttyname", return_value="/dev/tty"),
                         mock.patch.object(firmware.os, "tcgetpgrp", return_value=1),
                         mock.patch.object(firmware.os, "getpgrp", return_value=1),
-                        mock.patch("builtins.input", return_value="REVIEWED"),
                     ):
                         stack.enter_context(patch)
+                    if failure == "approval":
+                        firmware.attended.side_effect = ValueError("declined")
+                    if failure == "revalidate":
+                        handoff = firmware.update_history.return_value
+                        firmware.update_history.side_effect = [handoff, handoff, ValueError("changed")]
                     with self.assertRaises((ValueError, OSError)):
                         firmware.update(root, "0123456789abcdef", record, True)
                 if checkpoints is None:
                     self.assertFalse(record.exists())
+                    mount.open_output.assert_not_called()
                 else:
-                    self.assertEqual(json.loads(record.read_text())["checkpoints"], checkpoints)
+                    saved = json.loads(record.read_text())
+                    self.assertEqual(saved["checkpoints"], checkpoints)
+                    self.assertEqual(saved["hardware"], {"profile": "unlocked"})
+                    self.assertEqual(saved["tool_identity"], {"distribution_qualification": "qualified"})
+                    self.assertEqual(saved["uf2_sha256"], firmware.sha256(image))
+                    self.assertNotIn("qualification_evidence", saved)
 
     def test_completed_first_install_and_pre_effect_failures_allow_update(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -865,8 +1017,8 @@ class UpdateTests(unittest.TestCase):
             save(records / (failed + ".json"), failure, 0o640)
             bundle = staging / new / "firmware"
             bundle.mkdir(parents=True)
-            (bundle.parent / "distribution.json").write_text("{}")
-            new_digest = firmware.sha256(b"{}")
+            (bundle.parent / "distribution.json").write_text('{"qualification":"qualified"}')
+            new_digest = firmware.sha256((bundle.parent / "distribution.json").read_bytes())
             device = {"usb_serial": serial, "id": "c" * 32, "identity_public_key": "d" * 64}
             save(root / "config", {"device": device}, 0o600)
             action = {"action": "firmware_update", "apply": True, "serial": serial,
@@ -889,6 +1041,51 @@ class UpdateTests(unittest.TestCase):
                 # The fixture deliberately cannot satisfy the production manager executable pin.
                 with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
                     check()
+                candidate = b'{"qualification":"candidate"}'
+                (bundle.parent / "distribution.json").write_bytes(candidate)
+                candidate_digest = firmware.sha256(candidate)
+                action["manifest_digest"] = candidate_digest
+                intent["bundle_digest"] = candidate_digest
+                intent["checkpoints"][0]["evidence"] = candidate_digest
+                for accepted in (False, None, "true"):
+                    action["candidate_accepted"] = accepted
+                    intent["approved_scope"] = [json.dumps(action)]
+                    save(records / (new + ".json"), intent, 0o640)
+                    with self.assertRaisesRegex(ValueError, "candidate distribution lacks approved admission"):
+                        check()
+                action["candidate_accepted"] = True
+                intent["approved_scope"] = [json.dumps(action)]
+                save(records / (new + ".json"), intent, 0o640)
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                (bundle.parent / "distribution.json").write_text('{"qualification":"qualified"}')
+                action["manifest_digest"] = new_digest
+                intent["bundle_digest"] = new_digest
+                intent["checkpoints"][0]["evidence"] = new_digest
+                intent["approved_scope"] = [json.dumps(action)]
+                save(records / (new + ".json"), intent, 0o640)
+                cancelled_id = "f" * 32
+                cancelled_tool = firmware_dir / (cancelled_id + ".json")
+                cancelled = {"schema_version": 1, "operation_id": cancelled_id, "action": "firmware_transfer",
+                             "plan_digest": "9" * 64, "selected": None,
+                             "approved_scope": [json.dumps({"action": "firmware_first_install", "apply": True,
+                                                            "record": str(cancelled_tool), "manifest_digest": digest})],
+                             "previous_service_state": None, "pre_observations": [], "post_observations": [],
+                             "outcome": "cancelled", "bundle_digest": digest, "image_digest": None,
+                             "physical_selection": None,
+                             "checkpoints": [{"name": name, "evidence": evidence, "observed_at_unix_us": 1}
+                                             for name, evidence in (("intent-durable", "9" * 64),
+                                                                    ("staged-authenticated", digest),
+                                                                    ("first-install-not-started", str(cancelled_tool)))]}
+                cancelled_path = records / (cancelled_id + ".json")
+                save(cancelled_path, cancelled, 0o640)
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    check()
+                cancelled["checkpoints"][-1]["evidence"] = "wrong"
+                save(cancelled_path, cancelled, 0o640)
+                with self.assertRaisesRegex(ValueError, "unresolved original"):
+                    check()
+                cancelled_path.unlink()
                 for outcome in ("cancelled", "uncertain"):
                     failure["outcome"] = outcome
                     save(records / (failed + ".json"), failure, 0o640)

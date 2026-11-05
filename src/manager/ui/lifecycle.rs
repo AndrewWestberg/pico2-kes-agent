@@ -204,18 +204,41 @@ pub(crate) fn observe(
     )
 }
 
-fn lines(value: &Value) -> io::Result<Vec<String>> {
-    Ok(serde_json::to_string_pretty(value)
-        .map_err(io::Error::other)?
-        .lines()
-        .map(str::to_owned)
-        .collect())
+fn receipt_action(request: &Value) -> &str {
+    match request["action"].as_str() {
+        Some("device.commission") => "Commission device",
+        Some("pool.enroll") => "Enroll pool",
+        Some("pool.delete") => "Delete pool",
+        Some("generation.create") => "Generate KES key",
+        Some("generation.discard") => "Discard staged key",
+        Some("generation.certificate") => "Install certificate",
+        Some("recipient.set") => "Change backup recipient",
+        _ => "Saved operation",
+    }
+}
+
+fn response_status(response: &Value) -> String {
+    match response["outcome"].as_str() {
+        Some("success") => "Completed".into(),
+        Some("rejected") => {
+            let code = response["error"]["code"]
+                .as_str()
+                .unwrap_or("unknown reason");
+            format!(
+                "Rejected: {}",
+                code.chars()
+                    .filter(|c| !c.is_control())
+                    .take(120)
+                    .collect::<String>()
+            )
+        }
+        _ => "Result not confirmed".into(),
+    }
 }
 
 struct PublicInput {
     directory: PathBuf,
     path: String,
-    digest: String,
 }
 impl PublicInput {
     fn copy(source: &str) -> io::Result<Self> {
@@ -248,11 +271,7 @@ impl PublicInput {
             .to_str()
             .ok_or_else(|| io::Error::other("temporary path is not UTF-8"))?
             .to_owned();
-        Ok(Self {
-            directory,
-            path,
-            digest: format!("{:x}", Sha256::digest(&bytes)),
-        })
+        Ok(Self { directory, path })
     }
 }
 impl Drop for PublicInput {
@@ -338,45 +357,40 @@ fn outcome(
     } else {
         None
     };
+    let status = if result.uncertain {
+        "The result is uncertain. Do not repeat this operation; open its original receipt in Activity (6)."
+    } else {
+        match result.class {
+            lifecycle::ExitClass::Success => "The operation completed.",
+            lifecycle::ExitClass::Rejected => "The device rejected the operation.",
+            _ => "The operation did not complete successfully.",
+        }
+    };
     let mut text = vec![
-        format!(
-            "CLI exit class: {:?}; uncertain: {}",
-            result.class, result.uncertain
-        ),
+        status.into(),
         format!("Retained reference: {}", reference.display()),
-        "Never submit a replacement operation for an uncertain or interrupted result. Reopen the original receipt in Activity (6)."
-            .into(),
     ];
     if let Some(path) = &result.reconciliation_evidence {
         text.push(format!(
-            "Reconciliation evidence retained at {}",
+            "Reconciliation evidence saved at {}",
             path.display()
         ));
     }
     if let Some(error) = &result.reconciliation_evidence_error {
-        text.push(format!(
-            "Reconciliation evidence could not be retained: {error}; record the actual response shown below."
-        ));
+        text.push(format!("Reconciliation evidence could not be saved: {error}. Preserve the original receipt and investigate before retrying."));
+        if let Ok(response) = serde_json::from_slice::<Value>(&result.stdout) {
+            text.push(format!("Reported result: {}", response_status(&response)));
+        }
     }
-    if !result.stdout.is_empty()
-        && !result.output_truncated
-        && let Ok(response) = serde_json::from_slice::<Value>(&result.stdout)
+    if let Some(response) = result
+        .receipt
+        .as_ref()
+        .and_then(|receipt| receipt.response.as_ref())
     {
-        text.push(String::new());
-        text.push("CLI response:".into());
-        text.extend(lines(&response)?);
+        text.push(format!("Device result: {}", response_status(response)));
     }
-    if let Some(receipt) = result.receipt {
-        text.push(String::new());
-        text.push("Durable receipt:".into());
-        text.extend(lines(
-            &serde_json::to_value(receipt).map_err(io::Error::other)?,
-        )?);
-    } else {
-        text.push(
-            "No readable receipt was found; inspect the retained reference before any further action."
-                .into(),
-        );
+    if result.receipt.is_none() {
+        text.push("No readable receipt was found; inspect the retained reference before any further action.".into());
     }
     let continue_wizard = review_mode(
         terminal,
@@ -434,19 +448,37 @@ fn reconcile_reference_stopped(
 
     let authority = admission(terminal, socket, serial)?;
     let mut text = vec![
+        format!("Action: {}", receipt_action(&saved.receipt.request)),
         format!("Original reference: {}", reference_path.display()),
-        "Reconciles the saved request identity forward-only; never creates a new operation ID."
-            .into(),
-        String::new(),
+        "Check the saved operation's result using its original identity; this does not create a replacement operation.".into(),
     ];
-    text.extend(lines(
-        &serde_json::to_value(&saved.receipt).map_err(io::Error::other)?,
-    )?);
+    match saved.receipt.request["action"].as_str() {
+        Some("pool.delete") => text.push("The original action permanently erases that pool's KES keys and artifacts. Fence all producers.".into()),
+        Some("generation.discard") => text.push("The original action permanently erases the staged key; its backup can no longer be exported from the device.".into()),
+        Some("recipient.set") => text.push("The original action changes the encryption recipient for future backups; existing backups still need their original private key.".into()),
+        Some("generation.certificate") => text.push("The original action installs a certificate and may activate the key when valid.".into()),
+        Some("pool.enroll") => text.push("The original action creates a pool on the device.".into()),
+        Some("generation.create") => text.push("The original action creates a staged KES key on the device.".into()),
+        Some("device.commission") => text.push("The original action commissions the selected device.".into()),
+        _ => {}
+    }
+    for (key, label) in [
+        ("pool_id", "Pool"),
+        ("incarnation_id", "Pool incarnation"),
+        ("generation_id", "Generation"),
+    ] {
+        if let Some(value) = saved.receipt.request["arguments"][key].as_str() {
+            text.push(format!("{label}: {value}"));
+        }
+    }
+    if let Some(response) = &saved.receipt.response {
+        text.push(format!("Saved result: {}", response_status(response)));
+    }
     if !review_mode(
         terminal,
         "Reconcile original receipt",
         text,
-        ConfirmMode::Enter("reconcile original operation ID"),
+        ConfirmMode::YesNo { danger: false },
     )? {
         return Ok(());
     }
@@ -749,9 +781,6 @@ pub(crate) fn run_stopped(
     for (spec, value) in specs.iter().zip(&values) {
         text.push(format!("{:<28}: {value}", spec.label));
     }
-    if let (Some(path), Some(c)) = (input, &copy) {
-        text.push(format!("Input SHA-256 ({path}): {}", c.digest));
-    }
     if let Some(ref_path) = &auto_reference {
         text.push(format!(
             "Managed reference           : {}",
@@ -784,9 +813,9 @@ pub(crate) fn run_stopped(
             text.push("Exports public/HPKE-encrypted material to a new 0600 file without modifying activation state.".into());
         }
     }
-    text.push(String::new());
-    text.push("Authoritative pre-mutation observation:".into());
-    text.extend(lines(&before)?);
+    text.push(
+        "The device and pool state will be checked again before this action is submitted.".into(),
+    );
 
     let confirm_mode = ConfirmMode::YesNo {
         danger: matches!(action, Action::Delete | Action::Discard),
@@ -924,10 +953,8 @@ pub(crate) fn run_stopped(
                     "Metadata publication failed at {metadata_path}: {error}"
                 )),
             }
-            result.push(String::new());
-            result.extend(lines(&metadata)?);
         } else {
-            result.extend(lines(&response)?);
+            result.push(format!("Result: {}", response_status(&response)));
         }
         let proceed = review_mode(
             terminal,
@@ -1034,12 +1061,26 @@ pub(crate) fn run_stopped(
 
 #[cfg(test)]
 mod tests {
-    use super::{missing_recipient_rejection, revisions_match};
+    use super::{missing_recipient_rejection, response_status, revisions_match};
     use crate::{
         cli::receipt::PublicReceipt,
         manager::lifecycle::{ExitClass, Outcome},
     };
     use serde_json::json;
+
+    #[test]
+    fn response_status_distinguishes_failure_and_bounds_untrusted_text() {
+        let success = response_status(&json!({"outcome":"success"}));
+        let unknown = response_status(&json!({}));
+        let rejected = response_status(
+            &json!({"outcome":"rejected", "error":{"code":format!("bad\n\u{1b}{}", "x".repeat(200))}}),
+        );
+        assert_ne!(success, unknown);
+        assert_ne!(success, rejected);
+        assert_ne!(unknown, rejected);
+        assert!(!rejected.chars().any(char::is_control));
+        assert!(rejected.chars().count() <= 130);
+    }
 
     #[test]
     fn only_certain_device_recipient_rejection_allows_fallback() {

@@ -30,8 +30,7 @@ use std::{
 pub(super) enum Action {
     Install,
 }
-pub(super) const ACTIONS: &[(Action, &str)] =
-    &[(Action::Install, "Install authenticated host bundle")];
+pub(super) const ACTIONS: &[(Action, &str)] = &[(Action::Install, "Install signed host software")];
 
 pub(super) fn bundle(
     terminal: &mut TerminalOwner,
@@ -40,8 +39,11 @@ pub(super) fn bundle(
     let retained = if selected.is_none() {
         match host::installation_registry() {
             Ok(registry) => registry.current.map(|selection| {
-                Path::new("/usr/lib/pico2-kes-agent/sources")
-                    .join(selection.manifest_digest.to_string())
+                (
+                    Path::new("/usr/lib/pico2-kes-agent/sources")
+                        .join(selection.manifest_digest.to_string()),
+                    selection.manifest_digest,
+                )
             }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
@@ -49,7 +51,7 @@ pub(super) fn bundle(
     } else {
         None
     };
-    let path = if let Some(path) = selected.or(retained.as_ref()) {
+    let path = if let Some(path) = selected.or(retained.as_ref().map(|(path, _)| path)) {
         path.clone()
     } else {
         let specs = [FieldSpec::text(
@@ -73,16 +75,20 @@ pub(super) fn bundle(
         Err(qualified_error) => {
             let bundle = release::verify_bundle(&path, Admission::AttendedCandidate)
                 .map_err(|_| qualified_error)?;
-            if !review_mode(
-                terminal,
-                "Candidate bundle requires attended review",
-                vec![
-                    format!("Bundle: {}", path.display()),
-                    "Use this signed candidate for attended acceptance on a disposable host?"
-                        .into(),
-                ],
-                ConfirmMode::YesNo { danger: false },
-            )? {
+            let already_installed = retained.as_ref().is_some_and(|(installed, digest)| {
+                installed == &path && *digest == bundle.selection().manifest_digest
+            });
+            if !already_installed
+                && !review_mode(
+                    terminal,
+                    "Use an unapproved signed release?",
+                    vec![
+                        format!("Bundle: {}", path.display()),
+                        "This is not an approved release. Use it only on a disposable host. Continue with this signed release?".into(),
+                    ],
+                    ConfirmMode::YesNo { danger: false },
+                )?
+            {
                 return Ok(None);
             }
             (bundle, true)
@@ -195,6 +201,32 @@ pub(crate) fn apply(
     mut action: HostAction,
     bootstrap: Option<&VerifiedBundle>,
 ) -> io::Result<()> {
+    if let HostAction::Install { bundle, role, .. } = &action {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                include_str!("../../../install.sh"),
+                "install.sh",
+                "--bundle",
+            ])
+            .arg(bundle)
+            .args([
+                "--role",
+                match role {
+                    InstallationRole::Primary => "primary",
+                    InstallationRole::Backup => "backup",
+                },
+            ]);
+        let status = foreground(terminal, worker, socket, &mut command, true)?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "Installation stopped; inspect its original record in Activity before continuing",
+            ))
+        };
+    }
     if let Some(commissioning) = start_mode(&action) {
         let Some(changed) = super::host_security::ensure(terminal, worker, socket, commissioning)?
         else {
@@ -229,32 +261,11 @@ pub(crate) fn apply(
     let stem = action.stem();
     let summary = action.summary();
     let plan = HostPlan::new(action)?;
-    let path = workspace::next_path(WorkspaceKind::Plans, stem, "json")?;
-    let summary_lines = vec![
-        summary.clone(),
-        "The privileged helper will recheck this scope and ask Proceed? [y/N].".into(),
-    ];
-    let mut lines = vec![
-        format!("Action summary : {summary}"),
-        format!("Plan file      : {}", path.display()),
-        format!("Plan ID        : {}", plan.plan_id),
-        "The privileged helper will show the summary and plan digest, then ask for confirmation."
-            .into(),
-        String::new(),
-        "Exact JSON scope:".into(),
-    ];
-    lines.extend(
-        serde_json::to_string_pretty(&plan)
-            .map_err(io::Error::other)?
-            .lines()
-            .map(str::to_owned),
+    let factory_install = matches!(
+        &plan.action,
+        HostAction::FirmwareFirstInstall { apply: true, .. }
     );
-    if !super::widgets::review_details(terminal, "Review host change", summary_lines, lines)? {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Change cancelled; no host action was submitted",
-        ));
-    }
+    let path = workspace::next_path(WorkspaceKind::Plans, stem, "json")?;
     files::publish_no_clobber(
         &path,
         &serde_json::to_vec(&plan).map_err(io::Error::other)?,
@@ -269,6 +280,29 @@ pub(crate) fn apply(
     };
     command.arg("host-apply").arg("--plan").arg(&path);
     let status = foreground(terminal, worker, socket, &mut command, true)?;
+    if factory_install && !status.success() {
+        use crate::manager::records::{Record, RecordStore};
+        let not_started = RecordStore::list_host_readonly().is_ok_and(|records| {
+            records.iter().any(|record| {
+                matches!(record, Record::Supported(record)
+                    if matches_record(record, Some(&plan.plan_id), Some(&plan.approved_digest))
+                        && matches!(record.outcome.as_str(), "failed-known" | "cancelled")
+                        && host::maintenance_record_allows_new_action(record))
+            })
+        });
+        if not_started {
+            let mut lines = vec![
+                "Firmware installation stopped before writing to your Pico 2.".into(),
+                "You can start setup again; no recovery or host reset is required.".into(),
+            ];
+            lines.extend(failure_observations(&plan));
+            review(terminal, "Firmware not installed", lines)?;
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Firmware installation did not start",
+            ));
+        }
+    }
     let mut result_lines = vec![
         format!("Action: {summary}"),
         format!("Helper exit: {status}"),
@@ -377,20 +411,24 @@ pub(crate) fn bind_pool_workflow(
     let restart_opts = [
         (
             "yes",
-            "Restart pico2-kes-agentd after config update so socket & context start",
+            "Restart the agent to make this pool's signing socket available",
         ),
         ("no", "Install config only; restart service later"),
     ];
     let specs = [
         FieldSpec::readonly("Pool ID", pool_id),
         FieldSpec::readonly("Incarnation ID", incarnation_id),
-        FieldSpec::select("Network binding", default_net, &net_pairs),
-        FieldSpec::text("KES Service V2 Unix socket path", &default_sock),
+        FieldSpec::select("Cardano network", default_net, &net_pairs),
+        FieldSpec::text_hint(
+            "Pool signing socket",
+            &default_sock,
+            "Keep the suggested path unless your node needs a custom socket",
+        ),
         FieldSpec::select("Restart agent service afterward", "yes", &restart_opts),
     ];
     let Some((candidate, restart_after)) = form_validated(
         terminal,
-        "Bind enrolled pool in host configuration",
+        "Connect this pool to the host",
         &specs,
         |values| {
             let sock = PathBuf::from(values[3].trim());
@@ -497,16 +535,9 @@ pub(crate) fn commission_core(
         2,
     );
     lines.extend([
-                format!("Intended application serial : {serial}"),
-                format!("Public identity output      : {out_path}"),
-                format!("Original CLI receipt        : {receipt_path}"),
-                format!("Managed reference record    : {}", reference_path.display()),
-                format!("Read-only admission plan    : {}", admission_plan_path.display()),
-                String::new(),
-                "Physically confirm this is the intended blank Pico 2 board. BOOTSEL CHIPID is not an application identity pin."
-                    .into(),
-                "This generates the persistent device identity on the Pico 2. It does not lock OTP or start normal mode."
-                    .into(),
+                format!("Pico 2 serial: {serial}"),
+                "Physically confirm this is the intended blank Pico 2 board; the bootloader cannot establish that association.".into(),
+                "This creates a persistent identity on the board. It does not permanently lock device security or start normal service.".into(),
             ]);
     if !review_mode(
         terminal,
@@ -686,16 +717,7 @@ fn configuration_inner(
         },
         &genesis_imports,
     )?;
-    let (previous, previous_bytes) = setup::current_config_review()?.unzip();
-    let mut lines = vec![
-        format!("Candidate source : {}", checked.source.display()),
-        format!("Candidate SHA-256: {}", checked.sha256),
-        format!(
-            "Current SHA-256  : {}",
-            previous.as_deref().unwrap_or("(absent)")
-        ),
-        format!("Validation       : {}", checked.validation),
-    ];
+    let previous = setup::current_config_review()?.map(|(digest, _)| digest);
     let value: serde_json::Value =
         serde_json::from_slice(&checked.bytes).map_err(io::Error::other)?;
     let networks = value["networks"]
@@ -714,7 +736,7 @@ fn configuration_inner(
             if commissioning {
                 "commissioning"
             } else {
-                "normal pinned agent"
+                "normal agent"
             }
         ),
         format!(
@@ -730,27 +752,12 @@ fn configuration_inner(
             genesis_imports.len()
         ),
     ];
-    lines.extend(checked.inputs.iter().map(|input| {
-        format!(
-            "Genesis input    : {} (SHA-256 {})",
-            input.path.display(),
-            input.sha256
-        )
-    }));
-    lines.push(String::new());
-    lines.push("Exact configuration diff ('-' current, '+' proposed):".into());
-    if let Some(bytes) = previous_bytes {
-        let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
-        lines.extend(text.lines().map(|line| format!("- {line}")));
-    }
-    let text = std::str::from_utf8(&checked.bytes).map_err(io::Error::other)?;
-    lines.extend(text.lines().map(|line| format!("+ {line}")));
-    lines.push(String::new());
-    lines.push(
-        "Service-identity validation runs before atomic replacement; failure leaves working config untouched."
-            .into(),
-    );
-    if !super::widgets::review_details(terminal, "Review configuration", summary, lines)? {
+    if !review_mode(
+        terminal,
+        "Replace agent configuration",
+        summary,
+        ConfirmMode::Enter("continue to approval"),
+    )? {
         return Ok(());
     }
     apply(
@@ -775,14 +782,21 @@ pub(super) fn reconcile_first_install_record(
     worker: &mut Option<Worker>,
     socket: &Path,
     initial_op_id: &str,
+    original_digest: &str,
 ) -> io::Result<()> {
     let op_id = initial_op_id.to_owned();
-    let serial = candidate_usb_serial().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "Connect exactly one application board to associate with this record",
-        )
-    })?;
+    let Some(serial) = candidate_usb_serial() else {
+        return apply(
+            terminal,
+            worker,
+            socket,
+            HostAction::HostReconcile {
+                operation_id: op_id,
+                original_plan_digest: original_digest.into(),
+            },
+            None,
+        );
+    };
     let expected_service_state = host::observed_service_state(true)?;
     if !review_mode(
         terminal,

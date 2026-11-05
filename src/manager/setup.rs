@@ -555,12 +555,19 @@ pub fn admit_first_install(record: &Path) -> io::Result<()> {
                 let bytes = read_regular(&entry.path())?;
                 let record: super::model::MaintenanceRecord =
                     serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-                if record.schema_version != 1
-                    || record.outcome != "completed"
-                    || !matches!(
+                let completed_host_action = record.outcome == "completed"
+                    && matches!(
                         record.action.as_str(),
                         "install" | "config" | "service" | "commission_service"
-                    )
+                    );
+                let no_write_factory = record.action == "firmware_transfer"
+                    && matches!(record.outcome.as_str(), "failed-known" | "cancelled")
+                    && super::host::maintenance_record_is_resolved(&record)?;
+                if record.schema_version != 1
+                    || entry.file_name() != format!("{}.json", record.operation_id).as_str()
+                    || !(completed_host_action
+                        || no_write_factory
+                        || super::host::precommission_install_recovered(&record))
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,

@@ -174,7 +174,11 @@ fn normal_candidate(
     let epochs = match node.byron_epochs {
         Some(n) => n,
         None => {
-            let specs = [FieldSpec::text("Byron to Shelley transition epochs", "")];
+            let specs = [FieldSpec::text_hint(
+                "Byron-to-Shelley transition epoch",
+                "",
+                "Epoch when this custom network switched to Shelley; use the network's published settings",
+            )];
             let Some(n) = form_validated(terminal, "Custom network", &specs, |v| {
                 v[0].trim()
                     .parse::<u64>()
@@ -302,7 +306,13 @@ pub(crate) fn run(
                 }
                 continue;
             }
-            setup::reconcile_first_install_record(terminal, worker, socket, &id)?;
+            setup::reconcile_first_install_record(
+                terminal,
+                worker,
+                socket,
+                &id,
+                &record.plan_digest.to_string(),
+            )?;
             if activity::discover(InstallationRole::Primary).unresolved_count > 0 {
                 return Ok(());
             }
@@ -364,28 +374,6 @@ pub(crate) fn run(
                 selected_serial = candidates[index].serial.clone();
             }
             SetupStep::FlashFactory => {
-                let mut lines = widgets::progress_steps(
-                    &[
-                        "Detect board",
-                        "Prepare firmware",
-                        "Commission",
-                        "Configure",
-                        "Start agent",
-                    ],
-                    1,
-                );
-                lines.push(
-                    "Flash the single connected BOOTSEL board with the selected factory firmware?"
-                        .into(),
-                );
-                if !review_mode(
-                    terminal,
-                    "Install factory firmware",
-                    lines,
-                    ConfirmMode::YesNo { danger: false },
-                )? {
-                    return Ok(());
-                }
                 let Some((bundle, verified, accepted)) = setup::bundle(terminal, selected)? else {
                     return Ok(());
                 };
@@ -517,7 +505,7 @@ pub(crate) fn run(
                 if unlocked {
                     choices.push("Wipe it and start over: erase all pools and KES keys".into());
                 } else {
-                    choices[0].push_str(" · OTP locked: wipe unavailable");
+                    choices[0].push_str(" · device security is locked: wipe unavailable");
                 }
                 let Some(choice) = choose(terminal, "This Pico 2 is already set up", &choices)?
                 else {

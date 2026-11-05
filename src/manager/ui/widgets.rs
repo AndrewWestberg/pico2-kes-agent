@@ -835,14 +835,9 @@ pub(crate) fn review_details(
     title: &str,
     summary: Vec<String>,
     details: Vec<String>,
+    mode: ConfirmMode<'_>,
 ) -> io::Result<bool> {
-    review_inner(
-        terminal,
-        title,
-        summary,
-        ConfirmMode::YesNo { danger: false },
-        Some(details),
-    )
+    review_inner(terminal, title, summary, mode, Some(details))
 }
 
 fn review_inner(
@@ -919,13 +914,22 @@ fn review_inner(
                 }
                 let footer = match mode {
                     ConfirmMode::None => vec![
-                        Line::from("↑↓/PgUp/PgDn/Home/End scroll · Enter/Esc/q return")
-                            .style(tone(Color::DarkGray)),
+                        Line::from(if detail_lines.is_some() {
+                            "d: technical details · ↑↓/PgUp/PgDn scroll · Enter/Esc/q return"
+                        } else {
+                            "↑↓/PgUp/PgDn/Home/End scroll · Enter/Esc/q return"
+                        })
+                        .style(tone(Color::DarkGray)),
                     ],
                     ConfirmMode::Enter(action_label) => vec![
                         Line::from(format!("Enter: {} · Esc/q: cancel", safe(action_label)))
                             .style(tone(Color::Cyan).add_modifier(Modifier::BOLD)),
-                        Line::from("↑↓/j k/PgUp/PgDn/g/G scroll").style(tone(Color::DarkGray)),
+                        Line::from(if detail_lines.is_some() {
+                            "d: technical details · ↑↓/PgUp/PgDn scroll"
+                        } else {
+                            "↑↓/j k/PgUp/PgDn/g/G scroll"
+                        })
+                        .style(tone(Color::DarkGray)),
                     ],
                     ConfirmMode::YesNo { danger } => vec![
                         Line::from(if detail_lines.is_some() {

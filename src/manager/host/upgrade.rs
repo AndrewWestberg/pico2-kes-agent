@@ -120,7 +120,7 @@ pub(super) fn apply(
             temporary_validation: *temporary_validation,
         },
     };
-    update_bundle(&update, store, record, effects, Some(plan))
+    update_bundle(&update, store, record, effects, Some(plan), false)
 }
 
 fn verify_generation(path: &Path, selection: &ReleaseSelection) -> io::Result<()> {

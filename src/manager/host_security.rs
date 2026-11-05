@@ -139,19 +139,21 @@ impl Request {
     pub fn lines(&self) -> Vec<String> {
         let e = &self.evidence;
         let mut lines = vec![
-            format!("Active swap to turn off: {}", if e.swaps.is_empty() { "none".into() } else { e.swaps.join(", ") }),
-            format!("Persistent /dev/null systemd masks: {}", e.units.join(", ")),
-            format!("Current agent limits: {}; node limits: {}", e.agent_limits, if self.commissioning { "not checked" } else { &e.node_limits }),
-            format!("Current policy: {}", e.policy.as_ref().map(|f| diagnostic(&f.contents)).unwrap_or_else(|| "(absent)".into())),
-            "Existing fstab and unrelated policy lines are retained; no fstab editing.".into(),
-            "Scope is discovered systemd-managed swap sources; future administrator changes invalidate readiness.".into(),
-            "Acknowledge snapshot/crashdump protection and backup private material off the primary host; these assertions cannot be verified.".into(),
-            "Publish /etc/pico2-kes-agent/host-security.env as root:pico2-kes-agent mode 0640 after approval.".into(),
-            "Set SNAPSHOT_POLICY=disabled-or-encrypted-off-host and BACKUP_PRIVATE_POLICY=off-primary.".into(),
+            format!("Turn off disk-backed virtual memory (swap): {}", if e.swaps.is_empty() { "none currently active".into() } else { e.swaps.join(", ") }),
+            format!("Keep these swap and sleep services disabled after reboot: {}", e.units.join(", ")),
+            "Sleep, suspend and hibernate will be unavailable. Programs may run out of RAM instead of using swap.".into(),
+            "Existing disk-mount configuration and unrelated policy settings are preserved.".into(),
+            "p2kesup will save the host security policy automatically; no file editing is needed.".into(),
+            "By approving, you confirm that memory snapshots and crash dumps are disabled or encrypted and kept off this host, and backup private keys are kept off the primary host.".into(),
+            "Those storage and custody arrangements cannot be verified by p2kesup. Future administrator changes will be checked again before use.".into(),
         ];
         if !self.commissioning {
-            lines.push(format!("Install authenticated memory drop-in for cardano-node.service; current state {}. An active node is explicitly approved for try-restart; a stopped node is never started.", e.node_state));
-            lines.push("Acknowledge NODE_MEMORY_POLICY=core-and-swap-disabled.".into());
+            lines.push("Protect cardano-node.service from swap and core dumps.".into());
+            lines.push(if e.node_state == "active" {
+                "Restart the running block producer to apply its memory protection. Block production will be interrupted."
+            } else {
+                "The block producer is not running and will not be started."
+            }.into());
         }
         lines
     }

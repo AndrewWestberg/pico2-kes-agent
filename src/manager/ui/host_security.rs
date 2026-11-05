@@ -15,18 +15,18 @@ pub(super) fn ensure(
     if reviewed.ready {
         return Ok(Some(false));
     }
-    reviewed.lines.extend([
-        String::new(),
-        "These changes apply host-wide and persist across reboot. Disabling swap and sleep can increase out-of-memory risk and remove suspend/hibernate.".into(),
-        "Confirm your snapshot and crashdump policy protects secrets in memory (this cannot be verified automatically), and backup private keys are held off the primary host.".into(),
-    ]);
+    let mut lines = vec![
+        "The tool will disable active swap and prevent system-managed swap and sleep from starting. These host-wide changes persist after reboot.".into(),
+        "This can increase out-of-memory risk and disable suspend and hibernation.".into(),
+        "Confirm that snapshots and crash dumps protect secrets in memory, and that backup private keys are stored off this host. The tool cannot verify these policies.".into(),
+    ];
     if !commissioning {
-        reviewed.lines.push("Confirm NODE_MEMORY_POLICY=core-and-swap-disabled: node limits are checked, and your operational policy protects node memory.".into());
+        lines.push("The tool will install memory protection for cardano-node.service and restart it if running. Confirm your operating policy protects node memory from core dumps and swap.".into());
     }
     if !review_mode(
         terminal,
         "Review host security prerequisites",
-        reviewed.lines,
+        lines,
         ConfirmMode::YesNo { danger: true },
     )? {
         return Ok(None);

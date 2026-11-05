@@ -60,18 +60,18 @@ if [ -n "$missing" ]; then
     if [ "$(id -u)" -eq 0 ]; then elevate=none
     else elevate=sudo
     fi
-    printf 'Refresh trusted OS package indexes before resolving missing packages:%s\nType REFRESH to approve apt-get update: ' "$missing" >&3
+    printf 'Missing required software:%s\nRefresh the system package lists to find it? [y/N] ' "$missing" >&3
     IFS= read -r choice <&3 || exit 3
-    [ "$choice" = REFRESH ] || { echo 'Package-index refresh declined.' >&2; exit 3; }
+    case "$choice" in y|Y|yes|YES|Yes) ;; *) echo 'Package-list refresh declined.' >&2; exit 3 ;; esac
     case "$elevate" in
         none) /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
         sudo) /usr/bin/sudo -- /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get update <&3 >&3 2>&3 ;;
     esac || { echo 'Package-index refresh failed.' >&2; exit 4; }
     proposal=$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing) || { echo 'Prerequisite simulation failed.' >&2; exit 4; }
-    printf 'Required bootstrap packages:%s\nExact apt simulation, including dependencies:\n%s\nType INSTALL to approve: ' "$missing" "$proposal" >&3
+    printf 'Install the missing software and its system dependencies? This changes packages on this computer. [y/N] ' >&3
     IFS= read -r choice <&3 || exit 3
-    [ "$choice" = INSTALL ] || { echo 'Prerequisites declined.' >&2; exit 3; }
-    [ "$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing)" = "$proposal" ] || { echo 'Apt proposal changed; review again.' >&2; exit 4; }
+    case "$choice" in y|Y|yes|YES|Yes) ;; *) echo 'Prerequisites declined.' >&2; exit 3 ;; esac
+    [ "$(/usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get --simulate install -- $missing)" = "$proposal" ] || { echo 'The package changes have changed; restart the installer to review them again.' >&2; exit 4; }
     case "$elevate" in
         none) /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
         sudo) /usr/bin/sudo -- /usr/bin/env -i PATH="$PATH" LC_ALL=C /usr/bin/apt-get install -- $missing <&3 >&3 2>&3 ;;
@@ -177,14 +177,14 @@ if len(parts)<2 or tuple(map(int,parts[:2]))<(2,36): raise SystemExit(1)
 PY
 if [ -z "$bundle" ]; then
     if [ -n "$version" ]; then
-        printf 'Download explicit release %s, which may be a candidate? Type DOWNLOAD to continue: ' "$version" >&3
+        printf 'Download release %s? It may be a test release rather than a stable release. [y/N] ' "$version" >&3
         explicit=yes
     else
-        printf 'Discover the latest approved stable release? Type DOWNLOAD to continue: ' >&3
+        printf 'Find and download the latest approved stable release? [y/N] ' >&3
         explicit=no
     fi
     IFS= read -r choice <&3 || exit 3
-    [ "$choice" = DOWNLOAD ] || exit 3
+    case "$choice" in y|Y|yes|YES|Yes) ;; *) exit 3 ;; esac
     work=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/p2kesup-release-XXXXXXXX") || exit 4
     keep_bundle=no
     trap 'if [ "$keep_bundle" = yes ]; then printf "Retained recovery bundle: %s\n" "$bundle" >&2; else rm -rf -- "$work"; fi' EXIT

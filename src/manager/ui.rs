@@ -63,15 +63,6 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
         Err(qualified_error) => {
             let verified = release::verify_bundle(&bundle, Admission::AttendedCandidate)
                 .map_err(|_| qualified_error)?;
-            println!(
-                "This signed bundle is a candidate, not an approved release. Install only on a disposable host."
-            );
-            if !host::ask_yes_no("Proceed with this candidate installation?")? {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "candidate not accepted",
-                ));
-            }
             (verified, true)
         }
     };
@@ -95,7 +86,7 @@ pub fn install(bundle: PathBuf, role: InstallationRole) -> io::Result<()> {
         0o600,
     )?;
     println!(
-        "Installation plan retained at {}. The privileged helper will display the scope and plan digest for your records.",
+        "Installation plan saved at {}. Review the changes below; nothing is installed without your approval.",
         path.display()
     );
     let mut command = if rustix::process::geteuid().is_root() {
@@ -142,7 +133,7 @@ pub fn upgrade(version: Option<&str>, bundle: Option<PathBuf>) -> io::Result<()>
     let store = super::records::RecordStore::open_host(super::setup::service_identity()?.1)?;
     if store.list()?.iter().any(|record| match record {
         super::records::Record::Supported(record) => {
-            !super::host::maintenance_outcome_allows_new_action(&record.outcome)
+            !super::host::maintenance_record_allows_new_action(record)
         }
         super::records::Record::Unknown(_) => true,
     }) {
@@ -817,7 +808,7 @@ fn event_loop(
                     }),
                     Span::styled(fresh_badge, tone(fresh_col).add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        "   ?:help d:evidence r:refresh q:quit",
+                        "   ?:help d:details r:refresh q:quit",
                         tone(Color::DarkGray),
                     ),
                 ]);
@@ -1118,7 +1109,7 @@ fn event_loop(
             {
                 review(terminal, "Blocked / incomplete", vec![
                     error.to_string(),
-                    "Open Activity to resume any interrupted operation; do not create a replacement retry.".into(),
+                    "If an operation was started, select it in Activity to check its result safely. Do not repeat an interrupted write.".into(),
                 ])?;
             }
             activity_inv = activity::discover(role);
