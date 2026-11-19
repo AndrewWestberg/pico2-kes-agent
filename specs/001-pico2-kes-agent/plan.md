@@ -22,7 +22,7 @@ C1 reuses cardano-node's existing post-initialization SIGHUP handler. File-backe
 
 **Language/Version**: Rust edition 2024, Rust/Cargo 1.99.1 for firmware, daemon and CLI. Native Haskell node/consensus changes follow their pinned Cabal/GHC build graph; record exact toolchain and resolved plan before integration acceptance.
 
-**Primary Dependencies**: Embassy RP 0.10.0/USB 0.6.0/sync 0.8.0; nusb 0.2.9; reviewed no_std kes-summed-ed25519 0.2.1 adaptation; Ed25519-dalek 2.2.0; HPKE 0.13.0/X25519 2.0.1/HKDF-SHA256/ChaCha20-Poly1305 0.10.1; zeroize 1.8.2; serde 1.0.228/serde_json 1.0.145/rustix 1.1.5. Exact selected versions/source pins and maintenance review obligations are in [research](research.md). No dependencies are installed into the project by this plan.
+**Primary Dependencies**: Embassy RP 0.10.0/USB 0.6.0/sync 0.8.0; nusb 0.2.9; reviewed no_std kes-summed-ed25519 0.2.1 adaptation; Ed25519-dalek 2.2.0; HPKE 0.13.0/X25519 2.0.1/HKDF-SHA256/ChaCha20-Poly1305 0.10.1; zeroize 1.8.2; serde 1.0.228/serde_json 1.0.145/rustix 1.1.6. Exact selected versions/source pins and maintenance review obligations are in [research](research.md). No dependencies are installed into the project by this plan.
 
 **Storage**: Raw qualified NOR; paired authenticated pool/configuration snapshots with explicit COMMIT/CLEAN and physical sector erase/read verification; immutable per-generation public trees/artifacts. Nominal 4-MiB layout allocates 1 MiB firmware, 16 KiB config, 2 MiB pool regions, 1,008 KiB reserve. Host public append-only mutation/receipt journal (64-MiB admission bound); no primary plaintext key persistence.
 
