@@ -78,3 +78,9 @@ Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepte
 - **Evidence boundary:** SO-002b labels candidate regression results; SO-005c labels offline independent reference generation. One seed/message is not a live differential campaign, native receiver/bulk integration test, hardware result or full-input proof. No failed crypto check or production secret protection is waived.
 - **Approved definition SHA-256:** `a16b157e5b3cb32df0697cfe7029448688d1a91065c4296d278982692e1adecb`, over the UTF-8 bytes preceding the first `## Approval record`.
 - **Referenced storage-contract SHA-256:** `9b0616cbd3e3ef3e5ee5e82f276e61e83df38faa6653a1c1fd45fea96ba6862b` (unchanged).
+
+### Storage-linkage amendment — 2026-11-19
+
+- **Approver:** Project maintainer (explicit approval to bind the gate to the current storage contract).
+- **Referenced storage-contract SHA-256:** `bb4cea9359ec04c4cd44fd9ad404eb57cf7ce87a3aa30bf62d9318baddc0cef4`.
+- **Scope:** Bind the existing host UTC and independent per-pool context rules from `25e9d11`. The qualification definition and its 2026-11-17 approval remain unchanged. This linkage is not a qualification pass.
