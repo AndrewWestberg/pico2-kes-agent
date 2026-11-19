@@ -26,15 +26,21 @@ Record candidate commit/build and dirty-source digest if applicable, supported h
 
 Before T070 promotes a complete component tuple, link candidate-applicable evidence for the
 [feature-001 qualification gates](../../001-pico2-kes-agent/contracts/quality-gates.md) under
-[constitution 2.0.0, Principle II](../../../.specify/memory/constitution.md#ii-verifiable-behavior):
+[constitution 3.0.0, Principle II](../../../.specify/memory/constitution.md#ii-verifiable-behavior):
 deterministic fault injection at every modeled persistent transition boundary; one ordinary
 complete host/device power-loss recovery smoke on the identified Pico2 A2 and fitted storage,
 preserving pin and acknowledged state with cleanup/catch-up before delivery; the specified
-64-active/64-staged workload; pinned native-node build/protocol regressions; and
+64-active/64-staged workload; all 64 fixed Haskell-derived KES periods, certificate cases,
+real restored-envelope comparison and existing Rust V2 node-service regressions; and
 [backup fidelity](../../001-pico2-kes-agent/contracts/backup.md) against disposable generation-time
-state with an independent standard-format decoder. A USB reset alone does not satisfy the
-power-loss smoke. Retain the qualified storage, firmware and OTP evidence required by the selected
-operations. Missing, failed, stale or inapplicable required evidence blocks promotion.
+state byte-for-byte, with standard-format compatibility checked against the offline independent
+envelope. External node builds/live Haskell are not mandatory per PR/release candidate.
+Maintainer-only vector regeneration follows deliberate reference-version, format or case changes.
+SO-002b candidate examples and SO-005c offline generation do not establish native cancellation,
+bulk loading, live forging, device behavior or complete V2 serialization; actual future external
+integration changes retain their native checks. A USB reset alone does not satisfy the power-loss
+smoke. Retain the qualified storage, firmware and OTP evidence required by the selected operations.
+Missing, failed, stale or inapplicable required evidence blocks promotion.
 
 These are external qualification checks, not node functionality added to `p2kesup`. Reference
 existing reports only when their source/payload, configuration, hardware/tool and measured scope
@@ -64,7 +70,7 @@ Run these existing checks once after integrated changes, not after each edit:
 ```sh
 cargo fmt --all --check
 cargo check --locked
-cargo test --locked --workspace --exclude pico2-kes-firmware
+cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification
 cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings
 cargo audit
 cargo deny check
@@ -82,7 +88,7 @@ cargo clippy --locked -p pico2-kes-firmware --target thumbv8m.main-none-eabihf -
 cargo run --locked -p qualification -- load
 ```
 
-Use the existing Rust/Cargo 1.99.1 toolchain and repository dependency/tool pins; no additional coverage/mutation/property/benchmark tools are required for this feature. Existing CI jobs are not removed. Updating an existing fuzz consumer to compile against a changed public enum is interface maintenance, not a requirement for a new fuzzing program. Linked firmware must still fit its target and work on the accepted hardware; an all-green host suite is not hardware proof.
+Use the existing Rust/Cargo 1.99.1 toolchain and repository dependency/tool pins; no additional coverage/mutation/property/benchmark tools are required for this feature. Existing hosted checks remain; constitution 3.0.0 moves compatibility checks off the obsolete self-hosted native job. Updating an existing fuzz consumer to compile against a changed public enum is interface maintenance, not a requirement for a new fuzzing program. Linked firmware must still fit its target and work on the accepted hardware; an all-green host suite is not hardware proof.
 
 ## Software Observatory applicability
 
@@ -116,4 +122,4 @@ T001 approves the defect, affected invariant, exact commands/scenario, tool vers
 
 Selected families are behavioral and runtime. Structural, invariants, adversarial, test-effectiveness, change, architecture, evolution and comprehension are not fully represented by selected catalog sensors. Existing compiler/linter checks, safety review, negative scenarios and operator testing address some of these risks without claiming exhaustive analysis. Manual testing can miss rare combinations and timing races; small checks for new critical logic and retained shared-component regressions are the backstop, not a high-coverage program.
 
-The separately approved constitution 2.0.0 amendment and synchronized feature-001 guidance govern inherited qualification above. This prospective feature selection does not waive a failed required reading or cryptographic validation, key custody, data preservation, accessibility, qualified storage/OTP checks, or the required physical power-loss smoke. Principle VI's sensor and performance obligations remain unchanged.
+The separately approved constitution 3.0.0 amendment dated 2026-11-17 and synchronized feature-001 guidance govern inherited qualification above. This prospective feature selection does not waive a failed required reading or cryptographic validation, key custody, data preservation, accessibility, qualified storage/OTP checks, or the required physical power-loss smoke. Only the generator's explicitly labelled public synthetic compatibility fixtures may be committed; operational/device-generated keys, random qualification secrets, credentials and secret-bearing evidence remain prohibited. Principle VI's sensor and performance obligations remain unchanged.

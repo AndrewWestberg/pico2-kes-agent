@@ -4,7 +4,7 @@
 
 The project maintainer approved this pragmatic scope: make the software work on the actual Pico2 A2 and preserve the specified lifecycle, recovery, interoperability, and operator behavior. Voltage, temperature, endurance, repeated manual power-cut, fixed coverage/mutation/benchmark, and supplied-leadership campaigns are not acceptance requirements.
 
-Evidence MUST identify the exact source candidate. A passing report from another source digest is historical evidence only. Reports MUST contain public outcomes only; plaintext KES state, passphrases, recipient secrets, and raw secret-bearing traffic MUST NOT be retained.
+Evidence MUST identify the exact source candidate. A passing report from another source digest is historical evidence only. Reports MUST contain public outcomes only; operational or device-generated KES state, passphrases, recipient secrets, and raw secret-bearing traffic MUST NOT be retained. Only the generator's deliberately public synthetic seeds/states MAY be committed as compatibility fixtures, labelled `PUBLIC SYNTHETIC TEST KEYS - NEVER USE FOR FUNDS`; real keys, random qualification secrets, credentials, and secret-bearing evidence remain prohibited.
 
 ## Required qualification
 
@@ -16,11 +16,22 @@ Evidence MUST identify the exact source candidate. A passing report from another
 | Capacity and isolation | `cargo run --locked -p qualification -- load` | 64 active plus 64 staged generations work; a 65th enrollment and stalled/malformed clients do not disturb healthy pools; requests remain within 10 seconds and recovery within 60 seconds. |
 | Protocol robustness | Bounded runs of every registered fuzz target | USB, management, node-service, certificate, and artifact inputs cause no crash, unbounded allocation, or invariant failure. |
 | Restore interoperability | `cargo test --locked --test backup_restore` | The recovered conventional key is exact; tampered, wrong-recipient, and identity-mismatched inputs publish no output. |
-| Native compatibility | `cargo run --locked -p qualification -- native-regression` | The pinned cardano-node source builds and the exact node-service protocol regressions pass. Live SIGHUP and accepted-block campaigns are optional. |
+| Cardano compatibility vectors | `cargo test --locked -p kes-core --features qualification --test crypto_compatibility`; `cargo test --locked --test backup_restore`; `cargo test --locked --test node_service` | Current-candidate results pass all 64 Haskell-derived state/signature/key periods, certificate identity/signature/counter cases, the real restored envelope comparison, and existing V2 protocol regressions. Four feature-enabled crypto tests MUST execute; zero selected tests is not evidence. |
 | Operator path | Staged or production install smoke; `operator_cli` and `host_security` tests | Installed binaries/configuration work, CLI exit classes and durable reconciliation are correct, and normal CLI operation never opens USB directly. |
 | Device path | One ordinary complete host/device power-loss recovery smoke on the accepted Pico2 A2 with identified fitted storage, followed by daemon/CLI status and recovered-generation use | The same pinned device identity reconnects and returns ready without re-enrollment or state reconstruction; the certified generation, verification key and certificate are preserved and valid signing succeeds. USB reset alone is not a substitute. |
 
-The foundation runner remains a useful bounded codec and memory-protection smoke. It MAY be run with `cargo run --locked -p qualification -- foundation`; it is not a substitute for the device, native, or operator checks above.
+The foundation runner remains a useful bounded codec and memory-protection smoke. It MAY be run with `cargo run --locked -p qualification -- foundation`; it is not a substitute for the device, feature-enabled crypto, or operator checks above.
+
+### Compatibility evidence scope
+
+PRs and unsigned release builds MUST run the fixed reference comparisons on GitHub-hosted runners. External node builds and live Haskell comparisons are not mandatory for PRs or releases. Maintainers regenerate the corpus only when reference versions, formats, or vector cases deliberately change, using the pinned generator and validation commands in [quickstart](../quickstart.md#maintainer-only-vector-regeneration). Generation is outside candidate CI and never refreshes expectations from Rust output; a mismatch must be resolved against the governing format/reference, not overwritten to make a candidate pass.
+
+| Sensor | Command, oracle and pass rule | Budget and evidence | Limitation |
+|---|---|---|---|
+| SO-002b — Example-Based Tests | The compatibility commands above, with Rust/Cargo 1.99.1 and locked dependencies, compare the actual Rust core and production restore output to the pinned Haskell-derived corpus; all assertions and existing node-service regressions pass. | Existing hosted host job: 30 minutes; unsigned release build: 40 minutes. Retain current-candidate command/test outcomes and CI logs. Missing, failed, empty or timed-out results block acceptance. | One seed/message across all 64 periods plus four certificates and one envelope is bounded regression evidence, not a live cross-language campaign or proof over all inputs. |
+| SO-005c — Differential Testing | Maintainer-only generation uses GHC 9.12.4, cabal-install 3.16.1.0 and `qualification/native/pins.json`; independent Haskell operations, native verification/decoding self-checks and identical repeated output establish reference bytes for comparison. | One finite 64-period/four-certificate/envelope corpus per deliberate regeneration; stop on any tool, pin or self-check failure. Retain the generator/config/pins, public fixture and regeneration outcome, not a machine-specific build plan in the fixture. | Offline independent reference generation supplies the differential reference; each candidate's fixed-input comparisons are SO-002b evidence, not a fresh SO-005c campaign. |
+
+These vectors do not test native receiver cancellation, bulk loading, live forging, device behavior, or complete Service V2 serialization. Existing Rust `node_service` tests remain required. Actual future changes in external node/consensus integration repositories still require their native builds/tests and interoperability evidence; this migration does not waive those checks.
 
 ## Optional diagnostics
 
@@ -57,3 +68,13 @@ Coverage, mutation testing, microbenchmarks, live SIGHUP campaigns, peer-accepte
 - **Approver:** Project maintainer (the user in this conversation).
 - **Scope:** Require deterministic fault injection at every modeled persistent transition and one ordinary complete host/device power-loss recovery smoke on the accepted Pico2 A2 with identified fitted storage; USB reset alone does not satisfy it. Keep the specified 64-pool workload and pinned native build and protocol regressions required. Repeated physical cuts and live SIGHUP/accepted-block campaigns remain optional.
 - **Evidence boundary:** This amendment changes the qualification definition, not the historical approval hashes or measured results; current-candidate evidence must independently satisfy the amended requirements.
+
+### Hosted compatibility-vector amendment — 2026-11-17
+
+- **Status:** Approved.
+- **Date:** 2026-11-17.
+- **Approver:** Project maintainer (approval of the hosted KES compatibility-vector execution plan).
+- **Scope:** Replace mandatory per-candidate native builds/live decoding with fixed Haskell-generated public vectors, feature-enabled Rust comparisons, real restored-envelope comparison and existing V2 regressions on hosted PR/release jobs, under constitution 3.0.0.
+- **Evidence boundary:** SO-002b labels candidate regression results; SO-005c labels offline independent reference generation. One seed/message is not a live differential campaign, native receiver/bulk integration test, hardware result or full-input proof. No failed crypto check or production secret protection is waived.
+- **Approved definition SHA-256:** `a16b157e5b3cb32df0697cfe7029448688d1a91065c4296d278982692e1adecb`, over the UTF-8 bytes preceding the first `## Approval record`.
+- **Referenced storage-contract SHA-256:** `9b0616cbd3e3ef3e5ee5e82f276e61e83df38faa6653a1c1fd45fea96ba6862b` (unchanged).

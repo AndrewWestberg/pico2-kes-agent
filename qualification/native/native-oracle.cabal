@@ -9,16 +9,10 @@ executable native-oracle
   build-depends:
     base >= 4.20 && < 4.22,
     aeson,
-    attoparsec,
     base16-bytestring,
     cardano-api == 11.6.0.0,
     cardano-binary,
     bytestring,
-    cryptonite,
-    memory,
-    text,
     cardano-crypto-class == 2.5.1.0,
-    ouroboros-network:framework,
     kes-agent == 1.3.0.0,
-    kes-agent-crypto == 1.1.0.0,
-    unix
+    kes-agent-crypto == 1.1.0.0

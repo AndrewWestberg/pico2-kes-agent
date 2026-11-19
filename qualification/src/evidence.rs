@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
 const DEFINITION: &str = "specs/001-pico2-kes-agent/contracts/quality-gates.md";
 pub(crate) const APPROVED_DIGEST: &str =
-    "f6d0e7962bad19bb142afb22251c63a0aba41ba2dda7cc63a9db71f2f26493ce";
+    "a16b157e5b3cb32df0697cfe7029448688d1a91065c4296d278982692e1adecb";
 const APPROVED_STORAGE_DIGEST: &str =
     "9b0616cbd3e3ef3e5ee5e82f276e61e83df38faa6653a1c1fd45fea96ba6862b";
 const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
@@ -248,7 +248,7 @@ pub(crate) fn approved_definition() -> bool {
     hex(&Sha256::digest(&bytes[..end])) == APPROVED_DIGEST
         && current.contains("**Status:** Approved.")
         && current.contains("**Approver:** Project maintainer")
-        && current.contains("**Date:** 2026-10-28.")
+        && current.contains("**Date:** 2026-11-17.")
         && current.contains(APPROVED_DIGEST)
         && current.contains(APPROVED_STORAGE_DIGEST)
         && hex(&Sha256::digest(&storage)) == APPROVED_STORAGE_DIGEST
@@ -406,7 +406,7 @@ pub fn run(checks: &[Check]) -> io::Result<(Verdict, PathBuf)> {
         &mut report,
         "approval_date",
         if approved {
-            "2026-10-28"
+            "2026-11-17"
         } else {
             "unavailable"
         },

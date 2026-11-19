@@ -2,13 +2,13 @@
 
 ## Execution status
 
-These commands validate the implemented firmware, daemon, CLI, host packaging, native integration, and qualification runners. Functional results must still be tied to the current revision and dirty-source digest; an older report is evidence only for its recorded candidate.
+These commands validate the implemented firmware, daemon, CLI, host packaging, fixed Cardano compatibility vectors, and qualification runners. Functional results must still be tied to the current revision and dirty-source digest; an older report is evidence only for its recorded candidate.
 
 Use only disposable credentials on an isolated controlled network for destructive scenarios. Mainnet, live cold keys and production backup recipients must not enter qualification fixtures. The backup host need not run a producer.
 
 ## 1. Prerequisites and setup
 
-Required validation uses a Pico2 A2 with its fitted flash, Linux with USB access, Rust 1.99.1, and the pinned GHC/Cabal native-node environment. Use trusted host time and fresh local-node state when exercising period advancement. A recipient host and independent Cardano decoder are needed only for restore interoperability. Controlled leadership windows and laboratory power equipment are optional, not acceptance prerequisites.
+Required validation uses a Pico2 A2 with its fitted flash, Linux with USB access, and Rust 1.99.1. Hosted PR/release compatibility checks consume committed Haskell-generated vectors; GHC/Cabal are needed only for maintainer regeneration, not candidate CI. Use trusted host time and fresh local-node state when exercising period advancement. A recipient host is needed for restore interoperability. Controlled leadership windows and laboratory power equipment are optional, not acceptance prerequisites.
 
 ### Host-only foundation phase
 
@@ -34,7 +34,7 @@ cargo clippy --all-targets -- -D warnings
 cargo clippy --locked -p pico2-kes-firmware --release --target thumbv8m.main-none-eabihf -- -D warnings
 ```
 
-Build the integrated node with its native `cabal build cardano-node`; separately build the unmodified pinned CLI/oracle. Capture all source/tool hashes and resolved native plans. Attended firmware installation must preserve the state partition; never perform an unreviewed whole-flash erase on an enrolled device. Inspect actual A2/flash identity and firmware/RAM bounds before commissioning.
+Actual changes in external node/consensus integration repositories still require their native builds/tests, source identities and interoperability evidence; unchanged provider candidates do not build cardano-node or a live Haskell oracle. Attended firmware installation must preserve the state partition; never perform an unreviewed whole-flash erase on an enrolled device. Inspect actual A2/flash identity and firmware/RAM bounds before commissioning.
 
 Build and install both host binaries, the systemd unit, host check, and production udev rule:
 
@@ -90,7 +90,7 @@ Expected: active service, enrolled intended device identity, public capacity 64,
 
 ### Focused U1/U2/I1 validation
 
-Use disposable fixtures for destructive focused scenarios. The deterministic recovery suite, `qualification hardware`, `qualification load`, and `qualification native-regression` are implemented; optional long-running diagnostics remain separate.
+Use disposable fixtures for destructive focused scenarios. The deterministic recovery suite, `qualification hardware`, `qualification load`, and fixed compatibility tests are implemented; optional long-running diagnostics remain separate.
 
 For `qualification hardware`, retain fresh `flash-identity.json` and `production-usb.json` beside the report under `evidence/<revision>-<dirty-sha256>/hardware/`; historical `evidence/physical/` records are not candidate evidence. The USB observation records the local ELF `firmware.sha256`, verified release directory `firmware.bundle`, `firmware.signed_uf2_sha256`, `firmware.transfer_method: "signed-msd"`, observed `firmware.transfer_flushed: true`, and `startup.identity_authenticated: true` with ready production USB status. The runner independently verifies the signed bundle and requires its source commit and UF2 hash to match. Locked MSD installation does not provide flash readback or firmware attestation.
 
@@ -156,15 +156,61 @@ Expected: future certificate remains staged; currently valid certificate activat
 
 Construct bulk JSON from complete certificate/VRF text envelopes using the [bulk grammar](contracts/node-service.md). An agent entry uses `kesSource: {"type":"kes-agent","socketPath":"/run/pico2-kes-agent/<pool-id>.sock"}` and contains no KES signing-key file.
 
-Run the pinned native compatibility gate:
+Run the hosted-compatible Cardano gate:
 
 ```sh
-cargo run --locked -p qualification -- native-regression
+cargo test --locked -p kes-core --features qualification --test crypto_compatibility
+cargo test --locked --test backup_restore
+cargo test --locked --test node_service
 ```
 
-This builds the pinned node source and runs the exact node-service protocol regressions. Live SIGHUP and peer-accepted-block campaigns are optional integration diagnostics, not release gates.
+The crypto command must execute four tests, comparing all 64 periods and certificate cases against the pinned Haskell-derived fixture. Running without the feature selects no crypto tests and is not evidence. `backup_restore` compares the actual published envelope and restored state/key to Haskell's period-zero reference while retaining authentication, mode-0600 and no-clobber checks. `node_service` retains the existing Rust V2 regressions. Artifact retention is checked against the persistent lifecycle in `recovery`.
 
-The native CI job also runs `cargo test --locked -p kes-core --features qualification --test crypto_compatibility -- --test-threads=1` with the pinned `KES_ORACLE_*` source, archive, tool, executable and Cabal-plan paths set in `.github/workflows/quality.yml`. Running without the feature selects no crypto tests and is not evidence. Artifact retention is checked against the persistent lifecycle in `recovery`; decryption, every identity binding and byte-tampering rejection are checked against the host implementation in `backup_restore`.
+The quality host job combines these in `cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification`; the unsigned release build explicitly runs crypto compatibility and backup restore before its dependent signing job. Production builds do not enable qualification signing. Until observed, hosted execution is unverified; require logs showing four passing crypto tests and passing restore tests, with no queued `native` job.
+
+These SO-002b fixed examples cover one seed/message, not new random inputs on each candidate. SO-005c applies to offline independent reference generation. The corpus does not establish native receiver cancellation, bulk loading, live forging, device behavior or complete Service V2 serialization. Live SIGHUP and peer-accepted-block campaigns remain optional.
+
+### Maintainer-only vector regeneration
+
+Regenerate only when pinned reference semantics, formats or vector cases deliberately change. The sole committed secret-shaped fixture is public synthetic data: **PUBLIC SYNTHETIC TEST KEYS - NEVER USE FOR FUNDS**. The generator accepts no arguments or input files and uses only KES seed bytes `00..1f`, cold seed bytes `20..3f`, and ASCII `disposable Sum6KES interoperability`. Never supply operational/device-generated keys, random qualification secrets or credentials.
+
+From the repository root, use GHC 9.12.4 and cabal-install 3.16.1.0 with the existing secure repository index states, versions and archive hashes. Cabal may fetch missing pinned packages; offline generation means outside candidate CI, not necessarily disconnected. Keep build logs separate from generator stdout:
+
+```bash
+set -eu
+tmp=$(mktemp -d)
+(
+  cd qualification/native
+  test "$(ghc --numeric-version)" = "9.12.4"
+  test "$(cabal --numeric-version)" = "3.16.1.0"
+  cabal build exe:native-oracle
+  python3 -I - <<'PY'
+import json
+from pathlib import Path
+pins = json.loads(Path("pins.json").read_text())
+plan = json.loads(Path("dist-newstyle/cache/plan.json").read_text())
+assert plan["compiler-id"] == pins["compiler"], "compiler mismatch"
+for name, pin in pins["packages"].items():
+    entries = [e for e in plan["install-plan"] if e.get("pkg-name") == name]
+    assert entries, f"missing package: {name}"
+    for entry in entries:
+        assert entry["pkg-version"] == pin["version"], f"version mismatch: {name}"
+        if "sha256" in pin:
+            assert entry.get("pkg-src-sha256") == pin["sha256"], f"archive mismatch: {name}"
+PY
+  exe="$(cabal list-bin exe:native-oracle)"
+  "$exe" > "$tmp/first.json"
+  "$exe" > "$tmp/second.json"
+  cmp "$tmp/first.json" "$tmp/second.json"
+)
+python3 -I -m json.tool --sort-keys "$tmp/first.json" > "$tmp/cardano-kes.json"
+```
+
+Only after successful self-checks, pin validation and identical repeated output, install `$tmp/cardano-kes.json` at `crates/kes-core/tests/fixtures/cardano-kes.json` and remove the temporary directory. Tool, pin or generation failure stops publication; never redirect a possibly failing command over the committed fixture. The generator/configuration/pins describe the reference; do not embed source hashes or machine-specific build plans in the fixture. Tests never regenerate expectations, and Rust output is never an expected-byte source. Resolve mismatches against the governing format/reference rather than overwriting expectations to make CI green.
+
+Before production backup/foundation checks, retain no-swap, disabled core dumps and adequate locked-memory limits. Where needed, use the established release-shell setup (`ulimit -c 0`, verify `/proc/swaps` is empty, and `sudo prlimit --pid "$$" --memlock=268435456:268435456`); never bypass memory validation. Public vector generation itself needs no system-wide memory changes.
+
+### Continue the lifecycle scenario
 
 Exercise discard with exact generation ID and expected revision. Observe the warning, then confirm deliberately (`--yes` only for automated disposable qualification):
 
@@ -190,11 +236,11 @@ cardano-cli key verification-key --signing-key-file "$RESTORED_KES_SKEY" \
   --verification-key-file "$RESTORED_KES_VKEY"
 ```
 
-Compare derived public key with the expected KES vkey. This CLI conversion alone does **not** prove byte fidelity: the independent Haskell qualification decoder must also extract exactly the 608-byte key0 state and compare it to the protected disposable generation-time reference, per [backup contract](contracts/backup.md). Wrong recipient/tampered/identity mismatch and output collision must publish no usable destination key. Check mode 0600 and no symlink overwrite. Do not run a backup producer or introduce its availability as an activation condition.
+Compare the derived public key with the expected KES vkey. This optional CLI conversion alone does **not** prove byte fidelity: recovered state must match the protected disposable generation-time reference byte-for-byte, per [backup contract](contracts/backup.md). Standard-format compatibility is checked by the production restore test against the offline independent Haskell envelope, not by rerunning Haskell on each restored file. Wrong recipient/tampered/identity mismatch and output collision must publish no usable destination key. Check mode 0600 and no symlink overwrite. Do not run a backup producer or introduce its availability as an activation condition.
 
 ## 5. Full qualification campaigns
 
-`FIXTURE` is an owner-controlled disposable qualification document for native and independent interoperability checks. Secrets are referenced only by protected paths and never copied into evidence.
+Use owner-controlled disposable qualification inputs for physical and optional external integration scenarios. Secrets are referenced only by protected paths and never copied into evidence; the deliberately public synthetic compatibility corpus is the sole committed-fixture exception.
 
 Build and validate the production firmware, then run the full-capacity software scenario:
 
@@ -206,11 +252,7 @@ cargo test --locked -p kes-core --test recovery
 
 Preserve the state partition and install the production image. On the accepted Pico2 A2 with identified fitted storage, use disposable credentials to generate and certify a pool, advance it, remove power from both host and device, restore both, and demonstrate valid signing with the recovered generation and unchanged verification key and certificate. Verify the pinned identity returns ready without re-enrollment or state reconstruction. USB reset alone is not a substitute; repeated attended cut campaigns are not required.
 
-When the pinned native fixture is available, run its receiver/finalizer compatibility regression:
-
-```sh
-cargo run --locked -p qualification -- native-regression
-```
+The hosted compatibility commands in section 3 are required on every candidate. Native receiver/finalizer checks belong to actual changes in the external integration repositories, not the fixed-vector provider gate.
 
 | Scenario | Required observed outcome |
 |---|---|
@@ -219,8 +261,8 @@ cargo run --locked -p qualification -- native-regression
 | SC-003 recovery | All 64 valid pools ready <=60 s after device, daemon, valid context and requesting nodes are available |
 | SC-004 normal burst | Every one of 64 concurrent requests usable <=10 s under stalled/malformed-client pressure; zero cross-pool results |
 | SC-005 rotation | Offline backup does not block activation; lost replies/restart create no duplicate or superseded resurrection; an unrelated pool is unchanged |
-| SC-006 fidelity | One device-generated key0 artifact restores byte-exactly through an independent decoder; tamper/recipient/identity failures publish no key |
-| SC-007 native compatibility | Pinned integrated native node builds and exact V2 node-service protocol regressions pass |
+| SC-006 fidelity | One device-generated key0 artifact restores byte-exactly; the real restore test matches the offline Haskell envelope/state/vkey; tamper/recipient/identity failures publish no key |
+| SC-007 Cardano compatibility | All 64 fixed Haskell-derived periods, certificate cases, real restored envelope and existing Rust V2 node-service regressions pass |
 | SC-008 operator | Installed CLI covers lifecycle/recipient/restore/reconciliation/restart paths; denied, unavailable, rejected and uncertain exits are distinct |
 | P1 capacity | One full 64-active+64-staged run meets <=10-second requests and <=60-second recovery |
 

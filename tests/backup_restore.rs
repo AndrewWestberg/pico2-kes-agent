@@ -69,7 +69,7 @@ fn fixture() -> (
     let (recipient_public, recipient) =
         recipient::create(b"test passphrase", &mut entropy).unwrap();
     let policy = RecipientPolicy::new(recipient_public.public_key, 1).unwrap();
-    let key = Sum6Kes::generate(&mut entropy, 64).unwrap();
+    let key = Sum6Kes::generate(&mut TestEntropy(0), 64).unwrap();
     let state = key.canonical_state();
     let identity = SigningKey::from_bytes(&[91; 32]);
     let expected = Expectations {
@@ -127,6 +127,22 @@ fn public_recipient_inspection_authenticates_origin_and_bindings_without_decrypt
 #[test]
 fn restores_exact_period_zero_state_to_owner_only_no_clobber_file() {
     let (artifact, recipient, expected, state) = fixture();
+    let vectors: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../crates/kes-core/tests/fixtures/cardano-kes.json"
+    ))
+    .unwrap();
+    assert_eq!(vectors["schema_version"], 1);
+    assert_eq!(vectors["periods"][0]["period"], 0);
+    assert_eq!(
+        state,
+        decode_hex::<{ kes_core::kes::STATE_BYTES }>(
+            vectors["periods"][0]["state_hex"].as_str().unwrap()
+        )
+    );
+    assert_eq!(
+        expected.verification_key,
+        decode_hex::<32>(vectors["vkey_hex"].as_str().unwrap())
+    );
     let directory = TestDir::new();
     let output = directory.0.join("kes.skey");
     recover::restore_to_file(&artifact, &recipient, b"test passphrase", expected, &output).unwrap();
@@ -136,6 +152,14 @@ fn restores_exact_period_zero_state_to_owner_only_no_clobber_file() {
     );
     let envelope: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    assert_eq!(
+        envelope["type"].as_str().unwrap(),
+        vectors["envelope"]["type"].as_str().unwrap()
+    );
+    assert_eq!(
+        envelope["cborHex"].as_str().unwrap(),
+        vectors["envelope"]["cborHex"].as_str().unwrap()
+    );
     let encoded = envelope["cborHex"].as_str().unwrap();
     assert_eq!(&encoded[..6], "590260");
     assert_eq!(decode_hex(&encoded[6..]), state);
@@ -205,6 +229,7 @@ fn decode_hex<const N: usize>(value: &str) -> [u8; N] {
     let mut output = [0; N];
     let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
     assert!(remainder.is_empty());
+    assert_eq!(pairs.len(), N);
     for (index, pair) in pairs.iter().enumerate() {
         output[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
     }

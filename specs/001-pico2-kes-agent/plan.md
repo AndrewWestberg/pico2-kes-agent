@@ -28,9 +28,9 @@ C1 reuses cardano-node's existing post-initialization SIGHUP handler. File-backe
 
 **Operational Storage Goal**: Fit the production image and 64 active plus 64 staged generations on the observed 4-MiB device. Read-verify committed writes and obsolete-region erasure. No voltage, temperature, or service-life endurance guarantee is part of acceptance.
 
-**Testing**: Cargo behavioral/integration tests, bounded parser fuzzing, finite lifecycle fault models, independent artifact decoding, native node compatibility, and one production-device install/reconnect smoke. See [quality gates](contracts/quality-gates.md).
+**Testing**: Cargo behavioral/integration tests, bounded parser fuzzing, finite lifecycle fault models, byte-exact artifact recovery, fixed independent Haskell compatibility vectors, existing Rust V2 regressions, and required production-device checks. See [quality gates](contracts/quality-gates.md).
 
-**Verification entrypoints**: `qualification foundation` exercises codec/protection/fixture failure paths; `qualification load` covers full-capacity behavior; `qualification native-regression --fixture` invokes native receiver/finalizer cases. Hardware qualification builds and checks the production firmware against retained fitted-device evidence. Full commands and ownership are in [quality gates](contracts/quality-gates.md).
+**Verification entrypoints**: `qualification foundation` exercises codec/protection/fixture failure paths; `qualification load` covers full-capacity behavior; feature-enabled `crypto_compatibility`, `backup_restore` and `node_service` tests cover fixed Cardano compatibility. Hardware qualification builds and checks the production firmware against retained fitted-device evidence. Full commands and ownership are in [quality gates](contracts/quality-gates.md).
 
 **Target Platform**: Linux x86_64 systemd primary and Linux recipient host; RP2350 A2 Cortex-M33 `thumbv8m.main-none-eabihf`, one daemon/device, USB bulk. Do not inherit an A4 requirement. Firmware target is not installed on the planning host; cross-build and physical execution remain implementation work.
 
@@ -53,7 +53,7 @@ C1 reuses cardano-node's existing post-initialization SIGHUP handler. File-backe
 | Principle / constraint | Design evidence | Acceptance boundary |
 |---|---|---|
 | I. Explicit scope/correctness | Current-key provider only; full FR-001–FR-021 mapping below; external cold signing, explicit failures | No block-signing API, imported key or backup-readiness gate |
-| II. Verifiable behavior | Quickstart public-interface scenarios; independent decoder/node; 64+64 workload, deterministic transition faults and one ordinary power-loss recovery smoke | Required hardware and timing results must actually be measured; accepted-block campaigns are optional and documentation validation does not replace required evidence |
+| II. Verifiable behavior | Quickstart public-interface scenarios; fixed independent Haskell vectors and Rust V2 regressions; 64+64 workload, deterministic transition faults and one ordinary power-loss recovery smoke | Required hardware and timing results must actually be measured; accepted-block campaigns are optional and documentation validation does not replace required evidence |
 | III. Stable interfaces | Management/USB/storage/artifact/node contracts; identity-bound retries and native source migration | Pin combined candidate; migrate every affected native caller; no silent legacy reinterpretation |
 | IV. Trust boundaries | Common socket permissions, recipient off-primary, erase-before-release, accepted A2 exclusions | Deployment and secret-output review; independent crypto vectors; no stronger admin credential |
 | V. Maintainable Rust/bounds | Shared no_std core, fixed flash/RAM geometry, serialized flash ownership, bounded queues | Link/RAM/load qualification on the actual device; isolated pool failure and unsupported storage fail closed |
@@ -132,7 +132,7 @@ External integration: `cardano-node` credential decoder/loader/source types/nati
 
 **Structure decision:** core/protocol separation permits firmware and host-model checking without importing Linux dependencies; root host package shares lifecycle-independent CLI/daemon code; firmware owns hardware operations; qualification owns real cross-language/hardware measurements. Avoid a framework, database service, updater, cloud subsystem or generic HSM abstraction.
 
-Verification ownership: `qualification foundation` exercises T010/T011/T013 without depending on T042's binaries; `qualification native-regression` runs the native regressions. Host and firmware checks run directly in CI. Performance diagnostics remain optional, without a supplied benchmark runner. Keep production entities, USB/storage/management/backup formats and the [data model](data-model.md) unchanged.
+Verification ownership: `qualification foundation` exercises T010/T011/T013 without depending on T042's binaries; feature-enabled crypto, restore and node-service tests run on hosted candidate jobs using fixed Haskell-derived vectors. Actual external integration changes retain their native checks. Host and firmware checks run directly in CI. Performance diagnostics remain optional, without a supplied benchmark runner. Keep production entities, USB/storage/management/backup formats and the [data model](data-model.md) unchanged.
 
 ## Delivery sequence and proof obligations
 
@@ -140,7 +140,7 @@ Verification ownership: `qualification foundation` exercises T010/T011/T013 with
 2. Implement attended blank-device commissioning and verify pin installation/reconciliation before normal startup. Implement device generation/artifact/evolution and verified two-bank cleanup. Prove single-pool recovery then 64+64 flash/RAM fit and boundary workload before assuming scaling.
 3. Implement daemon public receipts, device reconnection/identity/time context, common sockets and CLI lifecycle. Exercise commissioning cuts, publication commit/reply/confirmation cuts, per-incarnation floors, lost replies, staged conflict/discard race, recipient change and retirement. Same-pool re-enrollment uses the retained public deletion timestamp floor, never a retired network-period floor.
 4. Integrate exact V2 stream and native mixed file/agent bulk selection/receive validation; fix cancellation-safe receiver teardown and exercise reload behavior in native compatibility tests. Demonstrate all 64 pool bindings, file-key catch-up, fresh agent delivery, outage isolation and rotation without node restart or mandatory SIGHUP. Preserve legacy file and singleton-agent semantics and baseline malformed/missing-file diagnostics; do not restore removed forge integration. Live SIGHUP campaigns are optional.
-5. Implement recipient-host-only restoration and independent conventional decoding. Complete the installed systemd/operator path, one complete host/device power-loss recovery smoke on the accepted A2 with identified fitted storage, native-node compatibility, and the specified 64-pool performance workload. No backup producer runtime or supplied-leadership campaign is required.
+5. Implement recipient-host-only restoration with byte-exact generation-time fidelity and offline independent conventional-envelope comparison. Complete the installed systemd/operator path, one complete host/device power-loss recovery smoke on the accepted A2 with identified fitted storage, hosted Cardano compatibility-vector/V2 regressions, and the specified 64-pool performance workload. No backup producer runtime or supplied-leadership campaign is required.
 
 These are design sequencing constraints, not Phase 2 task generation. No phase may be accepted on scaffolds or empty readings.
 
