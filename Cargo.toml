@@ -29,7 +29,7 @@ kes-protocol = { version = "=0.1.0", path = "crates/kes-protocol" }
 nusb = "=0.2.9"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.145", features = ["arbitrary_precision"] }
-rustix = { version = "=1.1.5", features = ["fs", "process", "event", "mm", "termios", "net"] }
+rustix = { version = "=1.1.6", features = ["fs", "process", "event", "mm", "termios", "net"] }
 argon2 = "=0.5.3"
 zeroize = "=1.8.2"
 sha2 = "=0.10.9"
