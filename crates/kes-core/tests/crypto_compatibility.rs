@@ -214,8 +214,6 @@ fn certificates_bind_cold_hot_signature_and_monotonic_counter() {
             history.install(&parsed, pool, cold, hot, 32)
         };
     let mut history = CertificateHistory::new();
-        let parsed = OperationalCertificate::decode(bytes)?;
-    };
     assert!(install(&mut history, &encoded[1], pool, &cold, &hot).unwrap());
     assert!(!install(&mut history, &encoded[1], pool, &cold, &hot).unwrap());
     assert!(
