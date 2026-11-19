@@ -22,7 +22,12 @@ jobs:
       - name: Install pinned Rust tools
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Exercise foundation scope
-        run: cargo run --locked -p qualification -- foundation
+        run: |
+          ulimit -c 0
+          sudo swapoff -a
+          python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
+          sudo prlimit --pid "$$" --memlock=268435456:268435456
+          cargo run --locked -p qualification -- foundation
 
   host:
     runs-on: ubuntu-latest
@@ -36,6 +41,10 @@ jobs:
           cargo install --locked cargo-deny --version 0.19.8
       - name: Run host quality checks
         run: |
+          ulimit -c 0
+          sudo swapoff -a
+          python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
+          sudo prlimit --pid "$$" --memlock=268435456:268435456
           cargo fmt --all --check
           cargo check --locked
           cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification
