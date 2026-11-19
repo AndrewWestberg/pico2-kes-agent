@@ -38,7 +38,7 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo check --locked
-          cargo test --locked --workspace --exclude pico2-kes-firmware
+          cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification
           cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings
           cargo check --locked -p kes-core --no-default-features
           cargo check --locked -p kes-protocol --no-default-features
@@ -70,38 +70,6 @@ jobs:
         run: rustup toolchain install 1.99.1 --profile minimal
       - name: Exercise capacity and client isolation
         run: cargo run --locked -p qualification -- load
-
-  native:
-    # Native source identities and Cabal plans are fixture prerequisites. A
-    # qualified runner provides the clean absolute checkouts recorded in the
-    # source inventory; a generic hosted runner must not substitute packages.
-    runs-on: [self-hosted, linux, x64, pico2-kes-qualified]
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install pinned Rust tools
-        run: rustup toolchain install 1.99.1 --profile minimal
-      - name: Build pinned native prerequisites
-        run: |
-          cabal build all --project-dir=qualification/native
-          CLI_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native/pins.json"))["cli_resolved_plan"]["source"])')"
-          cabal build exe:cardano-cli --project-dir="$CLI_SOURCE"
-      - name: Run pinned native protocol and crypto regressions
-        run: |
-          cargo run --locked -p qualification -- native-regression
-          export KES_ORACLE_NODE_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native-sources.json"))["sources"]["cardano_node"]["root"])')"
-          export KES_ORACLE_CONSENSUS_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native-sources.json"))["sources"]["ouroboros_consensus"]["root"])')"
-          export KES_ORACLE_CLI_SOURCE="$(python3 -c 'import json; print(json.load(open("qualification/native/pins.json"))["cli_resolved_plan"]["source"])')"
-          export KES_ORACLE_SOURCE="$PWD/qualification/native"
-          export KES_ORACLE_AGENT_ARCHIVE="$HOME/.cabal/packages/cardano-haskell-packages/kes-agent/1.3.0.0/kes-agent-1.3.0.0.tar.gz"
-          export KES_ORACLE_CRYPTO_ARCHIVE="$HOME/.cabal/packages/cardano-haskell-packages/kes-agent-crypto/1.1.0.0/kes-agent-crypto-1.1.0.0.tar.gz"
-          export KES_ORACLE_PLAN="$KES_ORACLE_SOURCE/dist-newstyle/cache/plan.json"
-          export KES_ORACLE_EXECUTABLE="$(cabal list-bin exe:native-oracle --project-dir="$KES_ORACLE_SOURCE")"
-          export KES_ORACLE_CLI_PLAN="$KES_ORACLE_CLI_SOURCE/dist-newstyle/cache/plan.json"
-          export KES_ORACLE_CLI_EXECUTABLE="$(cabal list-bin exe:cardano-cli --project-dir="$KES_ORACLE_CLI_SOURCE")"
-          export KES_ORACLE_GHC="$(command -v ghc)"
-          export KES_ORACLE_CABAL="$(command -v cabal)"
-          cargo test --locked -p kes-core --features qualification --test crypto_compatibility -- --test-threads=1
 
   fuzz:
     runs-on: ubuntu-latest

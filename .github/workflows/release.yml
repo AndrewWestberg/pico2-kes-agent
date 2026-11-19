@@ -158,6 +158,7 @@ jobs:
           sudo prlimit --pid "$$" --memlock=268435456:268435456
           python3 -c 'import runpy; runpy.run_path("tools/firmware.py")["verify_authority"]("security")'
           cargo test --locked -p kes-protocol
+          cargo test --locked -p kes-core --features qualification --test crypto_compatibility
           cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore
           cargo build --locked --release --bin pico2-kes-agentd --bin pico2-kes-agent-cli
           cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf

@@ -30,14 +30,25 @@ ordinary complete host/device power-loss recovery smoke on the accepted Pico2 A2
 fitted storage. The smoke MUST verify the same pinned identity and retained acknowledged state,
 with required cleanup and catch-up before delivery; a USB reset alone is not a power-loss check.
 End-to-end acceptance MUST demonstrate the specified 64-pool workload, including active and staged
-generations, and pinned native-node build and protocol compatibility regressions. Repeated physical
-power-cut, live SIGHUP, and accepted-primary-block campaigns are OPTIONAL integration evidence,
-not release gates. Their absence MUST be disclosed and MUST NOT be represented as measured
-durability or live-forging evidence. Qualified fitted-storage erase/read behavior and required
-firmware/OTP hardware checks remain mandatory; simulations do not replace those checks.
-Backup fidelity MUST be checked against disposable generation-time state and an independent
-standard-format decoder; running a backup producer is not a required acceptance gate. Evidence
-MUST distinguish qualification targets from measured results.
+generations, the pinned Haskell-derived compatibility corpus across all 64 KES periods,
+certificate cases and the real restored conventional envelope, and existing Rust V2 protocol
+regressions. Hosted PR and release jobs MUST run the feature-enabled crypto comparisons;
+external node builds and live Haskell decoding are not mandatory per candidate. Maintainers
+regenerate public vectors only for deliberate reference-version, format or case changes.
+These fixed examples are SO-002b regression evidence; offline independent reference generation
+supplies SO-005c evidence, not a live differential campaign for every candidate. They do not
+establish native receiver cancellation, bulk loading, live forging, device behavior or complete
+Service V2 serialization. Actual changes in external integration repositories still require
+their native checks and interoperability evidence.
+Repeated physical power-cut, live SIGHUP, and accepted-primary-block campaigns are OPTIONAL
+integration evidence, not release gates. Their absence MUST be disclosed and MUST NOT be
+represented as measured durability or live-forging evidence. Qualified fitted-storage
+erase/read behavior and required firmware/OTP hardware checks remain mandatory; simulations
+do not replace those checks. Backup fidelity MUST remain byte-exact from disposable
+generation-time state to recovery; standard-format compatibility MUST be checked against the
+offline independent Haskell envelope through the real restore path, not by rerunning Haskell
+on every restored file. Running a backup producer is not a required acceptance gate.
+Evidence MUST distinguish qualification targets from measured results.
 
 ### III. Stable and Explicit Interfaces
 
@@ -59,7 +70,11 @@ an implicit file fallback.
 ### IV. Security at Trust Boundaries
 
 External input MUST be validated before it controls sensitive operations. Secrets MUST NOT appear
-in logs, diagnostics, version control, or committed fixtures. Cryptographic and encoding changes
+in logs, diagnostics, version control, or committed fixtures. The sole fixture exception is
+the generator's deliberately public synthetic seeds/states, labelled
+`PUBLIC SYNTHETIC TEST KEYS - NEVER USE FOR FUNDS`; operational/device-generated keys,
+random qualification secrets, credentials and secret-bearing evidence remain prohibited.
+This exception adds no runtime plaintext import/export path. Cryptographic and encoding changes
 MUST identify their governing specifications and demonstrate compatibility using authoritative
 vectors or an independent implementation. Custom cryptographic primitives MUST NOT be introduced
 when a maintained, compatible implementation is available.
@@ -246,4 +261,22 @@ removed before committing the amended constitution; it is not part of the govern
 - **Retained obligations:** Security and durability behavior, qualified storage/OTP checks,
   independent backup decoding, and Principle VI's sensor/performance gates are unchanged.
 
-**Version**: 2.0.0 | **Ratified**: 2026-10-27 | **Last Amended**: 2026-11-02
+### Amendment record — 3.0.0 (2026-11-17)
+
+- **Approval:** The maintainer approved the hosted KES compatibility-vector execution plan
+  before implementation, selecting fixed Haskell-generated vectors for both PRs and releases.
+- **Rationale and affected principles:** Principle II replaces mandatory per-candidate native
+  builds/live decoding with a bounded independent reference corpus and hosted Rust regression
+  checks. Principle IV permits only the generator's explicitly public synthetic fixtures.
+  Changing evidence obligations is a MAJOR amendment, not a waiver of a failed crypto reading.
+- **Compatibility and migration:** No production runtime, signing API, protocol, storage,
+  custody or cryptographic algorithm changes. Feature-001/002 acceptance guidance, hosted
+  workflows and hash-bound qualification approval move together; the live adapter and native
+  command are removed. Regeneration remains maintainer-only under the pinned Haskell toolchain.
+- **Retained obligations:** Byte-exact backup fidelity, production secret handling, hardware,
+  power-loss, storage/OTP checks and native checks for actual external integration changes
+  remain required. Historical approvals/evidence retain their original scope. SO-002b candidate
+  examples and SO-005c offline generation do not establish a live differential campaign or
+  coverage of all inputs, native receiver/bulk behavior, device behavior or full V2 serialization.
+
+**Version**: 3.0.0 | **Ratified**: 2026-10-27 | **Last Amended**: 2026-11-17
