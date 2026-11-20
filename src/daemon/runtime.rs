@@ -819,10 +819,23 @@ fn serve_management(
         match management.dispatch(&request) {
             Ok(response) if observation => (response, None),
             Ok(response) => {
-                let bindings = management
-                    .reconstructed_registry()
-                    .map_err(|_| io::Error::other("failed to reconstruct durable pool registry"))?;
-                (response, Some(bindings))
+                let mutates_pools = matches!(
+                    serde_json::from_slice::<Value>(&request)
+                        .ok()
+                        .and_then(|v| v.get("action").and_then(Value::as_str).map(str::to_owned))
+                        .as_deref(),
+                    Some("pool.enroll" | "pool.delete" | "operation.reconcile")
+                );
+                let bindings = if mutates_pools {
+                    Some(
+                        management
+                            .reconstructed_registry()
+                            .map_err(|_| io::Error::other("failed to reconstruct durable pool registry"))?,
+                    )
+                } else {
+                    None
+                };
+                (response, bindings)
             }
             Err(error) => (error_response(request_id.as_deref(), &error), None),
         }
