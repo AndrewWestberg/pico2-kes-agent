@@ -1448,6 +1448,18 @@ def first_install_without_transfer(prior, path):
             and checkpoints[-1]["evidence"] == str(path))
 
 
+def require_manager_process():
+    try:
+        parent = Path(f"/proc/{os.getppid()}/exe").resolve(strict=True)
+        parent_meta = parent.stat()
+        valid = (str(parent).startswith("/usr/lib/pico2-kes-agent/components/manager/")
+                 and parent.name == "p2kesup" and parent_meta.st_uid == 0
+                 and parent_meta.st_mode & 0o022 == 0)
+    except OSError:
+        valid = False
+    require(valid, "original operation requires its manager")
+
+
 def first_install_history(record_path, bundle, *,
                           config=Path("/etc/pico2-kes-agent/config.json"),
                           journal=Path("/var/lib/pico2-kes-agent/operations.journal"),
@@ -1606,11 +1618,7 @@ def first_install_history(record_path, bundle, *,
                         and checkpoint.get("evidence") == manifest_digest
                         for checkpoint in prior.get("checkpoints", [])),
                 "existing maintenance evidence excludes first-install")
-        parent_executable = Path(f"/proc/{os.getppid()}/exe").resolve(strict=True)
-        parent_meta = parent_executable.stat()
-        require(str(parent_executable).startswith("/usr/lib/pico2-kes-agent/components/manager/")
-                and parent_executable.name == "p2kesup" and parent_meta.st_uid == 0
-                and parent_meta.st_mode & 0o022 == 0, "original operation requires its manager")
+        require_manager_process()
         active += 1
         require(active == 1, "multiple first-install maintenance records")
     require(active == 1, "original approved first-install intent is unavailable")
@@ -1990,11 +1998,7 @@ def update_history(record_path, bundle, serial, image_digest, *, directory=Path(
     security = evidence.get("security")
     require(type(security) is dict and security.get("stepping") == "A2",
             "supported hardware evidence unavailable")
-    parent = Path(f"/proc/{os.getppid()}/exe").resolve(strict=True)
-    parent_meta = parent.stat()
-    require(str(parent).startswith("/usr/lib/pico2-kes-agent/components/manager/")
-            and parent.name == "p2kesup" and parent_meta.st_uid == 0
-            and parent_meta.st_mode & 0o022 == 0, "original operation requires its manager")
+    require_manager_process()
     if upgrade:
         mask = Path("/etc/systemd/system/pico2-kes-agentd.service")
         protected_ancestry(mask.parent, owner)
