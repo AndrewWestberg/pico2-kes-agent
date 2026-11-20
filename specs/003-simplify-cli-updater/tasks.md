@@ -93,9 +93,9 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 - [x] T024 [US3] Implement `src/updater.rs`: `InstalledState` (`/usr/local/share/pico2-kes-agent/installed.json`), `install`, `update`, `uninstall`, and `status` using `src/release.rs` verification, staging temp files + `fsync` + atomic `rename` into `/usr/local/bin` and `/usr/local/share/pico2-kes-agent`, printing `sudo systemctl restart pico2-kes-agentd` (and `sudo p2kes-flash flash` when `firmware_version` changes) without touching systemd or host OS config
 - [x] T025 [US3] Rewrite `src/bin/p2kesup.rs` as a thin CLI entrypoint for `p2kesup install|update|uninstall|status|--help|--version [--json]` dispatching to `src/updater.rs`
-- [ ] T026 [P] [US3] Trim `install.sh` to a thin POSIX bootstrapper that prints `apt-get --simulate install` output to `/dev/tty` before prompting `y/N`, removes `python3` prerequisite and the 350-line embedded Python verifier, verifies the downloaded bundle via `gpgv`/`openssl`, and runs `sudo <bundle>/p2kesup install --bundle <bundle>`
-- [ ] T027 [P] [US3] Update static deployment files in `deploy/pico2-kes-agentd.service` (`ExecStart=/usr/local/bin/pico2-kes-agentd`), `deploy/config.example.json`, `deploy/70-pico2-kes-agent.rules`, and `deploy/cardano-node-memory-hardening.conf`, and delete obsolete `deploy/install.sh` and `deploy/uninstall.sh` wrappers superseded by `install.sh` + `p2kesup`
-- [ ] T028 [US3] Add integration tests in `tests/updater_and_flash.rs` covering `p2kesup install`, tampered bundle fail-closed, atomic `update` firmware-change notice, and `uninstall` preserving `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/`
+- [x] T026 [P] [US3] Trim `install.sh` to a thin POSIX bootstrapper that prints `apt-get --simulate install` output to `/dev/tty` before prompting `y/N`, removes `python3` prerequisite and the 350-line embedded Python verifier, verifies the downloaded bundle via `gpgv`/`openssl`, and runs `sudo <bundle>/p2kesup install --bundle <bundle>`
+- [x] T027 [P] [US3] Update static deployment files in `deploy/pico2-kes-agentd.service` (`ExecStart=/usr/local/bin/pico2-kes-agentd`), `deploy/config.example.json`, `deploy/70-pico2-kes-agent.rules`, and `deploy/cardano-node-memory-hardening.conf`, and delete obsolete `deploy/install.sh` and `deploy/uninstall.sh` wrappers superseded by `install.sh` + `p2kesup`
+- [x] T028 [US3] Add integration tests in `tests/updater_and_flash.rs` covering `p2kesup install`, tampered bundle fail-closed, atomic `update` firmware-change notice, and `uninstall` preserving `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/`
 
 **Checkpoint**: User Story 3 (`p2kesup` + `install.sh` + `deploy/`) is complete and independently testable.
 
@@ -112,7 +112,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 - [x] T029 [P] [US4] Implement native ELF/UF2 header and sector validation (`FIRMWARE_START`, `FIRMWARE_END`, 512-byte UF2 block alignment, page match) and BOOTSEL USB mass-storage discovery/copy in `src/flash/uf2.rs`
 - [x] T030 [P] [US4] Implement bounded `picotool` v2.3.1 subprocess wrapper, policy validation (`rp2350-signed-msd-v1`, A2/A4 stepping, fitted 4-MiB flash JEDEC/SFDP check), `wipe`, and 3-stage `otp` (`prepare`, `enable`, `lock`) attended confirmation flows in `src/flash/picotool.rs`
 - [x] T031 [US4] Wire `src/flash/mod.rs` (`verify`, `flash`, `wipe`, `otp`) using `src/release.rs` canonical verification and create `src/bin/p2kes-flash.rs` CLI entrypoint per `contracts/updater-and-flash.md`
-- [ ] T032 [US4] Add `proptest` and unit tests for `src/flash/uf2.rs` and `src/flash/picotool.rs` policy/UF2 rejection in `tests/updater_and_flash.rs`
+- [x] T032 [US4] Add `proptest` and unit tests for `src/flash/uf2.rs` and `src/flash/picotool.rs` policy/UF2 rejection in `tests/updater_and_flash.rs`
 - [ ] T033 [US4] Update `.github/workflows/release.yml` and `tools/publish_release.py` to package the 4-binary release tuple (`pico2-kes-agentd`, `p2kes`, `p2kesup`, `p2kes-flash`, `picotool`, firmware, `deploy/`) under `schema_version = 2`
 
 **Checkpoint**: User Story 4 (`p2kes-flash`) is complete; hardware re-qualification on Pico 2 A2 is tracked in Phase 8.
@@ -127,8 +127,8 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 ### Implementation for User Story 5
 
-- [ ] T034 [US5] Update `src/backup/recover.rs` to extract `device`, `pool`, `incarnation`, `generation`, and `verification_key` directly from the signed CBOR artifact header, verify `device` and Ed25519 signature against `DeviceIdentityFile` (`--device-identity`), check any optional assertion flags (`--pool`, `--incarnation`, `--generation`, `--verification-key`), and decrypt/verify `SecretBuffer` immediately
-- [ ] T035 [US5] Wire `p2kes backup keygen`, `p2kes backup set-recipient`, and 4-input `p2kes backup restore` (printing verified device, pool, incarnation, generation, and verification key to stdout) in `src/cli/mod.rs`
+- [x] T034 [US5] Update `src/backup/recover.rs` to extract `device`, `pool`, `incarnation`, `generation`, and `verification_key` directly from the signed CBOR artifact header, verify `device` and Ed25519 signature against `DeviceIdentityFile` (`--device-identity`), check any optional assertion flags (`--pool`, `--incarnation`, `--generation`, `--verification-key`), and decrypt/verify `SecretBuffer` immediately
+- [x] T035 [US5] Wire `p2kes backup keygen`, `p2kes backup set-recipient`, and 4-input `p2kes backup restore` (printing verified device, pool, incarnation, generation, and verification key to stdout) in `src/cli/mod.rs`
 - [ ] T036 [US5] Update `tests/backup_restore.rs` to test 4-input offline `p2kes backup restore`, tampered artifact rejection, wrong `--device-identity` rejection, and optional assertion flag mismatch rejection
 
 **Checkpoint**: All 5 user stories are complete and independently testable.
@@ -139,7 +139,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 **Purpose**: Document migration from legacy `p2kesup`/`pico2-kes-agent-cli`, verify code-size reduction (SC-006), and execute all Software Observatory and hardware qualification gates.
 
-- [ ] T037 [P] Update `README.md` and add a legacy-to-simplified migration guide (`p2kesup` / `pico2-kes-agent-cli` → `p2kes` / `p2kesup` / `p2kes-flash`) in `docs/migration.md`
+- [x] T037 [P] Update `README.md` and add a legacy-to-simplified migration guide (`p2kesup` / `pico2-kes-agent-cli` → `p2kes` / `p2kesup` / `p2kes-flash`) in `docs/migration.md`
 - [ ] T038 [P] Update `tests/host_security.rs` (or remove obsolete `src/manager` references) so the entire workspace test suite compiles and passes cleanly
 - [ ] T039 Run Software Observatory gates per `contracts/quality.md`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings`, `cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification`, `cargo audit`, `cargo deny check`, and `cargo run --locked -p qualification -- load`
 - [ ] T040 Measure SC-005 (64-pool `p2kes status --json` <100 ms with 10k journal entries; idle wakeups <5/sec) and SC-006 (host management/updater LOC reduction ≥85% vs. 36,261 LOC baseline), execute `specs/003-simplify-cli-updater/quickstart.md` Q1–Q5, and record real Pico 2 A2 hardware re-qualification evidence for `p2kes-flash` (`verify`, `flash`, `wipe`, `otp`) under `evidence/`

@@ -196,6 +196,96 @@ pub fn load_identity(path: &Path, expected_device: [u8; 16]) -> Result<[u8; 32],
     decode_hex(&identity.identity_public_key).ok_or(Error::InvalidInput)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArtifactBindings {
+    pub device: [u8; 16],
+    pub pool: [u8; 28],
+    pub incarnation: [u8; 16],
+    pub generation: [u8; 16],
+    pub verification_key: [u8; 32],
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct OptionalAssertions {
+    pub pool: Option<[u8; 28]>,
+    pub incarnation: Option<[u8; 16]>,
+    pub generation: Option<[u8; 16]>,
+    pub verification_key: Option<[u8; 32]>,
+}
+
+pub fn restore_from_artifact(
+    artifact_path: &Path,
+    key_path: &Path,
+    identity_path: &Path,
+    out_path: &Path,
+    password: &[u8],
+    assertions: OptionalAssertions,
+) -> Result<ArtifactBindings, Error> {
+    let artifact_bytes = read_file(artifact_path, false, MAX_BACKUP_BYTES as u64)?;
+    let val = Value::parse(&artifact_bytes).map_err(|_| Error::InvalidArtifact)?;
+    let map = val.map().map_err(|_| Error::InvalidArtifact)?;
+    let device: [u8; 16] = map
+        .required("device")
+        .and_then(Value::bytes)
+        .map_err(|_| Error::InvalidArtifact)?
+        .try_into()
+        .map_err(|_| Error::InvalidArtifact)?;
+    let pool: [u8; 28] = map
+        .required("pool")
+        .and_then(Value::bytes)
+        .map_err(|_| Error::InvalidArtifact)?
+        .try_into()
+        .map_err(|_| Error::InvalidArtifact)?;
+    let incarnation: [u8; 16] = map
+        .required("incarnation")
+        .and_then(Value::bytes)
+        .map_err(|_| Error::InvalidArtifact)?
+        .try_into()
+        .map_err(|_| Error::InvalidArtifact)?;
+    let generation: [u8; 16] = map
+        .required("generation")
+        .and_then(Value::bytes)
+        .map_err(|_| Error::InvalidArtifact)?
+        .try_into()
+        .map_err(|_| Error::InvalidArtifact)?;
+    let verification_key: [u8; 32] = map
+        .required("verification_key")
+        .and_then(Value::bytes)
+        .map_err(|_| Error::InvalidArtifact)?
+        .try_into()
+        .map_err(|_| Error::InvalidArtifact)?;
+
+    if assertions.pool.is_some_and(|p| p != pool)
+        || assertions.incarnation.is_some_and(|i| i != incarnation)
+        || assertions.generation.is_some_and(|g| g != generation)
+        || assertions
+            .verification_key
+            .is_some_and(|v| v != verification_key)
+    {
+        return Err(Error::WrongBinding);
+    }
+
+    let identity_public_key = load_identity(identity_path, device)?;
+    let key_bytes = read_file(key_path, true, 16_384)?;
+    let recipient = RecipientKeyFile::parse(key_bytes).map_err(|_| Error::InvalidInput)?;
+    let expected = Expectations {
+        device,
+        pool,
+        incarnation,
+        generation,
+        verification_key,
+        identity_public_key,
+    };
+    restore_to_file(&artifact_bytes, &recipient, password, expected, out_path)?;
+    Ok(ArtifactBindings {
+        device,
+        pool,
+        incarnation,
+        generation,
+        verification_key,
+    })
+}
+
 pub fn parse_verification_key_file(path: &Path) -> Result<[u8; 32], Error> {
     let bytes = read_file(path, false, 16_384)?;
     #[derive(Deserialize)]
