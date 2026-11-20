@@ -21,7 +21,6 @@ use kes_core::{
 use kes_protocol::management::MAX_FRAME as MAX_MANAGEMENT_FRAME;
 use kes_protocol::usb::{self as wire, PublicOutcome, Request, Response};
 use pico2_kes_agent::{
-    cli,
     config::{Config, PoolBinding, RunMode},
     daemon::{
         context::{NetworkConfig, SlotTiming},
@@ -1666,8 +1665,12 @@ impl TestRig {
 
     pub fn generate_cli_expected(&self, operation: &str, revision: u64) -> CliResult {
         let target = self.target.unwrap();
-        let vkey = self.receipt.with_file_name(format!("vkey-{operation}.json"));
-        let backup = self.receipt.with_file_name(format!("backup-{operation}.cbor"));
+        let vkey = self
+            .receipt
+            .with_file_name(format!("vkey-{operation}.json"));
+        let backup = self
+            .receipt
+            .with_file_name(format!("backup-{operation}.cbor"));
         let _ = std::fs::remove_file(&vkey);
         let _ = std::fs::remove_file(&backup);
         self.run_cli(vec![

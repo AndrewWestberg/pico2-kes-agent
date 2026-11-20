@@ -16,7 +16,6 @@ fn success(result: CliResult) -> Value {
     serde_json::from_slice(&result.stdout).unwrap()
 }
 
-
 #[test]
 fn absent_device_does_not_admit_an_intent_and_reconcile_is_noop() {
     let mut rig = TestRig::commissioned_pool();
@@ -62,14 +61,14 @@ fn lost_pending_response_reconciles_original_generation_instead_of_readmitting()
     rig.timeout_next_ack_reply();
     assert_ne!(rig.reconcile_cli().exit_code, 0);
     assert_eq!(rig.journal_state(), (before, true));
-    let recovered = success(rig.reconcile_cli());
+    let _recovered = success(rig.reconcile_cli());
     assert_eq!(rig.generation_count(), 1);
     assert_eq!(rig.journal_state(), (before + 1, false));
 }
 
 #[test]
 fn export_never_overwrites_existing_artifact() {
-    let mut rig = TestRig::commissioned_pool();
+    let rig = TestRig::commissioned_pool();
     let status = success(rig.status_cli());
     let pool_id = status["pools"][0]["pool_id"].as_str().unwrap().to_owned();
     let vkey_path = rig.receipt_path().with_file_name("retained-vkey");
@@ -108,7 +107,7 @@ fn admitted_generation_resumes_before_and_after_device_commit() {
         assert_ne!(rig.generate_cli(OPERATION).exit_code, 0);
         assert_eq!(rig.generation_count(), usize::from(after_commit));
         rig.reboot_device();
-        let result = success(rig.reconcile_cli());
+        let _result = success(rig.reconcile_cli());
         assert_eq!(rig.generation_count(), 1);
         assert_eq!(rig.journal_state(), (before + 1, false));
     }
@@ -124,7 +123,7 @@ fn failed_ack_persistence_cannot_be_mistaken_for_a_durable_ack() {
     assert_ne!(rig.reconcile_cli().exit_code, 0);
     assert_eq!(rig.journal_state(), (before, true));
     rig.reboot_device();
-    let result = success(rig.reconcile_cli());
+    let _result = success(rig.reconcile_cli());
     assert_eq!(rig.generation_count(), 1);
     assert_eq!(rig.journal_state(), (before + 1, false));
 }
@@ -148,11 +147,20 @@ fn operation_id_cannot_be_reused_with_changed_revision_action_or_target() {
         });
         if pending {
             rig.timeout_next_usb_reply();
-            let _ = client::request(rig.management_socket(), &serde_json::to_vec(&base_request).unwrap()).unwrap();
+            let _ = client::request(
+                rig.management_socket(),
+                &serde_json::to_vec(&base_request).unwrap(),
+            )
+            .unwrap();
         } else {
             let first: Value = serde_json::from_slice(
-                &client::request(rig.management_socket(), &serde_json::to_vec(&base_request).unwrap()).unwrap(),
-            ).unwrap();
+                &client::request(
+                    rig.management_socket(),
+                    &serde_json::to_vec(&base_request).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             assert_eq!(first["outcome"], "success", "{first}");
         }
         let before = rig.journal_state();
@@ -184,7 +192,7 @@ fn operation_id_cannot_be_reused_with_changed_revision_action_or_target() {
             assert_eq!(rig.generation_count(), 1);
         }
         if pending {
-            let recovered = success(rig.reconcile_cli());
+            let _recovered = success(rig.reconcile_cli());
         }
     }
 }
