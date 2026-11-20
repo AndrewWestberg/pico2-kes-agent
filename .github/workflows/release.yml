@@ -209,6 +209,7 @@ jobs:
           python3 -c 'from pathlib import Path; assert len(Path("/proc/swaps").read_text().splitlines()) == 1'
           sudo apt-get update
           sudo apt-get install -y binutils libusb-1.0-0 gpg openssl
+          python3 tools/verify_picotool.py release-build/toolchain/bin/picotool security/picotool-checksums.json
           chmod +x release-build/toolchain/bin/picotool
           echo "$GITHUB_WORKSPACE/release-build/toolchain/bin" >> "$GITHUB_PATH"
       - name: Sign only the production flash image
