@@ -124,7 +124,7 @@ fn absent_device_mutation_does_not_leave_recovery_pending_across_restart() {
                 &fixture.socket(),
                 &serde_json::to_vec(&json!({
                     "version": 1, "request_id": "33".repeat(16),
-                    "action": "device.status", "arguments": {}
+                    "action": "status", "arguments": {}
                 }))
                 .unwrap(),
             )
