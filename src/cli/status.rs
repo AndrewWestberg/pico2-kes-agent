@@ -30,10 +30,7 @@ pub fn render_status(result: &Value, json_mode: bool) -> Result<String, String> 
 
     if let Some(dev) = result.get("device").filter(|v| !v.is_null()) {
         let id = dev.get("device_id").and_then(Value::as_str).unwrap_or("-");
-        let serial = dev
-            .get("usb_serial")
-            .and_then(Value::as_str)
-            .unwrap_or("-");
+        let serial = dev.get("usb_serial").and_then(Value::as_str).unwrap_or("-");
         let proto = dev
             .get("usb_protocol_major")
             .and_then(Value::as_u64)

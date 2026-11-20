@@ -116,6 +116,8 @@ pub fn uninstall(prefix: &Path) -> Result<(), ReleaseError> {
     if st_path.exists() {
         fs::remove_file(&st_path)?;
     }
-    println!("uninstalled pico2-kes-agent (preserved /etc/pico2-kes-agent and /var/lib/pico2-kes-agent)");
+    println!(
+        "uninstalled pico2-kes-agent (preserved /etc/pico2-kes-agent and /var/lib/pico2-kes-agent)"
+    );
     Ok(())
 }

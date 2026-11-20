@@ -103,9 +103,7 @@ fn request_until_inner(
     deadline: std::time::Instant,
     peer: Option<(u32, u32)>,
 ) -> Result<Vec<u8>, RequestError> {
-    use std::os::{
-        unix::ffi::OsStrExt,
-    };
+    use std::os::unix::ffi::OsStrExt;
     if json.len() > MAX_FRAME || socket.as_os_str().as_bytes().contains(&0) {
         return Err(RequestError::before_admission(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -130,7 +130,6 @@ pub struct Journal {
 }
 pub const COMPACTION_THRESHOLD: u64 = 16 * 1024 * 1024;
 
-
 impl Journal {
     /// Opens or creates an owner-only regular journal without following the
     /// final symlink. Existing bytes are validated before any append.

@@ -1441,7 +1441,10 @@ mod observation_tests {
         let duplicate = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"status\",\"arguments\":{\"x\":1,\"x\":2}}";
         assert!(Message::decode(duplicate).is_err());
         let legacy = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"pool.observe\",\"arguments\":{}}";
-        assert_eq!(Message::decode(legacy).unwrap_err(), Error::UnsupportedAction);
+        assert_eq!(
+            Message::decode(legacy).unwrap_err(),
+            Error::UnsupportedAction
+        );
         assert_eq!(
             Message::decode(&[b' '; MAX_FRAME + 1]).unwrap_err(),
             Error::Oversized

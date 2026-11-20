@@ -27,6 +27,8 @@ pub fn otp_stage(picotool_bin: &Path, stage: &str, json_path: &Path) -> Result<(
             let p = json_path.to_str().ok_or("non-UTF8 OTP path")?;
             run_picotool(picotool_bin, &["otp", "load", p]).map(|_| ())
         }
-        other => Err(format!("unknown otp stage: {other} (expected prepare|enable|lock)")),
+        other => Err(format!(
+            "unknown otp stage: {other} (expected prepare|enable|lock)"
+        )),
     }
 }
