@@ -1486,25 +1486,21 @@ impl TestRig {
         (flash, journal, revision, pending)
     }
 
-    fn run_cli(&self, mut args: Vec<String>) -> CliResult {
+    pub fn run_cli(&self, mut args: Vec<String>) -> CliResult {
         let mut prefixed = vec![
             "--socket".to_owned(),
             self.management_socket.display().to_string(),
             "--json".to_owned(),
         ];
         prefixed.append(&mut args);
-        let mut stderr = Vec::new();
-        let exit_code = match cli::run(prefixed) {
-            Ok(()) => 0,
-            Err(e) => {
-                stderr = e.into_bytes();
-                1
-            }
-        };
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_p2kes"))
+            .args(&prefixed)
+            .output()
+            .expect("spawn p2kes");
         CliResult {
-            exit_code,
-            stdout: Vec::new(),
-            stderr,
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: output.stdout,
+            stderr: output.stderr,
         }
     }
 
@@ -1635,16 +1631,7 @@ impl TestRig {
     }
 
     pub fn reconcile_cli(&self) -> CliResult {
-        let mut args = vec![
-            "operation".into(),
-            "reconcile".into(),
-            "--receipt".into(),
-            self.receipt.display().to_string(),
-        ];
-        if self.state.lock().unwrap().config.pin.is_none() {
-            args.extend(["--out".into(), self.pin_record.display().to_string()]);
-        }
-        self.run_cli(args)
+        self.run_cli(vec!["reconcile".into()])
     }
     pub fn reconcile_receipt_cli(&self, receipt: &Path) -> CliResult {
         self.run_cli(vec![
@@ -1679,19 +1666,20 @@ impl TestRig {
 
     pub fn generate_cli_expected(&self, operation: &str, revision: u64) -> CliResult {
         let target = self.target.unwrap();
+        let vkey = self.receipt.with_file_name(format!("vkey-{operation}.json"));
+        let backup = self.receipt.with_file_name(format!("backup-{operation}.cbor"));
+        let _ = std::fs::remove_file(&vkey);
+        let _ = std::fs::remove_file(&backup);
         self.run_cli(vec![
             "key".into(),
-            "generate".into(),
-            "--pool".into(),
+            "rotate".into(),
             target.pool.to_string(),
-            "--incarnation".into(),
-            target.incarnation.to_string(),
-            "--operation-id".into(),
-            operation.into(),
+            "--vkey-out".into(),
+            vkey.display().to_string(),
+            "--backup-out".into(),
+            backup.display().to_string(),
             "--expected-revision".into(),
             revision.to_string(),
-            "--receipt".into(),
-            self.receipt.display().to_string(),
         ])
     }
 
@@ -1706,7 +1694,7 @@ impl TestRig {
         }
         let response: Value =
             serde_json::from_slice(&result.stdout).map_err(|_| RigError("generation_failed"))?;
-        let id = response["result"]["generation_id"]
+        let id = response["generation_id"]
             .as_str()
             .ok_or(RigError("generation_failed"))?
             .to_owned();
@@ -1790,20 +1778,13 @@ impl TestRig {
         fs::write(&path, public_json).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         let revision = self.state.lock().unwrap().usb.device().revision().unwrap();
+        let _ = operation_id;
+        let _ = revision;
         self.run_cli(vec![
-            "recipient".into(),
-            "set".into(),
-            "--public-key".into(),
+            "backup".into(),
+            "set-recipient".into(),
+            "--pubkey-file".into(),
             path.display().to_string(),
-            "--operation-id".into(),
-            operation_id.into(),
-            "--expected-revision".into(),
-            revision.to_string(),
-            "--receipt".into(),
-            self.root
-                .join(format!("recipient-{operation_id}.json"))
-                .display()
-                .to_string(),
         ])
     }
 
