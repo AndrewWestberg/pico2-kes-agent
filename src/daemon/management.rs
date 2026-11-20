@@ -214,7 +214,19 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
             Ok(status::response(response, recovering))
         });
         match result {
-            Ok(response) => Ok(response),
+            Ok(mut response) => {
+                if response.get("pools").is_none() {
+                    let pools = self
+                        .inventory()
+                        .ok()
+                        .and_then(|inv| inv.get("pools").cloned())
+                        .unwrap_or_else(|| json!([]));
+                    if let Some(obj) = response.as_object_mut() {
+                        obj.insert("pools".into(), pools);
+                    }
+                }
+                Ok(response)
+            }
             Err(Error::Usb(
                 UsbError::NotFound | UsbError::Usb(_) | UsbError::Io(_) | UsbError::Interface,
             )) => Ok(status::unavailable(recovering, pool)),
