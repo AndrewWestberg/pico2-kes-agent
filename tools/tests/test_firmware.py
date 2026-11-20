@@ -2054,6 +2054,26 @@ class ToolEvidenceTests(unittest.TestCase):
                 firmware.ACTIVE_ACTION = None
         self.assertEqual(calls, [])
 
+    def test_require_manager_process_fails_closed_on_os_error(self):
+        manager = Path("/usr/lib/pico2-kes-agent/components/manager/fixture/p2kesup")
+        resolve = Path.resolve
+        stat_path = Path.stat
+        def resolve_parent(path, *args, **kwargs):
+            return manager if str(path) == f"/proc/{os.getppid()}/exe" else resolve(path, *args, **kwargs)
+        def manager_stat(path, *args, **kwargs):
+            return mock.Mock(st_uid=0, st_mode=0o100755) if path == manager else stat_path(path, *args, **kwargs)
+        with mock.patch.object(Path, "resolve", resolve_parent), mock.patch.object(Path, "stat", manager_stat):
+            firmware.require_manager_process()
+        for err in (PermissionError(13, "Permission denied"), FileNotFoundError(2, "No such file")):
+            with mock.patch.object(Path, "resolve", side_effect=err):
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    firmware.require_manager_process()
+        for uid, mode in ((1000, 0o100755), (0, 0o100775), (0, 0o100757)):
+            with mock.patch.object(Path, "resolve", resolve_parent), \
+                 mock.patch.object(Path, "stat", return_value=mock.Mock(st_uid=uid, st_mode=mode)):
+                with self.assertRaisesRegex(ValueError, "original operation requires its manager"):
+                    firmware.require_manager_process()
+
 
 class PublicationTests(unittest.TestCase):
     @classmethod
