@@ -142,8 +142,9 @@ of quality rather than a checklist of installed tools.
 ## Technical Constraints
 
 - The established Cargo package is `pico2-kes-agent`, using Rust edition 2024. Firmware, the
-  systemd service `pico2-kes-agentd`, and the utility `pico2-kes-agent-cli` MUST be implemented in
-  Rust. Changes to this baseline MUST include an explicit compatibility rationale.
+  systemd service `pico2-kes-agentd`, the operator CLI `p2kes`, the release updater `p2kesup`,
+  and the standalone firmware tool `p2kes-flash` MUST be implemented in Rust. Changes to this
+  baseline MUST include an explicit compatibility rationale.
 - One daemon MUST manage one accepted Pico2 A2 device over USB and remain its sole USB owner.
   Service-connected CLI operations MUST use the management socket, not bypass the daemon.
   Per-pool node-service sockets MUST retain stable pool bindings and common access permissions.
@@ -279,4 +280,21 @@ removed before committing the amended constitution; it is not part of the govern
   examples and SO-005c offline generation do not establish a live differential campaign or
   coverage of all inputs, native receiver/bulk behavior, device behavior or full V2 serialization.
 
-**Version**: 3.0.0 | **Ratified**: 2026-10-27 | **Last Amended**: 2026-11-17
+### Amendment record — 4.0.0 (2026-11-20)
+
+- **Approval:** The maintainer explicitly authorized this constitutional amendment during
+  `003-simplify-cli-updater` specification clarification and analysis on 2026-11-20.
+- **Rationale and affected constraints:** Renames `pico2-kes-agent-cli` to `p2kes` and adds
+  `p2kesup` (focused host software updater) and `p2kes-flash` (native standalone firmware/OTP
+  tool) to the established Rust executables in Technical Constraints, removing the legacy
+  `pico2-kes-agent-cli` name and Python runtime dependency on operator hosts.
+- **Compatibility and migration:** No changes to on-device RP2350 storage, USB protocol v1,
+  KES Service V2 node sockets, or encrypted backup formats. A migration guide (`docs/migration.md`)
+  covers transitioning existing installations from `pico2-kes-agent-cli` and legacy `p2kesup`
+  without device re-commissioning or pool re-enrollment.
+- **Retained obligations:** All core principles (I–VI), 64-pool capacity, power-loss recovery,
+  Software Observatory gates, and mandatory Pico 2 A2 hardware qualification (including
+  re-qualification of `p2kes-flash` flash/wipe/OTP paths) remain unchanged.
+
+**Version**: 4.0.0 | **Ratified**: 2026-10-27 | **Last Amended**: 2026-11-20
+
