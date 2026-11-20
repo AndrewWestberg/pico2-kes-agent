@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Management JSON to journaled USB dispatch.
 
 use crate::{

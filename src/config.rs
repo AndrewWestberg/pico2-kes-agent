@@ -219,6 +219,7 @@ impl Config {
     }
 
     /// Public UI inspection only; daemon admission must use `load`/`from_bytes`.
+    #[allow(dead_code)]
     pub(crate) fn inspect_bytes(bytes: &[u8], mode: RunMode) -> Result<Self, Error> {
         Self::parse_bytes(bytes, mode, false)
     }
