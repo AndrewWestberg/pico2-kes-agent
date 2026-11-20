@@ -563,6 +563,20 @@ fn poll_pools(
     }
     suspend_all(pools);
 }
+#[derive(Default)]
+struct LivePoolSet {
+    version: u64,
+    pools: Vec<(PoolBinding, PoolSubscription)>,
+}
+
+impl LivePoolSet {
+    fn update(&mut self, bindings: &[PoolBinding], subs: Vec<(PoolBinding, PoolSubscription)>) {
+        debug_assert!(bindings.len() <= 64);
+        self.pools = subs;
+        self.version = self.version.wrapping_add(1);
+    }
+}
+
 struct LiveEndpoints {
     sockets: SocketRegistry,
     pools: PoolRegistry,
