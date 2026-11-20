@@ -141,8 +141,8 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 - [x] T037 [P] Update `README.md` and add a legacy-to-simplified migration guide (`p2kesup` / `pico2-kes-agent-cli` → `p2kes` / `p2kesup` / `p2kes-flash`) in `docs/migration.md`
 - [x] T038 [P] Update `tests/host_security.rs` (or remove obsolete `src/manager` references) so the entire workspace test suite compiles and passes cleanly
-- [ ] T039 Run Software Observatory gates per `contracts/quality.md`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings`, `cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification`, `cargo audit`, `cargo deny check`, and `cargo run --locked -p qualification -- load`
-- [ ] T040 Measure SC-005 (64-pool `p2kes status --json` <100 ms with 10k journal entries; idle wakeups <5/sec) and SC-006 (host management/updater LOC reduction ≥85% vs. 36,261 LOC baseline), execute `specs/003-simplify-cli-updater/quickstart.md` Q1–Q5, and record real Pico 2 A2 hardware re-qualification evidence for `p2kes-flash` (`verify`, `flash`, `wipe`, `otp`) under `evidence/`
+- [x] T039 Run Software Observatory gates per `contracts/quality.md`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings`, `cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification`, `cargo audit`, `cargo deny check`, and `cargo run --locked -p qualification -- load`
+- [x] T040 Measure SC-005 (64-pool `p2kes status --json` <100 ms with 10k journal entries; idle wakeups <5/sec) and SC-006 (host management/updater LOC reduction ≥85% vs. 36,261 LOC baseline), execute `specs/003-simplify-cli-updater/quickstart.md` Q1–Q5, and record real Pico 2 A2 hardware re-qualification evidence for `p2kes-flash` (`verify`, `flash`, `wipe`, `otp`) under `evidence/`
 
 ---
 
