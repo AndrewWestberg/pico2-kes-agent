@@ -563,6 +563,7 @@ fn poll_pools(
     }
     suspend_all(pools);
 }
+#[allow(dead_code)]
 #[derive(Default)]
 struct LivePoolSet {
     version: u64,
@@ -576,6 +577,16 @@ impl LivePoolSet {
         self.version = self.version.wrapping_add(1);
     }
 }
+#[allow(dead_code)]
+fn drain_active_management(
+    active: &Mutex<usize>,
+    cv: &std::sync::Condvar,
+) {
+    if let Ok(guard) = active.lock() {
+        let _ = cv.wait_timeout_while(guard, MANAGEMENT_TIMEOUT, |count| *count > 0);
+    }
+}
+
 
 struct LiveEndpoints {
     sockets: SocketRegistry,
