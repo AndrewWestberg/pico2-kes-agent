@@ -1628,7 +1628,7 @@ impl TestRig {
             "--expected-revision".into(),
             "0".into(),
             "--receipt".into(),
-            receipt.display().to_string(),
+            self.receipt.display().to_string(),
             "--out".into(),
             self.pin_record.display().to_string(),
         ])
