@@ -1142,9 +1142,7 @@ fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
     if mode == RunMode::Commissioning
         && !matches!(
             action,
-            Action::Status
-                | Action::DeviceCommission
-                | Action::OperationReconcile
+            Action::Status | Action::DeviceCommission | Action::OperationReconcile
         )
     {
         return Err(Error::ModeDenied);

@@ -68,10 +68,7 @@ fn security_reply_requires_complete_consistent_schema() {
 #[test]
 fn inventory_response_accepts_capacity_and_rejects_overflow() {
     assert!(Message::decode(request("status", "{}", false).as_bytes()).is_ok());
-    assert!(
-        Message::decode(request("status", "{\"page_size\":1}", false).as_bytes())
-            .is_err()
-    );
+    assert!(Message::decode(request("status", "{\"page_size\":1}", false).as_bytes()).is_err());
     assert!(Message::decode(request("status", "{}", true).as_bytes()).is_err());
     assert!(Message::decode(request("device.inventory", "{}", false).as_bytes()).is_err());
     let entry = format!(
@@ -125,7 +122,12 @@ fn every_action_and_exact_argument_schema() {
             true,
             Action::DeviceCommission,
         ),
-        ("operation.reconcile", "{}".into(), false, Action::OperationReconcile),
+        (
+            "operation.reconcile",
+            "{}".into(),
+            false,
+            Action::OperationReconcile,
+        ),
         (
             "pool.enroll",
             format!("{{\"cold_verification_key\":\"{KEY}\",\"network\":\"mainnet\"}}"),

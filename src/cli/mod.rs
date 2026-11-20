@@ -135,7 +135,8 @@ fn write_no_clobber(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> 
         .mode(mode)
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    f.write_all(bytes).map_err(|e| format!("{}: {e}", path.display()))
+    f.write_all(bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn fetch_status(socket: &Path, pool_id: Option<&str>) -> Result<Value, String> {
@@ -172,7 +173,9 @@ fn confirm_destructive(prompt: &str, auto_yes: bool) -> Result<(), String> {
     print!("{prompt} [y/N]: ");
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         Ok(())
     } else {
@@ -188,7 +191,9 @@ fn flag_val<'a>(args: &'a [String], name: &str) -> Result<&'a str, String> {
 }
 
 fn opt_flag_val<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.windows(2).find(|w| w[0] == name).map(|w| w[1].as_str())
+    args.windows(2)
+        .find(|w| w[0] == name)
+        .map(|w| w[1].as_str())
 }
 
 fn cmd_status(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
@@ -293,7 +298,10 @@ fn cmd_pool_rm(
 }
 
 fn cmd_key_rotate(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
-    let pool_id = args.first().ok_or("usage: p2kes key rotate POOL_ID ...")?.as_str();
+    let pool_id = args
+        .first()
+        .ok_or("usage: p2kes key rotate POOL_ID ...")?
+        .as_str();
     let vkey_out = flag_val(args, "--vkey-out")?;
     let backup_out = flag_val(args, "--backup-out")?;
     let st = fetch_status(socket, Some(pool_id))?;
@@ -331,7 +339,10 @@ fn cmd_key_rotate(socket: &Path, args: &[String], json_mode: bool) -> Result<(),
 }
 
 fn cmd_key_export(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
-    let pool_id = args.first().ok_or("usage: p2kes key export POOL_ID ...")?.as_str();
+    let pool_id = args
+        .first()
+        .ok_or("usage: p2kes key export POOL_ID ...")?
+        .as_str();
     let vkey_out = flag_val(args, "--vkey-out")?;
     let backup_out = flag_val(args, "--backup-out")?;
     let st = fetch_status(socket, Some(pool_id))?;

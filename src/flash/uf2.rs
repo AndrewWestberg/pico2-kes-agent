@@ -64,11 +64,8 @@ pub fn find_bootsel_mount() -> Option<PathBuf> {
 }
 
 pub fn copy_uf2_to_bootsel(uf2_path: &Path, mount: &Path) -> Result<(), String> {
-    let dst = mount.join(
-        uf2_path
-            .file_name()
-            .ok_or("invalid UF2 filename")?,
-    );
-    fs::copy(uf2_path, &dst).map_err(|e| format!("failed to copy UF2 to {}: {e}", dst.display()))?;
+    let dst = mount.join(uf2_path.file_name().ok_or("invalid UF2 filename")?);
+    fs::copy(uf2_path, &dst)
+        .map_err(|e| format!("failed to copy UF2 to {}: {e}", dst.display()))?;
     Ok(())
 }
