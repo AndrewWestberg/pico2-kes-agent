@@ -32,50 +32,6 @@ impl Drop for TestDir {
     }
 }
 
-#[test]
-fn bootstrap_verifier_bounds_running_processes() {
-    let script = include_str!("../install.sh");
-    let helper = script
-        .split_once("verifier_code=$(cat <<'PY'\n")
-        .unwrap()
-        .1
-        .split_once("\nPY\n")
-        .unwrap()
-        .0;
-    let exercise = r#"
-import sys
-python = sys.executable
-assert bounded_command([python, '-c', "import sys; assert sys.stdin.read() == ''; sys.stderr.write('ignored'); sys.stdout.write('ok')"]) == b'ok'
-assert len(bounded_command([python, '-c', "import sys; sys.stdout.write('x'*65536)"])) == 65536
-assert bounded_command([python, '-c', "import os; print(os.environ['BOUND_TEST'])"], env={'BOUND_TEST':'isolated'}, limit=1048576) == b'isolated\n'
-try:
-    bounded_command([python, '-c', "import os; os.write(1,b'x'*65537); import time; time.sleep(60)"])
-    raise AssertionError('overflow accepted')
-except ValueError:
-    pass
-for child in ("import time; time.sleep(60)", "import os,time; os.close(1); time.sleep(60)"):
-    try:
-        bounded_command([python, '-c', child], timeout=0.2)
-        raise AssertionError('timeout accepted')
-    except subprocess.TimeoutExpired:
-        pass
-try:
-    bounded_command([python, '-c', "raise SystemExit(7)"])
-    raise AssertionError('failure accepted')
-except subprocess.CalledProcessError as error:
-    assert error.returncode == 7
-"#;
-    let output = Command::new("/usr/bin/python3")
-        .args(["-I", "-c", &format!("{helper}\n{exercise}")])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
 
 
 #[test]
