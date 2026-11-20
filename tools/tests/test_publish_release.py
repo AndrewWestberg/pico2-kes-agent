@@ -16,7 +16,7 @@ import publish_release as publisher
 
 
 def write_host_fixture(root, tag, commit, build_id):
-    for name in ("p2kesup", "pico2-kes-agentd", "pico2-kes-agent-cli"):
+    for name in ("p2kesup", "pico2-kes-agentd", "p2kes", "p2kes-flash"):
         path = root / "bin" / name
         path.parent.mkdir(parents=True, exist_ok=True)
         identity = json.dumps({"schema_version": 1, "component": name, "version": tag,
@@ -304,7 +304,7 @@ class PublishTests(unittest.TestCase):
                                  else public_key if name == "firmware/firmware-signing-public.pem"
                                  else (authority_dir / name).read_bytes() if name in auth_names
                                  else name.encode())
-                if name in ("bin/p2kesup", "bin/pico2-kes-agentd", "bin/pico2-kes-agent-cli", "tools/picotool"):
+                if name in ("bin/p2kesup", "bin/pico2-kes-agentd", "bin/p2kes", "bin/p2kes-flash", "tools/picotool"):
                     path.chmod(0o755)
             (payload / "runtime/provenance.json").write_text(json.dumps({
                 "schema_version": 1, "os": {"id": "debian", "version": "12"},
