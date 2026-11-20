@@ -104,7 +104,6 @@ fn request_until_inner(
     peer: Option<(u32, u32)>,
 ) -> Result<Vec<u8>, RequestError> {
     use std::os::{
-        fd::{AsRawFd, FromRawFd},
         unix::ffi::OsStrExt,
     };
     if json.len() > MAX_FRAME || socket.as_os_str().as_bytes().contains(&0) {
@@ -113,83 +112,51 @@ fn request_until_inner(
             "invalid request or socket path",
         )));
     }
-    let path = socket.as_os_str().as_bytes();
-    // SAFETY: zero is valid for every field of sockaddr_un.
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if path.len() >= addr.sun_path.len() {
-        return Err(RequestError::before_admission(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "socket path too long",
-        )));
-    }
-    addr.sun_family = libc::AF_UNIX as _;
-    for (dst, src) in addr.sun_path.iter_mut().zip(path) {
-        *dst = *src as _;
-    }
-    // SAFETY: the socket arguments are valid constants and return a new owned descriptor.
-    let fd = unsafe {
-        libc::socket(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-            0,
-        )
-    };
-    if fd < 0 {
-        return Err(RequestError::before_admission(io::Error::last_os_error()));
-    }
-    // SAFETY: fd is a newly created descriptor and ownership is transferred exactly once.
-    let stream = unsafe { UnixStream::from_raw_fd(fd) };
-    let wait = |events| -> io::Result<()> {
+    let addr = rustix::net::SocketAddrUnix::new(socket)
+        .map_err(|e| RequestError::before_admission(io::Error::from(e)))?;
+    let fd = rustix::net::socket_with(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::STREAM,
+        rustix::net::SocketFlags::NONBLOCK | rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .map_err(|e| RequestError::before_admission(io::Error::from(e)))?;
+    let stream = UnixStream::from(fd);
+    let wait = |flags: rustix::event::PollFlags| -> io::Result<()> {
         loop {
             let remaining = deadline
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "observation deadline"))?;
-            let millis = remaining
-                .as_millis()
-                .saturating_add(1)
-                .min(i32::MAX as u128) as i32;
-            let mut pfd = libc::pollfd {
-                fd: stream.as_raw_fd(),
-                events,
-                revents: 0,
+            let ts = rustix::event::Timespec {
+                tv_sec: remaining.as_secs() as _,
+                tv_nsec: remaining.subsec_nanos() as _,
             };
-            // SAFETY: pfd points to one initialized pollfd for the duration of the call.
-            let n = unsafe { libc::poll(&mut pfd, 1, millis) };
-            if n > 0 {
-                return Ok(());
-            }
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "observation deadline",
-                ));
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
+            let mut pfd = [rustix::event::PollFd::new(&stream, flags)];
+            match rustix::event::poll(&mut pfd, Some(&ts)) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "observation deadline",
+                    ));
+                }
+                Ok(_) => return Ok(()),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(e) => return Err(io::Error::from(e)),
             }
         }
     };
-    // SAFETY: addr is initialized, its family is AF_UNIX, and the length fits sun_path.
-    let rc = unsafe {
-        libc::connect(
-            fd,
-            &addr as *const _ as *const libc::sockaddr,
-            (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1) as _,
-        )
-    };
-    if rc != 0 {
-        let e = io::Error::last_os_error();
-        if e.raw_os_error() != Some(libc::EINPROGRESS) {
-            return Err(RequestError::before_admission(e));
+    match rustix::net::connect(&stream, &addr) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::INPROGRESS) => {
+            wait(rustix::event::PollFlags::OUT).map_err(RequestError::before_admission)?;
+            if let Some(e) = stream
+                .take_error()
+                .map_err(RequestError::before_admission)?
+            {
+                return Err(RequestError::before_admission(e));
+            }
         }
-        wait(libc::POLLOUT).map_err(RequestError::before_admission)?;
-        if let Some(e) = stream
-            .take_error()
-            .map_err(RequestError::before_admission)?
-        {
-            return Err(RequestError::before_admission(e));
-        }
+        Err(e) => return Err(RequestError::before_admission(io::Error::from(e))),
     }
     if let Some((pid, uid)) = peer {
         let actual = rustix::net::sockopt::socket_peercred(&stream)
@@ -205,7 +172,7 @@ fn request_until_inner(
     for part in [&header[..], json] {
         let mut sent = 0;
         while sent < part.len() {
-            wait(libc::POLLOUT).map_err(RequestError::after_connect)?;
+            wait(rustix::event::PollFlags::OUT).map_err(RequestError::after_connect)?;
             match (&stream).write(&part[sent..]) {
                 Ok(0) => {
                     return Err(RequestError::after_connect(io::Error::new(
@@ -227,7 +194,7 @@ fn request_until_inner(
     let read = |buf: &mut [u8]| -> io::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
-            wait(libc::POLLIN)?;
+            wait(rustix::event::PollFlags::IN)?;
             match (&stream).read(&mut buf[offset..]) {
                 Ok(0) => {
                     return Err(io::Error::new(

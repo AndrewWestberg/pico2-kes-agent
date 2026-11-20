@@ -116,18 +116,18 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
         }
 
         let result = match action {
-            Action::DeviceStatus => self.status(None)?,
-            Action::DeviceSecurity => self.query(Request::SecurityStatus)?,
-            Action::DeviceInventory => self.inventory()?,
-            Action::HostObserve => self.host_observe(&envelope.arguments)?,
-            Action::DeviceInfo => self.device_info()?,
-            Action::PoolObserve => self.pool_observe(pool_target(&envelope.arguments)?)?,
-            Action::PoolStatus => {
-                let pool =
-                    parse_id::<28, PoolId>(&envelope.arguments, "pool_id", PoolId::from_bytes)?;
-                self.status(Some(pool))?
+            Action::Status => {
+                let pool = if envelope.arguments.get("pool_id").is_some() {
+                    Some(parse_id::<28, PoolId>(
+                        &envelope.arguments,
+                        "pool_id",
+                        PoolId::from_bytes,
+                    )?)
+                } else {
+                    None
+                };
+                self.status(pool)?
             }
-            Action::PoolList => self.pool_list(&envelope.arguments)?,
             Action::GenerationPublicKey => {
                 let target = generation_target(&envelope.arguments)?;
                 self.query(Request::PublicKey { target })?
@@ -794,6 +794,12 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
     }
 
     fn reconcile(&mut self, arguments: &Value) -> Result<Value, Error> {
+        if arguments.as_object().is_some_and(|m| m.is_empty()) {
+            return match self.reconcile_pending()? {
+                Some(v) => Ok(v),
+                None => Ok(serde_json::json!({ "reconciled": false, "pending_operation": null })),
+            };
+        }
         let operation_id = OperationId::parse_hex(string(arguments, "operation_id")?)
             .map_err(|_| Error::InvalidInput)?;
         let digest = Digest32::parse_hex(string(arguments, "request_digest")?)
@@ -1136,11 +1142,7 @@ fn enforce_mode(mode: RunMode, action: Action) -> Result<(), Error> {
     if mode == RunMode::Commissioning
         && !matches!(
             action,
-            Action::DeviceStatus
-                | Action::DeviceSecurity
-                | Action::DeviceInfo
-                | Action::DeviceInventory
-                | Action::HostObserve
+            Action::Status
                 | Action::DeviceCommission
                 | Action::OperationReconcile
         )
@@ -1551,15 +1553,8 @@ fn hex(bytes: &[u8]) -> String {
 
 fn action_name(action: Action) -> &'static str {
     match action {
-        Action::DeviceStatus => "device.status",
+        Action::Status => "status",
         Action::DeviceCommission => "device.commission",
-        Action::DeviceSecurity => "device.security",
-        Action::DeviceInventory => "device.inventory",
-        Action::HostObserve => "host.observe",
-        Action::DeviceInfo => "device.info",
-        Action::PoolObserve => "pool.observe",
-        Action::PoolList => "pool.list",
-        Action::PoolStatus => "pool.status",
         Action::PoolEnroll => "pool.enroll",
         Action::GenerationCreate => "generation.create",
         Action::GenerationPublicKey => "generation.public_key",

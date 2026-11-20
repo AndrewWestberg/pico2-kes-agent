@@ -13,6 +13,10 @@ pub mod daemon;
 #[cfg(target_os = "linux")]
 pub mod files;
 #[cfg(target_os = "linux")]
-pub mod manager;
+pub mod flash;
 #[cfg(target_os = "linux")]
 pub mod memory;
+#[cfg(target_os = "linux")]
+pub mod release;
+#[cfg(target_os = "linux")]
+pub mod updater;

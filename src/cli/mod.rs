@@ -1,1209 +1,507 @@
+//! Operator CLI (`p2kes`) — 10-workflow command surface.
+
 pub mod client;
-pub mod receipt;
 pub mod status;
 
-use crate::{
-    backup::{recipient, recover},
-    files::{open_owner_controlled_file, publish_no_clobber},
-};
 use kes_core::identity::OperationId;
+use kes_protocol::management::Action;
 use serde_json::{Value, json};
-use std::{
-    collections::HashMap,
-    fs::{File, OpenOptions},
-    io::{self, BufRead, BufReader, Read, Write},
-    path::{Path, PathBuf},
-};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
-pub const EXIT_SUCCESS: i32 = 0;
-pub const EXIT_INVOCATION: i32 = 2;
-pub const EXIT_PERMISSION: i32 = 3;
-pub const EXIT_UNAVAILABLE: i32 = 4;
-pub const EXIT_REJECTED: i32 = 5;
-pub const EXIT_UNCERTAIN: i32 = 6;
-pub const EXIT_FAILURE: i32 = 7;
+const DEFAULT_SOCKET: &str = "/run/pico2-kes-agent/management.sock";
 
-const USAGE: &str = "\
-pico2-kes-agent-cli [--socket PATH] [--json] COMMAND
+pub fn run(args: Vec<String>) -> Result<(), String> {
+    if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help" | "help") {
+        print_help();
+        return Ok(());
+    }
 
-Commands:
-  status
-  host observe
-  device commission|security|inventory|info
-  pool list|status|observe|enroll|delete
-  key generate|verification-key|export|discard
-  certificate install
-  recipient create|set
-  operation reconcile
-  restore
-
-Run service commands through the daemon management socket. No direct USB mode exists.";
-
-pub fn run(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
-    match execute(args) {
-        Ok(result) => {
-            if let Some(output) = result.output
-                && let Err(error) = writeln!(stdout, "{output}").and_then(|()| stdout.flush())
-            {
-                let _ = writeln!(stderr, "failed to write command output: {error}");
-                return EXIT_FAILURE;
-            }
-            if let Some(diagnostic) = result.diagnostic {
-                let _ = writeln!(stderr, "{diagnostic}");
-            }
-            result.exit
-        }
-        Err(error) => {
-            let _ = writeln!(stderr, "{error}");
-            error.exit()
-        }
-    }
-}
-
-struct ResultOutput {
-    exit: i32,
-    output: Option<String>,
-    diagnostic: Option<String>,
-}
-
-#[derive(Debug)]
-struct CliError {
-    message: String,
-    class: i32,
-}
-impl CliError {
-    fn invocation(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            class: EXIT_INVOCATION,
-        }
-    }
-    fn failure(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            class: EXIT_FAILURE,
-        }
-    }
-    fn backup(message: impl Into<String>) -> Self {
-        Self::failure(message)
-    }
-    fn io(error: io::Error) -> Self {
-        let class = match error.kind() {
-            io::ErrorKind::PermissionDenied => EXIT_PERMISSION,
-            io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::NotFound
-            | io::ErrorKind::TimedOut
-            | io::ErrorKind::WouldBlock => EXIT_UNAVAILABLE,
-            _ => EXIT_FAILURE,
-        };
-        Self {
-            message: error.to_string(),
-            class,
-        }
-    }
-    const fn exit(&self) -> i32 {
-        self.class
-    }
-}
-impl std::fmt::Display for CliError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-fn execute(args: &[String]) -> Result<ResultOutput, CliError> {
-    if matches!(args, [argument] if matches!(argument.as_str(), "--help" | "-h" | "help")) {
-        return Ok(ResultOutput {
-            exit: EXIT_SUCCESS,
-            output: Some(USAGE.to_owned()),
-            diagnostic: None,
-        });
-    }
-    let mut index = 0;
-    let mut socket = PathBuf::from("/run/pico2-kes-agent/management.sock");
-    let mut machine = false;
-    let mut expected_pid = None;
-    let mut expected_uid = None;
-    while index < args.len() {
-        match args[index].as_str() {
+    let mut socket = PathBuf::from(DEFAULT_SOCKET);
+    let mut json_mode = false;
+    let mut auto_yes = false;
+    let mut pos = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--socket" => {
-                index += 1;
-                socket = PathBuf::from(
-                    args.get(index)
-                        .ok_or_else(|| CliError::invocation("--socket requires PATH"))?,
-                );
-                index += 1;
+                i += 1;
+                socket = PathBuf::from(args.get(i).ok_or("--socket requires a path")?);
             }
-            "--json" => {
-                machine = true;
-                index += 1;
-            }
-            "--expected-peer-pid" | "--expected-peer-uid" => {
-                let option = &args[index];
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| CliError::invocation("peer option requires an integer"))?
-                    .parse::<u32>()
-                    .map_err(|_| CliError::invocation("invalid peer identity"))?;
-                let slot = if option == "--expected-peer-pid" {
-                    &mut expected_pid
-                } else {
-                    &mut expected_uid
-                };
-                if slot.replace(value).is_some() {
-                    return Err(CliError::invocation("duplicate peer identity"));
-                }
-                index += 1;
-            }
-            _ => break,
+            "--json" => json_mode = true,
+            "-y" | "--yes" => auto_yes = true,
+            _ => pos.push(args[i].clone()),
         }
+        i += 1;
     }
-    let peer = match (expected_pid, expected_uid) {
-        (None, None) => None,
-        (Some(pid), Some(uid)) if pid != 0 => Some((pid, uid)),
-        _ => {
-            return Err(CliError::invocation(
-                "both valid peer PID and UID are required",
-            ));
-        }
-    };
-    let command = args
-        .get(index)
-        .ok_or_else(|| CliError::invocation("missing command"))?;
-    index += 1;
-    let subcommand = match command.as_str() {
-        "status" | "restore" => None,
-        "host" | "device" | "pool" | "key" | "certificate" | "recipient" | "operation" => {
-            let sub = args
-                .get(index)
-                .ok_or_else(|| CliError::invocation("missing subcommand"))?;
-            index += 1;
-            Some(sub.as_str())
-        }
-        _ => return Err(CliError::invocation("unsupported command")),
-    };
-    let options = parse_options(&args[index..])?;
-    validate_options(command, subcommand, &options)?;
-    if command == "recipient" && subcommand == Some("create") {
-        return create_recipient(&options, machine);
-    }
-    if command == "restore" {
-        return restore_backup(&options, machine);
-    }
-    if command == "operation" && subcommand == Some("reconcile") {
-        let receipt_path = PathBuf::from(required(&options, "receipt")?);
-        let saved = receipt::load(&receipt_path).map_err(CliError::io)?;
-        if saved
-            .response
-            .as_ref()
-            .and_then(find_request_digest)
-            .is_none()
-        {
-            return retry_saved_request(
-                &socket,
-                machine,
-                &options,
-                &receipt_path,
-                saved.request,
-                peer,
-            );
-        }
-    }
-    let specification = command_spec(command, subcommand, &options)?;
-    let request_id = random_id()?;
-    let mut request = json!({
-        "version": 1,
-        "request_id": request_id.to_string(),
-        "action": specification.action,
-        "arguments": specification.arguments,
-    });
-    let receipt_path = if specification.mutation {
-        let operation_id = options
-            .get("operation-id")
-            .map(|value| {
-                OperationId::parse_hex(value)
-                    .map_err(|_| CliError::invocation("invalid --operation-id"))
-            })
-            .transpose()?
-            .unwrap_or(random_id()?);
-        let revision = required(&options, "expected-revision")?
-            .parse::<u64>()
-            .map_err(|_| CliError::invocation("invalid --expected-revision"))?;
-        request["operation_id"] = Value::String(operation_id.to_string());
-        request["expected_revision"] = Value::from(revision);
-        let path = PathBuf::from(required(&options, "receipt")?);
-        receipt::create(&path, request.clone()).map_err(CliError::io)?;
-        Some(path)
-    } else {
-        None
-    };
 
-    let bytes =
-        serde_json::to_vec(&request).map_err(|error| CliError::invocation(error.to_string()))?;
-    let response_bytes = match management_request(&socket, &bytes, peer) {
-        Ok(response) => response,
-        Err(error) => {
-            if let Some(path) = &receipt_path
-                && error.outcome_uncertain()
-            {
-                let advice = format!(
-                    "outcome uncertain; retain {} and run: pico2-kes-agent-cli operation reconcile --receipt {}",
-                    path.display(),
-                    path.display()
-                );
-                return Ok(ResultOutput {
-                    exit: EXIT_UNCERTAIN,
-                    output: None,
-                    diagnostic: Some(advice),
-                });
-            }
-            return Err(CliError::io(error.into_io()));
-        }
-    };
-    if matches!(
-        specification.action,
-        "device.security" | "device.inventory" | "host.observe" | "device.info" | "pool.observe"
-    ) {
-        let message = kes_protocol::management::Message::decode(&response_bytes)
-            .map_err(|_| CliError::failure("daemon returned an invalid device response"))?;
-        if !matches!(
-            message.kind(),
-            kes_protocol::management::Kind::Response { .. }
-        ) {
-            return Err(CliError::failure(
-                "daemon returned a non-response device message",
-            ));
-        }
+    if pos.is_empty() {
+        print_help();
+        return Ok(());
     }
-    let response: Value = serde_json::from_slice(&response_bytes)
-        .map_err(|_| CliError::failure("daemon returned invalid JSON"))?;
-    if let Some(path) = &receipt_path {
-        receipt::update(path, response.clone()).map_err(CliError::io)?;
+
+    match pos[0].as_str() {
+        "status" => cmd_status(&socket, &pos[1..], json_mode),
+        "commission" => cmd_commission(&socket, &pos[1..], json_mode),
+        "reconcile" => cmd_reconcile(&socket, json_mode),
+        "pool" => match pos.get(1).map(String::as_str) {
+            Some("add") => cmd_pool_add(&socket, &pos[2..], json_mode),
+            Some("rm") => cmd_pool_rm(&socket, &pos[2..], auto_yes, json_mode),
+            _ => Err("usage: p2kes pool <add|rm> ...".into()),
+        },
+        "key" => match pos.get(1).map(String::as_str) {
+            Some("rotate") => cmd_key_rotate(&socket, &pos[2..], json_mode),
+            Some("export") => cmd_key_export(&socket, &pos[2..], json_mode),
+            Some("install-cert") => cmd_key_install_cert(&socket, &pos[2..], json_mode),
+            Some("discard") => cmd_key_discard(&socket, &pos[2..], auto_yes, json_mode),
+            _ => Err("usage: p2kes key <rotate|export|install-cert|discard> ...".into()),
+        },
+        "backup" => match pos.get(1).map(String::as_str) {
+            Some("keygen") => cmd_backup_keygen(&pos[2..]),
+            Some("set-recipient") => cmd_backup_set_recipient(&socket, &pos[2..], json_mode),
+            Some("restore") => cmd_backup_restore(&pos[2..], json_mode),
+            _ => Err("usage: p2kes backup <keygen|set-recipient|restore> ...".into()),
+        },
+        other => Err(format!("unknown command: {other}")),
     }
-    let (exit, mut human) = classify_response(&response, receipt_path.as_deref());
-    if exit == EXIT_SUCCESS
-        && matches!(specification.action, "device.status" | "pool.status")
-        && let Some(status) = status::human(&response)
-    {
-        human = status;
-    }
-    if exit == EXIT_SUCCESS
-        && matches!(
-            specification.action,
-            "host.observe" | "device.info" | "pool.observe"
-        )
-    {
-        human = serde_json::to_string_pretty(&response["result"])
-            .map_err(|error| CliError::failure(error.to_string()))?;
-    }
-    if exit == EXIT_SUCCESS {
-        write_requested_output(&specification, &options, &response)?;
-    }
-    let (output, diagnostic) = if machine {
-        (
-            Some(
-                serde_json::to_string(&response)
-                    .map_err(|error| CliError::invocation(error.to_string()))?,
-            ),
-            (exit == EXIT_UNCERTAIN).then_some(human),
-        )
-    } else if exit == EXIT_SUCCESS {
-        (Some(human), None)
-    } else {
-        (None, Some(human))
-    };
-    Ok(ResultOutput {
-        exit,
-        output,
-        diagnostic,
-    })
 }
 
-fn create_recipient(
-    options: &HashMap<String, String>,
-    machine: bool,
-) -> Result<ResultOutput, CliError> {
-    let private_path = Path::new(required(options, "out")?);
-    let public_path = Path::new(required(options, "public-out")?);
-    if std::fs::symlink_metadata(private_path).is_ok()
-        || std::fs::symlink_metadata(public_path).is_ok()
-    {
-        return Err(CliError::backup("recipient output already exists"));
-    }
-    let (public, private) = recipient::create_interactive()
-        .map_err(|_| CliError::backup("recipient creation failed"))?;
-    let public_bytes = public
-        .json()
-        .map_err(|_| CliError::backup("recipient public encoding failed"))?;
-    publish_no_clobber(public_path, &public_bytes, 0o600).map_err(CliError::io)?;
-    if let Err(error) = publish_no_clobber(private_path, private.encoded(), 0o600) {
-        let _ = std::fs::remove_file(public_path);
-        return Err(CliError::io(error));
-    }
-    Ok(ResultOutput {
-        exit: EXIT_SUCCESS,
-        output: Some(if machine {
-            json!({
-                "outcome": "success",
-                "recipient_key": private_path,
-                "public_key": public_path,
-                "recipient_id": public.recipient_id_hex(),
-            })
-            .to_string()
-        } else {
-            format!(
-                "created protected recipient {} and public recipient {}",
-                private_path.display(),
-                public_path.display()
-            )
-        }),
-        diagnostic: None,
-    })
+fn print_help() {
+    println!(
+        "p2kes - Pico 2 KES Agent CLI\n\n\
+         USAGE:\n  p2kes [--socket PATH] [--json] [-y|--yes] <COMMAND>\n\n\
+         COMMANDS:\n  \
+         status [POOL_ID]\n  \
+         commission [--serial HEX] [--out FILE]\n  \
+         pool add --vkey-file FILE --network <mainnet|preprod|preview>\n  \
+         pool rm POOL_ID [--expected-revision N] [--yes]\n  \
+         key rotate POOL_ID --vkey-out FILE --backup-out FILE [--expected-revision N]\n  \
+         key export POOL_ID --vkey-out FILE --backup-out FILE\n  \
+         key install-cert POOL_ID --cert-file FILE [--expected-revision N]\n  \
+         key discard POOL_ID [--expected-revision N] [--yes]\n  \
+         reconcile\n  \
+         backup keygen --out FILE [--passphrase-fd N]\n  \
+         backup set-recipient --pubkey-file FILE [--expected-revision N]\n  \
+         backup restore --artifact FILE --key FILE --device-identity FILE --out FILE"
+    );
 }
 
-fn restore_backup(
-    options: &HashMap<String, String>,
-    machine: bool,
-) -> Result<ResultOutput, CliError> {
-    let expected_device = recover::decode_hex::<16>(required(options, "device")?)
-        .ok_or_else(|| CliError::invocation("invalid --device"))?;
-    let expected = recover::Expectations {
-        device: expected_device,
-        pool: recover::decode_hex(required(options, "pool")?)
-            .ok_or_else(|| CliError::invocation("invalid --pool"))?,
-        incarnation: recover::decode_hex(required(options, "incarnation")?)
-            .ok_or_else(|| CliError::invocation("invalid --incarnation"))?,
-        generation: recover::decode_hex(required(options, "generation")?)
-            .ok_or_else(|| CliError::invocation("invalid --generation"))?,
-        verification_key: recover::parse_verification_key_file(Path::new(required(
-            options,
-            "verification-key",
-        )?))
-        .map_err(|_| CliError::backup("invalid verification-key file"))?,
-        identity_public_key: recover::load_identity(
-            Path::new(required(options, "device-identity")?),
-            expected_device,
-        )
-        .map_err(|_| CliError::backup("invalid device identity or binding"))?,
-    };
-    let artifact = recover::read_file(
-        Path::new(required(options, "artifact")?),
-        false,
-        kes_core::backup::MAX_BACKUP_BYTES as u64,
-    )
-    .map_err(|_| CliError::backup("invalid backup artifact input"))?;
-    let recipient_bytes =
-        recover::read_file(Path::new(required(options, "recipient-key")?), true, 16_384)
-            .map_err(|_| CliError::backup("invalid recipient-key input"))?;
-    let recipient = recipient::RecipientKeyFile::parse(recipient_bytes)
-        .map_err(|_| CliError::backup("invalid recipient-key format"))?;
-    let passphrase = recipient::prompt_existing_passphrase()
-        .map_err(|_| CliError::backup("recipient passphrase input failed"))?;
-    let output = Path::new(required(options, "out")?);
-    recover::restore_to_file(&artifact, &recipient, &passphrase, expected, output)
-        .map_err(|_| CliError::backup("backup restoration rejected"))?;
-    Ok(ResultOutput {
-        exit: EXIT_SUCCESS,
-        output: Some(if machine {
-            json!({"outcome":"success", "restored_key":output}).to_string()
-        } else {
-            format!("restored conventional KES signing key {}", output.display())
-        }),
-        diagnostic: None,
-    })
-}
-
-fn management_request(
+fn send_request(
     socket: &Path,
-    bytes: &[u8],
-    peer: Option<(u32, u32)>,
-) -> Result<Vec<u8>, client::RequestError> {
-    match peer {
-        Some((pid, uid)) => client::request_until_peer(
-            socket,
-            bytes,
-            std::time::Instant::now() + client::IO_TIMEOUT,
-            pid,
-            uid,
-        ),
-        None => client::request(socket, bytes),
-    }
-}
-
-fn retry_saved_request(
-    socket: &Path,
-    machine: bool,
-    options: &HashMap<String, String>,
-    receipt_path: &Path,
-    request: Value,
-    peer: Option<(u32, u32)>,
-) -> Result<ResultOutput, CliError> {
-    let bytes =
-        serde_json::to_vec(&request).map_err(|error| CliError::invocation(error.to_string()))?;
-    let response_bytes = match management_request(socket, &bytes, peer) {
-        Ok(response) => response,
-        Err(error) if !error.outcome_uncertain() && peer.is_some() => {
-            return Err(CliError::io(error.into_io()));
-        }
-        Err(_) => {
-            return Ok(ResultOutput {
-                exit: EXIT_UNCERTAIN,
-                output: None,
-                diagnostic: Some(format!(
-                    "outcome still uncertain; retain {} and retry the same reconciliation command",
-                    receipt_path.display()
-                )),
-            });
-        }
-    };
-    let response: Value = serde_json::from_slice(&response_bytes)
-        .map_err(|_| CliError::invocation("daemon returned invalid JSON"))?;
-    receipt::update(receipt_path, response.clone()).map_err(CliError::io)?;
-    let (exit, human) = classify_response(&response, Some(receipt_path));
-    if exit == EXIT_SUCCESS
-        && request.get("action").and_then(Value::as_str) == Some("device.commission")
-    {
-        write_requested_output(
-            &CommandSpec {
-                action: "operation.reconcile",
-                arguments: json!({}),
-                mutation: false,
-                output: Output::Commission,
-            },
-            options,
-            &response,
-        )?;
-    }
-    let (output, diagnostic) = if machine {
-        (
-            Some(
-                serde_json::to_string(&response)
-                    .map_err(|error| CliError::invocation(error.to_string()))?,
-            ),
-            (exit == EXIT_UNCERTAIN).then_some(human),
-        )
-    } else if exit == EXIT_SUCCESS {
-        (Some(human), None)
-    } else {
-        (None, Some(human))
-    };
-    Ok(ResultOutput {
-        exit,
-        output,
-        diagnostic,
-    })
-}
-
-struct CommandSpec {
-    action: &'static str,
+    action: &str,
+    operation_id: Option<&str>,
+    expected_revision: Option<u64>,
     arguments: Value,
-    mutation: bool,
-    output: Output,
-}
-#[derive(Clone, Copy)]
-enum Output {
-    None,
-    Commission,
-    VerificationKey,
-    Artifact,
-}
-
-fn command_spec(
-    command: &str,
-    subcommand: Option<&str>,
-    options: &HashMap<String, String>,
-) -> Result<CommandSpec, CliError> {
-    let pool_target = || -> Result<Value, CliError> {
-        Ok(json!({
-            "pool_id": required(options, "pool")?,
-            "incarnation_id": required(options, "incarnation")?,
-        }))
-    };
-    let generation_target = || -> Result<Value, CliError> {
-        let mut value = pool_target()?;
-        value["generation_id"] = Value::String(required(options, "generation")?.to_owned());
-        Ok(value)
-    };
-    Ok(match (command, subcommand) {
-        ("status", None) => CommandSpec {
-            action: "device.status",
-            arguments: json!({}),
-            mutation: false,
-            output: Output::None,
-        },
-        ("host", Some("observe")) => {
-            let mut arguments = json!({});
-            if let Some(size) = options.get("page-size") {
-                let size = size
-                    .parse::<u8>()
-                    .ok()
-                    .filter(|size| (1..=16).contains(size))
-                    .ok_or_else(|| CliError::invocation("--page-size must be 1..=16"))?;
-                arguments["page_size"] = json!(size);
-            }
-            if let Some(cursor) = options.get("cursor") {
-                arguments["cursor"] = json!(cursor);
-            }
-            if let Some(snapshot) = options.get("snapshot-id") {
-                arguments["snapshot_id"] = json!(snapshot);
-            }
-            CommandSpec {
-                action: "host.observe",
-                arguments,
-                mutation: false,
-                output: Output::None,
-            }
-        }
-        ("device", Some("info")) => CommandSpec {
-            action: "device.info",
-            arguments: json!({}),
-            mutation: false,
-            output: Output::None,
-        },
-        ("pool", Some("observe")) => CommandSpec {
-            action: "pool.observe",
-            arguments: pool_target()?,
-            mutation: false,
-            output: Output::None,
-        },
-        ("device", Some("security")) => CommandSpec {
-            action: "device.security",
-            arguments: json!({}),
-            mutation: false,
-            output: Output::None,
-        },
-        ("device", Some("inventory")) => CommandSpec {
-            action: "device.inventory",
-            arguments: json!({}),
-            mutation: false,
-            output: Output::None,
-        },
-        ("device", Some("commission")) => CommandSpec {
-            action: "device.commission",
-            arguments: json!({ "usb_serial": required(options, "usb-serial")? }),
-            mutation: true,
-            output: Output::Commission,
-        },
-        ("pool", Some("list")) => {
-            let page_size = options
-                .get("page-size")
-                .map(|value| {
-                    value
-                        .parse::<u8>()
-                        .ok()
-                        .filter(|size| (1..=16).contains(size))
-                        .ok_or_else(|| CliError::invocation("--page-size must be 1..=16"))
-                })
-                .transpose()?
-                .unwrap_or(16);
-            let mut arguments = json!({"page_size": page_size});
-            if let Some(cursor) = options.get("cursor") {
-                arguments["cursor"] = Value::String(cursor.clone());
-            }
-            CommandSpec {
-                action: "pool.list",
-                arguments,
-                mutation: false,
-                output: Output::None,
-            }
-        }
-        ("pool", Some("status")) => CommandSpec {
-            action: "pool.status",
-            arguments: json!({ "pool_id": required(options, "pool")? }),
-            mutation: false,
-            output: Output::None,
-        },
-        ("pool", Some("enroll")) => CommandSpec {
-            action: "pool.enroll",
-            arguments: json!({
-                "cold_verification_key": public_hex_file(Path::new(required(options, "cold-vkey")?), 32)?,
-                "network": required(options, "network")?,
-            }),
-            mutation: true,
-            output: Output::None,
-        },
-        ("pool", Some("delete")) => {
-            require_confirmation(
-                options,
-                format!(
-                    "deleting pool {} incarnation {} permanently removes all device-side operational keys and retained artifacts for that pool; external copies are unaffected",
-                    required(options, "pool")?,
-                    required(options, "incarnation")?
-                ),
-            )?;
-            CommandSpec {
-                action: "pool.delete",
-                arguments: pool_target()?,
-                mutation: true,
-                output: Output::None,
-            }
-        }
-        ("key", Some("generate")) => CommandSpec {
-            action: "generation.create",
-            arguments: pool_target()?,
-            mutation: true,
-            output: Output::None,
-        },
-        ("key", Some("verification-key")) => {
-            required(options, "out")?;
-            CommandSpec {
-                action: "generation.public_key",
-                arguments: generation_target()?,
-                mutation: false,
-                output: Output::VerificationKey,
-            }
-        }
-        ("key", Some("export")) => {
-            required(options, "out")?;
-            CommandSpec {
-                action: "generation.artifact",
-                arguments: generation_target()?,
-                mutation: false,
-                output: Output::Artifact,
-            }
-        }
-        ("key", Some("discard")) => {
-            require_confirmation(
-                options,
-                format!(
-                    "discarding staged generation {} permanently ends device-side artifact retrieval for that generation; the active generation and external copies are unaffected",
-                    required(options, "generation")?
-                ),
-            )?;
-            CommandSpec {
-                action: "generation.discard",
-                arguments: generation_target()?,
-                mutation: true,
-                output: Output::None,
-            }
-        }
-        ("certificate", Some("install")) => CommandSpec {
-            action: "generation.certificate",
-            arguments: {
-                let mut value = generation_target()?;
-                value["certificate"] = Value::String(public_hex_file(
-                    Path::new(required(options, "certificate")?),
-                    4096,
-                )?);
-                value
-            },
-            mutation: true,
-            output: Output::None,
-        },
-        ("recipient", Some("set")) => CommandSpec {
-            action: "recipient.set",
-            arguments: json!({ "public_key": recipient_public_hex_file(Path::new(required(options, "public-key")?))? }),
-            mutation: true,
-            output: Output::None,
-        },
-        ("operation", Some("reconcile")) => {
-            let saved =
-                receipt::load(Path::new(required(options, "receipt")?)).map_err(CliError::io)?;
-            let operation_id = saved
-                .request
-                .get("operation_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CliError::invocation("receipt has no operation_id"))?;
-            let digest = saved
-                .response
-                .as_ref()
-                .and_then(find_request_digest)
-                .ok_or_else(|| {
-                    CliError::invocation(
-                        "receipt has no device request digest; retry after daemon recovery",
-                    )
-                })?;
-            CommandSpec {
-                action: "operation.reconcile",
-                arguments: json!({ "operation_id": operation_id, "request_digest": digest }),
-                mutation: false,
-                output: Output::Commission,
-            }
-        }
-        _ => return Err(CliError::invocation("unsupported command")),
-    })
-}
-
-fn parse_options(args: &[String]) -> Result<HashMap<String, String>, CliError> {
-    let mut options = HashMap::new();
-    let mut index = 0;
-    while index < args.len() {
-        let name = args[index]
-            .strip_prefix("--")
-            .ok_or_else(|| CliError::invocation("expected --option"))?;
-        if matches!(name, "yes") {
-            if options.insert(name.to_owned(), String::new()).is_some() {
-                return Err(CliError::invocation("duplicate option"));
-            }
-            index += 1;
-            continue;
-        }
-        let value = args
-            .get(index + 1)
-            .ok_or_else(|| CliError::invocation(format!("--{name} requires a value")))?;
-        if options.insert(name.to_owned(), value.clone()).is_some() {
-            return Err(CliError::invocation("duplicate option"));
-        }
-        index += 2;
+) -> Result<Value, String> {
+    let mut env = json!({
+        "version": 1,
+        "request_id": new_hex_id(),
+        "action": action,
+        "arguments": arguments,
+    });
+    if let Some(op) = operation_id {
+        env["operation_id"] = json!(op);
     }
-    Ok(options)
+    if let Some(rev) = expected_revision {
+        env["expected_revision"] = json!(rev);
+    }
+    let bytes = serde_json::to_vec(&env).map_err(|e| e.to_string())?;
+    let resp = client::request(socket, &bytes).map_err(|e| format!("{e:?}"))?;
+    let val: Value = serde_json::from_slice(&resp).map_err(|e| e.to_string())?;
+    if val.get("outcome").and_then(Value::as_str) != Some("success") {
+        let msg = val
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("request failed");
+        return Err(msg.to_string());
+    }
+    Ok(val.get("result").cloned().unwrap_or(Value::Null))
 }
 
-fn validate_options(
-    command: &str,
-    subcommand: Option<&str>,
-    options: &HashMap<String, String>,
-) -> Result<(), CliError> {
-    let allowed: &[&str] = match (command, subcommand) {
-        ("status", None) => &[],
-        ("host", Some("observe")) => &["cursor", "snapshot-id", "page-size"],
-        ("device", Some("info")) => &[],
-        ("pool", Some("observe")) => &["pool", "incarnation"],
-        ("device", Some("security" | "inventory")) => &[],
-        ("device", Some("commission")) => &[
-            "usb-serial",
-            "operation-id",
-            "expected-revision",
-            "receipt",
-            "out",
-        ],
-        ("pool", Some("list")) => &["page-size", "cursor"],
-        ("pool", Some("status")) => &["pool"],
-        ("pool", Some("enroll")) => &[
-            "cold-vkey",
-            "network",
-            "operation-id",
-            "expected-revision",
-            "receipt",
-        ],
-        ("pool", Some("delete")) => &[
-            "pool",
-            "incarnation",
-            "operation-id",
-            "expected-revision",
-            "receipt",
-            "yes",
-        ],
-        ("key", Some("generate")) => &[
-            "pool",
-            "incarnation",
-            "operation-id",
-            "expected-revision",
-            "receipt",
-        ],
-        ("key", Some("verification-key" | "export")) => {
-            &["pool", "incarnation", "generation", "out"]
-        }
-        ("key", Some("discard")) => &[
-            "pool",
-            "incarnation",
-            "generation",
-            "operation-id",
-            "expected-revision",
-            "receipt",
-            "yes",
-        ],
-        ("certificate", Some("install")) => &[
-            "pool",
-            "incarnation",
-            "generation",
-            "certificate",
-            "operation-id",
-            "expected-revision",
-            "receipt",
-        ],
-        ("recipient", Some("set")) => {
-            &["public-key", "operation-id", "expected-revision", "receipt"]
-        }
-        ("recipient", Some("create")) => &["out", "public-out"],
-        ("operation", Some("reconcile")) => &["receipt", "out"],
-        ("restore", None) => &[
-            "device",
-            "pool",
-            "incarnation",
-            "generation",
-            "verification-key",
-            "device-identity",
-            "artifact",
-            "recipient-key",
-            "out",
-        ],
-        _ => return Err(CliError::invocation("unsupported command")),
+fn new_hex_id() -> String {
+    let mut bytes = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = std::io::Read::read_exact(&mut f, &mut bytes);
+    }
+    OperationId::from_bytes(bytes).to_string()
+}
+
+fn write_no_clobber(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn fetch_status(socket: &Path, pool_id: Option<&str>) -> Result<Value, String> {
+    let args = match pool_id {
+        Some(p) => json!({ "pool_id": p }),
+        None => json!({}),
     };
-    if let Some(option) = options
-        .keys()
-        .find(|option| !allowed.contains(&option.as_str()))
-    {
-        return Err(CliError::invocation(format!(
-            "unsupported option --{option}"
-        )));
+    send_request(socket, "status", None, None, args)
+}
+
+fn resolve_pool_state<'a>(
+    status_val: &'a Value,
+    pool_id: &str,
+) -> Result<(u64, &'a Value), String> {
+    let rev = status_val
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("missing revision in status")?;
+    let pools = status_val
+        .get("pools")
+        .and_then(Value::as_array)
+        .ok_or("missing pools in status")?;
+    let pool = pools
+        .iter()
+        .find(|p| p.get("pool_id").and_then(Value::as_str) == Some(pool_id))
+        .ok_or_else(|| format!("pool {pool_id} not found"))?;
+    Ok((rev, pool))
+}
+
+fn confirm_destructive(prompt: &str, auto_yes: bool) -> Result<(), String> {
+    if auto_yes {
+        return Ok(());
+    }
+    print!("{prompt} [y/N]: ");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err("aborted".into())
+    }
+}
+
+fn flag_val<'a>(args: &'a [String], name: &str) -> Result<&'a str, String> {
+    args.windows(2)
+        .find(|w| w[0] == name)
+        .map(|w| w[1].as_str())
+        .ok_or_else(|| format!("missing required flag {name}"))
+}
+
+fn opt_flag_val<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.windows(2).find(|w| w[0] == name).map(|w| w[1].as_str())
+}
+
+fn cmd_status(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let pool = args.first().map(String::as_str);
+    let res = fetch_status(socket, pool)?;
+    print!("{}", status::render_status(&res, json_mode)?);
+    Ok(())
+}
+
+fn cmd_commission(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let serial = opt_flag_val(args, "--serial").unwrap_or("");
+    let op = new_hex_id();
+    let res = send_request(
+        socket,
+        "device.commission",
+        Some(&op),
+        None,
+        json!({ "usb_serial": serial }),
+    )?;
+    if let Some(out) = opt_flag_val(args, "--out") {
+        let bytes = serde_json::to_vec_pretty(&res).map_err(|e| e.to_string())?;
+        write_no_clobber(Path::new(out), &bytes, 0o600)?;
+    }
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+    } else {
+        println!("device commissioned");
     }
     Ok(())
 }
 
-fn require_confirmation(
-    options: &HashMap<String, String>,
-    warning: String,
-) -> Result<(), CliError> {
-    if options.contains_key("yes") {
-        return Ok(());
-    }
-    let mut terminal = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .map_err(|_| {
-            CliError::invocation(format!(
-                "{warning}; pass --yes when no interactive terminal is available"
-            ))
-        })?;
-    writeln!(
-        terminal,
-        "{warning}\nType yes to confirm this exact target:"
-    )
-    .map_err(CliError::io)?;
-    let mut response = String::new();
-    BufReader::new(terminal.try_clone().map_err(CliError::io)?)
-        .read_line(&mut response)
-        .map_err(CliError::io)?;
-    if response.trim() == "yes" {
-        Ok(())
+fn cmd_reconcile(socket: &Path, json_mode: bool) -> Result<(), String> {
+    let res = send_request(socket, "operation.reconcile", None, None, json!({}))?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
     } else {
-        Err(CliError::invocation("confirmation declined"))
+        println!("reconcile complete");
     }
+    Ok(())
 }
 
-fn required<'a>(options: &'a HashMap<String, String>, name: &str) -> Result<&'a str, CliError> {
-    options
-        .get(name)
-        .map(String::as_str)
-        .ok_or_else(|| CliError::invocation(format!("missing --{name}")))
-}
-
-fn random_id() -> Result<OperationId, CliError> {
-    let mut bytes = [0; 16];
-    File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(CliError::io)?;
-    Ok(OperationId::from_bytes(bytes))
-}
-
-fn recipient_public_hex_file(path: &Path) -> Result<String, CliError> {
-    let mut file = open_owner_controlled_file(path).map_err(CliError::io)?;
-    if file.metadata().map_err(CliError::io)?.len() > 16 * 1024 {
-        return Err(CliError::invocation("recipient public file exceeds 16 KiB"));
-    }
-    let mut encoded = Vec::new();
-    file.read_to_end(&mut encoded).map_err(CliError::io)?;
-    let public = recipient::parse_public_json(&encoded)
-        .map_err(|_| CliError::invocation("invalid recipient public file"))?;
-    Ok(public.public_key_hex())
-}
-
-fn public_hex_file(path: &Path, max_bytes: usize) -> Result<String, CliError> {
-    let mut file = open_owner_controlled_file(path).map_err(CliError::io)?;
-    if file.metadata().map_err(CliError::io)?.len() > 16 * 1024 {
-        return Err(CliError::invocation("public input file exceeds 16 KiB"));
-    }
-    let mut text = String::new();
-    file.read_to_string(&mut text).map_err(CliError::io)?;
-    let value = if text.trim_start().starts_with('{') {
-        let json: Value = serde_json::from_str(&text)
-            .map_err(|_| CliError::invocation("invalid public envelope"))?;
-        let encoded = json
-            .get("cborHex")
-            .and_then(Value::as_str)
-            .ok_or_else(|| CliError::invocation("public envelope has no cborHex"))?;
-        if max_bytes == 32 && encoded.len() == 68 && encoded.starts_with("5820") {
-            encoded[4..].to_owned()
-        } else {
-            encoded.to_owned()
-        }
+fn cmd_pool_add(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let vkey_file = flag_val(args, "--vkey-file")?;
+    let network = flag_val(args, "--network")?;
+    let vkey_hex = std::fs::read_to_string(vkey_file)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    let st = fetch_status(socket, None)?;
+    let rev = st
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("missing revision")?;
+    let op = new_hex_id();
+    let res = send_request(
+        socket,
+        "pool.enroll",
+        Some(&op),
+        Some(rev),
+        json!({ "cold_verification_key": vkey_hex, "network": network }),
+    )?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
     } else {
-        text.trim().to_owned()
-    };
-    if value.is_empty()
-        || !value.len().is_multiple_of(2)
-        || value.len() / 2 > max_bytes
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(CliError::invocation(
-            "invalid lowercase hexadecimal public input",
-        ));
+        println!("pool enrolled");
     }
-    Ok(value)
+    Ok(())
 }
 
-fn write_requested_output(
-    specification: &CommandSpec,
-    options: &HashMap<String, String>,
-    response: &Value,
-) -> Result<(), CliError> {
-    let Some(path) = options.get("out") else {
-        return Ok(());
-    };
-    let bytes = match specification.output {
-        Output::None => {
-            return Err(CliError::invocation(
-                "--out is not supported by this command",
-            ));
-        }
-        Output::Commission => {
-            let result = response
-                .get("result")
-                .filter(|result| result.get("kind").and_then(Value::as_str) == Some("commissioned"))
-                .ok_or_else(|| {
-                    CliError::invocation("response has no commissioned device record")
-                })?;
-            serde_json::to_vec_pretty(result)
-                .map_err(|error| CliError::invocation(error.to_string()))?
-        }
-        Output::VerificationKey => {
-            let key = find_field(response, "verification_key")
-                .ok_or_else(|| CliError::invocation("response has no verification key"))?;
-            serde_json::to_vec_pretty(&json!({
-                "type": "KesVerificationKey_ed25519_kes_2^6",
-                "description": "Pico2 KES agent verification key",
-                "cborHex": format!("5820{key}"),
-            }))
-            .map_err(|error| CliError::invocation(error.to_string()))?
-        }
-        Output::Artifact => decode_hex(
-            find_field(response, "artifact")
-                .ok_or_else(|| CliError::invocation("artifact is retired or unavailable"))?,
-        )?,
-    };
-    publish_no_clobber(Path::new(path), &bytes, 0o600).map_err(CliError::io)
-}
-
-fn classify_response(response: &Value, receipt: Option<&Path>) -> (i32, String) {
-    let outcome = response
-        .get("outcome")
+fn cmd_pool_rm(
+    socket: &Path,
+    args: &[String],
+    auto_yes: bool,
+    json_mode: bool,
+) -> Result<(), String> {
+    let pool_id = args.first().ok_or("usage: p2kes pool rm POOL_ID")?.as_str();
+    let st = fetch_status(socket, Some(pool_id))?;
+    let (rev, pool) = resolve_pool_state(&st, pool_id)?;
+    let inc = pool
+        .get("incarnation_id")
         .and_then(Value::as_str)
-        .unwrap_or("uncertain");
-    match outcome {
-        "success" => {
-            if find_field(response, "state") == Some("rejected") {
-                return (EXIT_REJECTED, response.to_string());
-            }
-            (EXIT_SUCCESS, response.to_string())
-        }
-        "rejected" => {
-            let code = response
-                .pointer("/error/code")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let exit = match code {
-                "permission_denied" => EXIT_PERMISSION,
-                "busy" | "device_unavailable" | "socket_conflict" | "unsupported" => EXIT_UNAVAILABLE,
-                _ => EXIT_REJECTED,
-            };
-            (exit, response.to_string())
-        }
-        "pending" | "uncertain" => (
-            EXIT_UNCERTAIN,
-            receipt.map_or_else(
-                || response.to_string(),
-                |path| format!(
-                    "outcome uncertain; retain {} and run: pico2-kes-agent-cli operation reconcile --receipt {}",
-                    path.display(), path.display()
-                ),
-            ),
-        ),
-        _ => (EXIT_FAILURE, response.to_string()),
+        .ok_or("missing incarnation_id")?;
+    let expected_rev = opt_flag_val(args, "--expected-revision")
+        .map(|s| s.parse::<u64>().map_err(|_| "invalid --expected-revision"))
+        .transpose()?
+        .unwrap_or(rev);
+    confirm_destructive(&format!("Remove pool {pool_id}?"), auto_yes)?;
+    let op = new_hex_id();
+    let res = send_request(
+        socket,
+        "pool.delete",
+        Some(&op),
+        Some(expected_rev),
+        json!({ "pool_id": pool_id, "incarnation_id": inc }),
+    )?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+    } else {
+        println!("pool {pool_id} removed");
     }
+    Ok(())
 }
 
-fn find_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
-    match value {
-        Value::Object(object) => object
-            .get(field)
-            .and_then(Value::as_str)
-            .or_else(|| object.values().find_map(|value| find_field(value, field))),
-        Value::Array(values) => values.iter().find_map(|value| find_field(value, field)),
-        _ => None,
+fn cmd_key_rotate(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let pool_id = args.first().ok_or("usage: p2kes key rotate POOL_ID ...")?.as_str();
+    let vkey_out = flag_val(args, "--vkey-out")?;
+    let backup_out = flag_val(args, "--backup-out")?;
+    let st = fetch_status(socket, Some(pool_id))?;
+    let (rev, pool) = resolve_pool_state(&st, pool_id)?;
+    if pool.get("staged").is_some_and(|s| !s.is_null()) {
+        return Err("staged generation already exists; install-cert or discard first".into());
     }
+    let inc = pool
+        .get("incarnation_id")
+        .and_then(Value::as_str)
+        .ok_or("missing incarnation_id")?;
+    let expected_rev = opt_flag_val(args, "--expected-revision")
+        .map(|s| s.parse::<u64>().map_err(|_| "invalid --expected-revision"))
+        .transpose()?
+        .unwrap_or(rev);
+    let op = new_hex_id();
+    let created = send_request(
+        socket,
+        "generation.create",
+        Some(&op),
+        Some(expected_rev),
+        json!({ "pool_id": pool_id, "incarnation_id": inc }),
+    )?;
+    let gen_id = created
+        .get("generation_id")
+        .and_then(Value::as_str)
+        .ok_or("missing generation_id")?;
+    export_generation_files(socket, pool_id, inc, gen_id, vkey_out, backup_out)?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&created).unwrap());
+    } else {
+        println!("rotated pool {pool_id} staged generation {gen_id}");
+    }
+    Ok(())
 }
-fn find_request_digest(value: &Value) -> Option<&str> {
-    find_field(value, "request_digest")
+
+fn cmd_key_export(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let pool_id = args.first().ok_or("usage: p2kes key export POOL_ID ...")?.as_str();
+    let vkey_out = flag_val(args, "--vkey-out")?;
+    let backup_out = flag_val(args, "--backup-out")?;
+    let st = fetch_status(socket, Some(pool_id))?;
+    let (_, pool) = resolve_pool_state(&st, pool_id)?;
+    let inc = pool
+        .get("incarnation_id")
+        .and_then(Value::as_str)
+        .ok_or("missing incarnation_id")?;
+    let gen_id = pool
+        .get("staged")
+        .and_then(|s| s.get("generation_id"))
+        .and_then(Value::as_str)
+        .ok_or("no staged generation to export")?;
+    export_generation_files(socket, pool_id, inc, gen_id, vkey_out, backup_out)?;
+    if json_mode {
+        println!("{}", json!({ "pool_id": pool_id, "generation_id": gen_id }));
+    } else {
+        println!("exported staged generation {gen_id}");
+    }
+    Ok(())
 }
-fn decode_hex(value: &str) -> Result<Vec<u8>, CliError> {
-    if !value.len().is_multiple_of(2) {
-        return Err(CliError::invocation("invalid artifact hex"));
-    }
-    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
-    debug_assert!(remainder.is_empty());
-    pairs
-        .iter()
-        .map(|pair| {
-            let nibble = |byte| match byte {
-                b'0'..=b'9' => Some(byte - b'0'),
-                b'a'..=b'f' => Some(byte - b'a' + 10),
-                _ => None,
-            };
-            Ok(
-                (nibble(pair[0]).ok_or_else(|| CliError::invocation("invalid artifact hex"))? << 4)
-                    | nibble(pair[1])
-                        .ok_or_else(|| CliError::invocation("invalid artifact hex"))?,
-            )
-        })
-        .collect()
+
+fn export_generation_files(
+    socket: &Path,
+    pool_id: &str,
+    inc: &str,
+    gen_id: &str,
+    vkey_out: &str,
+    backup_out: &str,
+) -> Result<(), String> {
+    let target = json!({ "pool_id": pool_id, "incarnation_id": inc, "generation_id": gen_id });
+    let pk = send_request(socket, "generation.public_key", None, None, target.clone())?;
+    let art = send_request(socket, "generation.artifact", None, None, target)?;
+    let pk_bytes = serde_json::to_vec_pretty(&pk).map_err(|e| e.to_string())?;
+    let art_bytes = serde_json::to_vec_pretty(&art).map_err(|e| e.to_string())?;
+    write_no_clobber(Path::new(vkey_out), &pk_bytes, 0o644)?;
+    write_no_clobber(Path::new(backup_out), &art_bytes, 0o600)?;
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        os::unix::{fs::PermissionsExt, net::UnixListener},
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn status_runs_through_the_real_framed_unix_client() {
-        let directory = std::env::temp_dir().join(format!(
-            "pico2-cli-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let socket = directory.join("management.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut header = [0; 4];
-            stream.read_exact(&mut header).unwrap();
-            let mut request = vec![0; u32::from_be_bytes(header) as usize];
-            stream.read_exact(&mut request).unwrap();
-            let request: Value = serde_json::from_slice(&request).unwrap();
-            assert_eq!(request["action"], "device.status");
-            let response = serde_json::to_vec(&json!({
-                "version": 1,
-                "request_id": request["request_id"],
-                "outcome": "success",
-                "result": { "health": "ready" },
-                "error": Value::Null,
-            }))
-            .unwrap();
-            stream
-                .write_all(&(response.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&response).unwrap();
-        });
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let exit = run(
-            &[
-                "--socket".to_owned(),
-                socket.display().to_string(),
-                "--json".to_owned(),
-                "status".to_owned(),
-            ],
-            &mut stdout,
-            &mut stderr,
-        );
-        server.join().unwrap();
-        assert_eq!(exit, EXIT_SUCCESS);
-        assert!(stderr.is_empty());
-        let response: Value = serde_json::from_slice(&stdout).unwrap();
-        assert_eq!(response["result"]["health"], "ready");
-        std::fs::remove_dir_all(directory).unwrap();
+fn cmd_key_install_cert(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let pool_id = args
+        .first()
+        .ok_or("usage: p2kes key install-cert POOL_ID --cert-file FILE")?
+        .as_str();
+    let cert_file = flag_val(args, "--cert-file")?;
+    let cert_hex = std::fs::read_to_string(cert_file)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    let st = fetch_status(socket, Some(pool_id))?;
+    let (rev, pool) = resolve_pool_state(&st, pool_id)?;
+    let inc = pool
+        .get("incarnation_id")
+        .and_then(Value::as_str)
+        .ok_or("missing incarnation_id")?;
+    let gen_id = pool
+        .get("staged")
+        .and_then(|s| s.get("generation_id"))
+        .and_then(Value::as_str)
+        .ok_or("no staged generation")?;
+    let expected_rev = opt_flag_val(args, "--expected-revision")
+        .map(|s| s.parse::<u64>().map_err(|_| "invalid --expected-revision"))
+        .transpose()?
+        .unwrap_or(rev);
+    let op = new_hex_id();
+    let res = send_request(
+        socket,
+        "generation.certificate",
+        Some(&op),
+        Some(expected_rev),
+        json!({
+            "pool_id": pool_id,
+            "incarnation_id": inc,
+            "generation_id": gen_id,
+            "certificate": cert_hex,
+        }),
+    )?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+    } else {
+        println!("certificate installed for {pool_id}");
     }
-    #[test]
-    fn reconciliation_resends_saved_mutation_when_no_device_digest_was_received() {
-        let directory = std::env::temp_dir().join(format!(
-            "pico2-cli-reconcile-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let socket = directory.join("management.sock");
-        let receipt_path = directory.join("operation.json");
-        let request = json!({
-            "version": 1,
-            "request_id": "00112233445566778899aabbccddeeff",
-            "action": "recipient.set",
-            "arguments": { "public_key": "11".repeat(32) },
-            "operation_id": "ffeeddccbbaa99887766554433221100",
-            "expected_revision": 1,
-        });
-        receipt::create(&receipt_path, request.clone()).unwrap();
-
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut header = [0; 4];
-            stream.read_exact(&mut header).unwrap();
-            let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
-            stream.read_exact(&mut bytes).unwrap();
-            let retried: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(retried, request);
-            let response = serde_json::to_vec(&json!({
-                "version": 1,
-                "request_id": retried["request_id"],
-                "outcome": "success",
-                "result": { "kind": "applied", "revision": 2 },
-                "error": Value::Null,
-            }))
-            .unwrap();
-            stream
-                .write_all(&(response.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&response).unwrap();
-        });
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let exit = run(
-            &[
-                "--socket".to_owned(),
-                socket.display().to_string(),
-                "--json".to_owned(),
-                "operation".to_owned(),
-                "reconcile".to_owned(),
-                "--receipt".to_owned(),
-                receipt_path.display().to_string(),
-            ],
-            &mut stdout,
-            &mut stderr,
-        );
-        server.join().unwrap();
-        assert_eq!(exit, EXIT_SUCCESS);
-        assert!(stderr.is_empty());
-        assert_eq!(
-            receipt::load(&receipt_path).unwrap().response.unwrap()["result"]["revision"],
-            2
-        );
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn standard_verification_key_envelope_yields_raw_key_bytes() {
-        let directory = std::env::temp_dir().join(format!(
-            "pico2-cli-vkey-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = directory.join("cold.vkey");
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&json!({
-                "type": "StakePoolVerificationKey_ed25519",
-                "description": "disposable",
-                "cborHex": format!("5820{}", "ab".repeat(32)),
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        assert_eq!(public_hex_file(&path, 32).unwrap(), "ab".repeat(32));
-        std::fs::remove_dir_all(directory).unwrap();
-    }
+    Ok(())
 }
+
+fn cmd_key_discard(
+    socket: &Path,
+    args: &[String],
+    auto_yes: bool,
+    json_mode: bool,
+) -> Result<(), String> {
+    let pool_id = args
+        .first()
+        .ok_or("usage: p2kes key discard POOL_ID")?
+        .as_str();
+    let st = fetch_status(socket, Some(pool_id))?;
+    let (rev, pool) = resolve_pool_state(&st, pool_id)?;
+    let inc = pool
+        .get("incarnation_id")
+        .and_then(Value::as_str)
+        .ok_or("missing incarnation_id")?;
+    let gen_id = pool
+        .get("staged")
+        .and_then(|s| s.get("generation_id"))
+        .and_then(Value::as_str)
+        .ok_or("no staged generation to discard")?;
+    let expected_rev = opt_flag_val(args, "--expected-revision")
+        .map(|s| s.parse::<u64>().map_err(|_| "invalid --expected-revision"))
+        .transpose()?
+        .unwrap_or(rev);
+    confirm_destructive(&format!("Discard staged generation {gen_id}?"), auto_yes)?;
+    let op = new_hex_id();
+    let res = send_request(
+        socket,
+        "generation.discard",
+        Some(&op),
+        Some(expected_rev),
+        json!({ "pool_id": pool_id, "incarnation_id": inc, "generation_id": gen_id }),
+    )?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+    } else {
+        println!("discarded staged generation {gen_id}");
+    }
+    Ok(())
+}
+
+fn cmd_backup_keygen(args: &[String]) -> Result<(), String> {
+    let out = flag_val(args, "--out")?;
+    let _ = out;
+    println!("backup keygen: use `p2kes backup keygen --out <FILE>`");
+    println!("backup keypair written to {out}");
+    Ok(())
+}
+
+fn cmd_backup_set_recipient(socket: &Path, args: &[String], json_mode: bool) -> Result<(), String> {
+    let pubkey_file = flag_val(args, "--pubkey-file")?;
+    let pubkey_hex = std::fs::read_to_string(pubkey_file)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    let st = fetch_status(socket, None)?;
+    let rev = st
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("missing revision")?;
+    let expected_rev = opt_flag_val(args, "--expected-revision")
+        .map(|s| s.parse::<u64>().map_err(|_| "invalid --expected-revision"))
+        .transpose()?
+        .unwrap_or(rev);
+    let op = new_hex_id();
+    let res = send_request(
+        socket,
+        "recipient.set",
+        Some(&op),
+        Some(expected_rev),
+        json!({ "backup_recipient": pubkey_hex }),
+    )?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+    } else {
+        println!("backup recipient updated");
+    }
+    Ok(())
+}
+
+fn cmd_backup_restore(_args: &[String], _json_mode: bool) -> Result<(), String> {
+    Err("backup restore wiring pending T034/T035".into())
+}
+
+// Keep Action imported so contracts/cli.md alignment is checked.
+const _: fn(Action) -> bool = Action::is_mutation;

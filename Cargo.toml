@@ -16,12 +16,16 @@ name = "pico2-kes-agentd"
 path = "src/bin/pico2-kes-agentd.rs"
 
 [[bin]]
-name = "pico2-kes-agent-cli"
-path = "src/bin/pico2-kes-agent-cli.rs"
+name = "p2kes"
+path = "src/bin/p2kes.rs"
 
 [[bin]]
 name = "p2kesup"
 path = "src/bin/p2kesup.rs"
+
+[[bin]]
+name = "p2kes-flash"
+path = "src/bin/p2kes-flash.rs"
 
 [dependencies]
 kes-core = { version = "=0.1.0", path = "crates/kes-core" }
@@ -39,8 +43,6 @@ ed25519-dalek = "=2.2.0"
 hpke = { version = "=0.13.0", default-features = false, features = ["alloc", "x25519"] }
 x25519-dalek = { version = "=2.0.1", features = ["static_secrets"] }
 libc = "=0.2.191"
-ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
-crossterm = "=0.29.0"
 
 [dev-dependencies]
 proptest = "=1.11.0"

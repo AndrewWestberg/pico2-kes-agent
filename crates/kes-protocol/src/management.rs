@@ -6,7 +6,7 @@
 use kes_core::identity::StorageSlot;
 use kes_core::identity::{DeviceId, Digest32, GenerationId, IncarnationId, OperationId, PoolId};
 
-pub const MAX_FRAME: usize = 16_384;
+pub const MAX_FRAME: usize = 131_072;
 pub const MAX_ARTIFACT_BYTES: usize = 2_048;
 pub const MAX_CERTIFICATE_BYTES: usize = 4_096;
 
@@ -84,15 +84,8 @@ impl FrameDecoder {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
-    DeviceStatus,
-    DeviceSecurity,
-    DeviceInventory,
-    HostObserve,
-    DeviceInfo,
-    PoolObserve,
+    Status,
     DeviceCommission,
-    PoolList,
-    PoolStatus,
     PoolEnroll,
     GenerationCreate,
     GenerationPublicKey,
@@ -106,15 +99,8 @@ pub enum Action {
 impl Action {
     fn parse(s: &str) -> Result<Self, Error> {
         Ok(match s {
-            "device.status" => Self::DeviceStatus,
-            "device.security" => Self::DeviceSecurity,
-            "device.inventory" => Self::DeviceInventory,
-            "host.observe" => Self::HostObserve,
-            "device.info" => Self::DeviceInfo,
-            "pool.observe" => Self::PoolObserve,
+            "status" => Self::Status,
             "device.commission" => Self::DeviceCommission,
-            "pool.list" => Self::PoolList,
-            "pool.status" => Self::PoolStatus,
             "pool.enroll" => Self::PoolEnroll,
             "generation.create" => Self::GenerationCreate,
             "generation.public_key" => Self::GenerationPublicKey,
@@ -739,15 +725,8 @@ impl<'a> Parser<'a> {
             }
         }
         let required = match action {
-            Action::DeviceStatus
-            | Action::DeviceSecurity
-            | Action::DeviceInventory
-            | Action::HostObserve
-            | Action::DeviceInfo
-            | Action::PoolList => 0,
+            Action::Status | Action::OperationReconcile => 0,
             Action::DeviceCommission => 1 << 0,
-            Action::PoolStatus => 1 << 1,
-            Action::PoolObserve => (1 << 1) | (1 << 2),
             Action::PoolEnroll => (1 << 4) | (1 << 5),
             Action::GenerationCreate | Action::PoolDelete => (1 << 1) | (1 << 2),
             Action::GenerationPublicKey
@@ -755,19 +734,12 @@ impl<'a> Parser<'a> {
             | Action::GenerationDiscard => (1 << 1) | (1 << 2) | (1 << 3),
             Action::GenerationCertificate => (1 << 1) | (1 << 2) | (1 << 3) | (1 << 6),
             Action::RecipientSet => 1 << 7,
-            Action::OperationReconcile => (1 << 8) | (1 << 9),
         };
         let allowed = required
-            | if action == Action::PoolList || action == Action::HostObserve {
-                (1 << 10)
-                    | (1 << 11)
-                    | if action == Action::HostObserve {
-                        1 << 12
-                    } else {
-                        0
-                    }
-            } else {
-                0
+            | match action {
+                Action::Status => 1 << 1,
+                Action::OperationReconcile => (1 << 8) | (1 << 9),
+                _ => 0,
             };
         if seen & required != required || seen & !allowed != 0 {
             return Err(Error::InvalidField);
@@ -1445,7 +1417,7 @@ mod observation_tests {
     #[test]
     fn observation_arguments_are_strict() {
         let id = "00000000000000000000000000000000";
-        for action in ["host.observe", "device.info"] {
+        for action in ["status", "operation.reconcile"] {
             let mut buf = [0u8; 512];
             use core::fmt::Write;
             struct Buffer<'a>(&'a mut [u8], usize);
@@ -1464,17 +1436,17 @@ mod observation_tests {
             write!(b, "{{\"version\":1,\"request_id\":\"{id}\",\"action\":\"{action}\",\"arguments\":{{}}}}").unwrap();
             assert!(Message::decode(&b.0[..b.1]).is_ok());
         }
-        let bad = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"host.observe\",\"arguments\":{\"page_size\":0}}";
+        let bad = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"status\",\"arguments\":{\"page_size\":0}}";
         assert!(Message::decode(bad).is_err());
-        let duplicate = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"device.info\",\"arguments\":{\"x\":1,\"x\":2}}";
+        let duplicate = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"status\",\"arguments\":{\"x\":1,\"x\":2}}";
         assert!(Message::decode(duplicate).is_err());
-        let missing = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"pool.observe\",\"arguments\":{}}";
-        assert!(Message::decode(missing).is_err());
+        let legacy = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"pool.observe\",\"arguments\":{}}";
+        assert_eq!(Message::decode(legacy).unwrap_err(), Error::UnsupportedAction);
         assert_eq!(
             Message::decode(&[b' '; MAX_FRAME + 1]).unwrap_err(),
             Error::Oversized
         );
-        let request = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"device.info\",\"arguments\":{}}";
+        let request = b"{\"version\":1,\"request_id\":\"00000000000000000000000000000000\",\"action\":\"status\",\"arguments\":{}}";
         let mut maximum = [b' '; MAX_FRAME];
         maximum[..request.len()].copy_from_slice(request);
         let message = Message::decode(&maximum).unwrap();

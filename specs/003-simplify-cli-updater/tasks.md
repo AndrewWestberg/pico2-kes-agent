@@ -21,9 +21,9 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 **Purpose**: Ratify the constitutional binary rename, remove the obsolete 36,261-LOC manager/TUI and unused UI dependencies, and update workspace manifests.
 
 - [x] T001 Ratify Constitution v4.0.0 in `.specify/memory/constitution.md` updating Technical Constraints to rename `pico2-kes-agent-cli` to `p2kes` and list `p2kesup` and `p2kes-flash` as established Rust binaries
-- [ ] T002 Remove `ratatui` and `crossterm` dependencies, remove `[[bin]] name = "pico2-kes-agent-cli"`, and declare `[[bin]]` targets `pico2-kes-agentd`, `p2kes` (`src/bin/p2kes.rs`), `p2kesup` (`src/bin/p2kesup.rs`), and `p2kes-flash` (`src/bin/p2kes-flash.rs`) in `Cargo.toml`
-- [ ] T003 [P] Delete legacy manager module directory `src/manager/` (all 44 files), `src/bin/pico2-kes-agent-cli.rs`, and `src/cli/receipt.rs`, and update module exports in `src/lib.rs`
-- [ ] T004 [P] Replace remaining raw `unsafe { libc::... }` file/socket/stat calls in `src/config.rs`, `src/cli/client.rs`, and `src/files.rs` with safe `rustix` equivalents where available
+- [x] T002 Remove `ratatui` and `crossterm` dependencies, remove `[[bin]] name = "pico2-kes-agent-cli"`, and declare `[[bin]]` targets `pico2-kes-agentd`, `p2kes` (`src/bin/p2kes.rs`), `p2kesup` (`src/bin/p2kesup.rs`), and `p2kes-flash` (`src/bin/p2kes-flash.rs`) in `Cargo.toml`
+- [x] T003 [P] Delete legacy manager module directory `src/manager/` (all 44 files), `src/bin/pico2-kes-agent-cli.rs`, and `src/cli/receipt.rs`, and update module exports in `src/lib.rs`
+- [x] T004 [P] Replace remaining raw `unsafe { libc::... }` file/socket/stat calls in `src/config.rs`, `src/cli/client.rs`, and `src/files.rs` with safe `rustix` equivalents where available
 
 ---
 
@@ -33,10 +33,10 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 **⚠️ CRITICAL**: No user story implementation can begin until this phase is complete.
 
-- [ ] T005 Raise host-only management `MAX_FRAME` from `16_384` to `131_072` (128 KiB), add `Action::Status` (optional `pool_id`), update `Action::OperationReconcile` to accept empty `{}` arguments, and remove legacy read actions (`device.status`, `device.security`, `device.inventory`, `host.observe`, `device.info`, `pool.list`, `pool.status`, `pool.observe`) in `crates/kes-protocol/src/management.rs`
-- [ ] T006 Update `crates/kes-protocol/tests/management.rs` to validate 128 KiB management framing, `Action::Status`, and rejection of removed legacy actions
-- [ ] T007 Implement the canonical release/signature verifier in `src/release.rs`: pinned OpenPGP primary/signer fingerprints (`PRIMARY`, `SIGNER`), delegated secp256k1 distribution-key verification via `gpgv`/`openssl`, `ReleaseManifest` (`schema_version == 2`, SemVer `version` ASCII `[A-Za-z0-9._-]` max 64 chars, `platform` `x86_64`/`linux`/`min_glibc = "2.36"`, `usb_protocol_major == 1`), and `ReleaseArtifact` path confinement (no `..`, leading `/`, or symlinks) + exact `size` and 64-hex `sha256` verification
-- [ ] T008 [P] Add unit and negative-input tests (tampered manifest signature, wrong `schema_version`, path traversal `..`, mismatched `sha256`) in `src/release.rs`
+- [x] T005 Raise host-only management `MAX_FRAME` from `16_384` to `131_072` (128 KiB), add `Action::Status` (optional `pool_id`), update `Action::OperationReconcile` to accept empty `{}` arguments, and remove legacy read actions (`device.status`, `device.security`, `device.inventory`, `host.observe`, `device.info`, `pool.list`, `pool.status`, `pool.observe`) in `crates/kes-protocol/src/management.rs`
+- [x] T006 Update `crates/kes-protocol/tests/management.rs` to validate 128 KiB management framing, `Action::Status`, and rejection of removed legacy actions
+- [x] T007 Implement the canonical release/signature verifier in `src/release.rs`: pinned OpenPGP primary/signer fingerprints (`PRIMARY`, `SIGNER`), delegated secp256k1 distribution-key verification via `gpgv`/`openssl`, `ReleaseManifest` (`schema_version == 2`, SemVer `version` ASCII `[A-Za-z0-9._-]` max 64 chars, `platform` `x86_64`/`linux`/`min_glibc = "2.36"`, `usb_protocol_major == 1`), and `ReleaseArtifact` path confinement (no `..`, leading `/`, or symlinks) + exact `size` and 64-hex `sha256` verification
+- [x] T008 [P] Add unit and negative-input tests (tampered manifest signature, wrong `schema_version`, path traversal `..`, mismatched `sha256`) in `src/release.rs`
 
 **Checkpoint**: Foundation ready — `cargo check --locked -p kes-protocol` and `src/release.rs` tests pass; user story phases can now proceed in parallel.
 
@@ -50,13 +50,13 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 ### Implementation for User Story 1
 
-- [ ] T009 [P] [US1] Implement daemon-side `status` management handler returning `UnifiedStatus` (`health`, `revision`, `pending_operation`, `device` including `usb_protocol_major` and `security`, and `pools` 0..=64 with `active` and `staged` summaries) in `src/daemon/management.rs`
-- [ ] T010 [P] [US1] Update `operation.reconcile` in `src/daemon/management.rs` to reconcile the sole pending journal mutation when called with empty `{}` arguments (no client-supplied `operation_id`/`request_digest` required)
-- [ ] T011 [US1] Create `src/bin/p2kes.rs` entry point handling `--help`, `--version [--json]`, and dispatching to `pico2_kes_agent::cli::run`
-- [ ] T012 [US1] Rewrite `src/cli/mod.rs` to implement the 10-workflow command surface per `contracts/cli.md` (`status [POOL_ID]`, `commission [--serial HEX] [--out FILE]`, `pool add`, `pool rm`, `key rotate`, `key export`, `key install-cert`, `key discard`, `reconcile`, `backup keygen`, `backup set-recipient`, `backup restore`), removing `--expected-peer-pid`, `--expected-peer-uid`, and mandatory `--receipt` / `--expected-revision` / `--incarnation`
-- [ ] T013 [US1] Implement implicit state resolution in `src/cli/mod.rs`: when `--expected-revision` or incarnation/staged generation is omitted on `pool rm`, `key rotate`, `key export`, `key install-cert`, or `key discard`, query `status` first, fail closed on ambiguous/missing state (e.g., occupied staged slot on `rotate`, no staged slot on `discard`), and submit explicit IDs + revision on the wire
-- [ ] T014 [US1] Implement combined `key rotate POOL_ID --vkey-out FILE --backup-out FILE` (calling `generation.create`, `generation.public_key`, and `generation.artifact`, writing both files no-clobber) and standalone `key export` re-export in `src/cli/mod.rs`
-- [ ] T015 [P] [US1] Update `src/cli/status.rs` to render `UnifiedStatus` cleanly for human operators (device health/identity/security, pending operation warning, and all 0..=64 pools) and pass through `--json`
+- [x] T009 [P] [US1] Implement daemon-side `status` management handler returning `UnifiedStatus` (`health`, `revision`, `pending_operation`, `device` including `usb_protocol_major` and `security`, and `pools` 0..=64 with `active` and `staged` summaries) in `src/daemon/management.rs`
+- [x] T010 [P] [US1] Update `operation.reconcile` in `src/daemon/management.rs` to reconcile the sole pending journal mutation when called with empty `{}` arguments (no client-supplied `operation_id`/`request_digest` required)
+- [x] T011 [US1] Create `src/bin/p2kes.rs` entry point handling `--help`, `--version [--json]`, and dispatching to `pico2_kes_agent::cli::run`
+- [x] T012 [US1] Rewrite `src/cli/mod.rs` to implement the 10-workflow command surface per `contracts/cli.md` (`status [POOL_ID]`, `commission [--serial HEX] [--out FILE]`, `pool add`, `pool rm`, `key rotate`, `key export`, `key install-cert`, `key discard`, `reconcile`, `backup keygen`, `backup set-recipient`, `backup restore`), removing `--expected-peer-pid`, `--expected-peer-uid`, and mandatory `--receipt` / `--expected-revision` / `--incarnation`
+- [x] T013 [US1] Implement implicit state resolution in `src/cli/mod.rs`: when `--expected-revision` or incarnation/staged generation is omitted on `pool rm`, `key rotate`, `key export`, `key install-cert`, or `key discard`, query `status` first, fail closed on ambiguous/missing state (e.g., occupied staged slot on `rotate`, no staged slot on `discard`), and submit explicit IDs + revision on the wire
+- [x] T014 [US1] Implement combined `key rotate POOL_ID --vkey-out FILE --backup-out FILE` (calling `generation.create`, `generation.public_key`, and `generation.artifact`, writing both files no-clobber) and standalone `key export` re-export in `src/cli/mod.rs`
+- [x] T015 [P] [US1] Update `src/cli/status.rs` to render `UnifiedStatus` cleanly for human operators (device health/identity/security, pending operation warning, and all 0..=64 pools) and pass through `--json`
 - [ ] T016 [US1] Update `tests/operator_cli.rs`, `tests/single_pool.rs`, and `tests/management_recovery.rs` to verify the `p2kes` command surface, implicit resolution, destructive `y/N` confirmation, partial-failure `key rotate` (`--backup-out` collision) recovery via `p2kes key export` without regeneration, and receipt-free `p2kes reconcile`
 
 **Checkpoint**: User Story 1 (`p2kes`) is complete and independently testable.
@@ -75,7 +75,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 - [ ] T018 [US2] Replace the per-pool `serve_pool` `accept()` + `sleep(50ms)` threads in `src/daemon/runtime.rs` with a single `rustix::event::poll` accept loop over the management listener, all active pool listeners, and a self-pipe/eventfd wakeup
 - [ ] T019 [US2] Implement graceful shutdown drain in `src/daemon/runtime.rs`: on `SIGTERM`/`SIGINT`, stop accepting new management connections, wait up to `MANAGEMENT_TIMEOUT` (5s) via `Condvar` for `active_management == 0` before joining `poller`, and log+drop instead of returning `Err` when management thread spawn fails
 - [ ] T020 [US2] Restrict `management.reconstructed_registry()` + `endpoints.reconcile()` in `serve_management` (`src/daemon/runtime.rs`) to run **only** when a mutation commits `CommittedResult::Enrolled` or `CommittedResult::Deleted`, never on read-only requests
-- [ ] T021 [P] [US2] Implement atomic journal compaction in `src/daemon/journal.rs`: when file size >= `16 * 1024 * 1024` (16 MiB) and `pending().is_none()`, retain the latest `Enrolled` record per active pool plus the last 256 completed records, write `operations.journal.compact` (`0600`), `sync_all()`, `rename()` over `operations.journal`, and `sync_all()` the parent directory
+- [x] T021 [P] [US2] Implement atomic journal compaction in `src/daemon/journal.rs`: when file size >= `16 * 1024 * 1024` (16 MiB) and `pending().is_none()`, retain the latest `Enrolled` record per active pool plus the last 256 completed records, write `operations.journal.compact` (`0600`), `sync_all()`, `rename()` over `operations.journal`, and `sync_all()` the parent directory
 - [ ] T022 [P] [US2] Detect USB firmware protocol major version mismatch on connect in `src/daemon/usb.rs` / `src/daemon/management.rs`, fail closed for unsafe operations, and populate `health = "incompatible_firmware"` with `usb_protocol_major`, `required_protocol_major`, and `sudo p2kes-flash flash` remediation guidance
 - [ ] T023 [US2] Add integration and property tests in `tests/node_service.rs`, `tests/service_lifecycle.rs`, and `src/daemon/journal.rs` covering dynamic runtime pool add/remove, shutdown drain, firmware mismatch reporting, 10k-entry status latency (<100 ms), and journal compaction equivalence
 
@@ -91,8 +91,8 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 ### Implementation for User Story 3
 
-- [ ] T024 [US3] Implement `src/updater.rs`: `InstalledState` (`/usr/local/share/pico2-kes-agent/installed.json`), `install`, `update`, `uninstall`, and `status` using `src/release.rs` verification, staging temp files + `fsync` + atomic `rename` into `/usr/local/bin` and `/usr/local/share/pico2-kes-agent`, printing `sudo systemctl restart pico2-kes-agentd` (and `sudo p2kes-flash flash` when `firmware_version` changes) without touching systemd or host OS config
-- [ ] T025 [US3] Rewrite `src/bin/p2kesup.rs` as a thin CLI entrypoint for `p2kesup install|update|uninstall|status|--help|--version [--json]` dispatching to `src/updater.rs`
+- [x] T024 [US3] Implement `src/updater.rs`: `InstalledState` (`/usr/local/share/pico2-kes-agent/installed.json`), `install`, `update`, `uninstall`, and `status` using `src/release.rs` verification, staging temp files + `fsync` + atomic `rename` into `/usr/local/bin` and `/usr/local/share/pico2-kes-agent`, printing `sudo systemctl restart pico2-kes-agentd` (and `sudo p2kes-flash flash` when `firmware_version` changes) without touching systemd or host OS config
+- [x] T025 [US3] Rewrite `src/bin/p2kesup.rs` as a thin CLI entrypoint for `p2kesup install|update|uninstall|status|--help|--version [--json]` dispatching to `src/updater.rs`
 - [ ] T026 [P] [US3] Trim `install.sh` to a thin POSIX bootstrapper that prints `apt-get --simulate install` output to `/dev/tty` before prompting `y/N`, removes `python3` prerequisite and the 350-line embedded Python verifier, verifies the downloaded bundle via `gpgv`/`openssl`, and runs `sudo <bundle>/p2kesup install --bundle <bundle>`
 - [ ] T027 [P] [US3] Update static deployment files in `deploy/pico2-kes-agentd.service` (`ExecStart=/usr/local/bin/pico2-kes-agentd`), `deploy/config.example.json`, `deploy/70-pico2-kes-agent.rules`, and `deploy/cardano-node-memory-hardening.conf`, and delete obsolete `deploy/install.sh` and `deploy/uninstall.sh` wrappers superseded by `install.sh` + `p2kesup`
 - [ ] T028 [US3] Add integration tests in `tests/updater_and_flash.rs` covering `p2kesup install`, tampered bundle fail-closed, atomic `update` firmware-change notice, and `uninstall` preserving `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/`
@@ -109,9 +109,9 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 ### Implementation for User Story 4
 
-- [ ] T029 [P] [US4] Implement native ELF/UF2 header and sector validation (`FIRMWARE_START`, `FIRMWARE_END`, 512-byte UF2 block alignment, page match) and BOOTSEL USB mass-storage discovery/copy in `src/flash/uf2.rs`
-- [ ] T030 [P] [US4] Implement bounded `picotool` v2.3.1 subprocess wrapper, policy validation (`rp2350-signed-msd-v1`, A2/A4 stepping, fitted 4-MiB flash JEDEC/SFDP check), `wipe`, and 3-stage `otp` (`prepare`, `enable`, `lock`) attended confirmation flows in `src/flash/picotool.rs`
-- [ ] T031 [US4] Wire `src/flash/mod.rs` (`verify`, `flash`, `wipe`, `otp`) using `src/release.rs` canonical verification and create `src/bin/p2kes-flash.rs` CLI entrypoint per `contracts/updater-and-flash.md`
+- [x] T029 [P] [US4] Implement native ELF/UF2 header and sector validation (`FIRMWARE_START`, `FIRMWARE_END`, 512-byte UF2 block alignment, page match) and BOOTSEL USB mass-storage discovery/copy in `src/flash/uf2.rs`
+- [x] T030 [P] [US4] Implement bounded `picotool` v2.3.1 subprocess wrapper, policy validation (`rp2350-signed-msd-v1`, A2/A4 stepping, fitted 4-MiB flash JEDEC/SFDP check), `wipe`, and 3-stage `otp` (`prepare`, `enable`, `lock`) attended confirmation flows in `src/flash/picotool.rs`
+- [x] T031 [US4] Wire `src/flash/mod.rs` (`verify`, `flash`, `wipe`, `otp`) using `src/release.rs` canonical verification and create `src/bin/p2kes-flash.rs` CLI entrypoint per `contracts/updater-and-flash.md`
 - [ ] T032 [US4] Add `proptest` and unit tests for `src/flash/uf2.rs` and `src/flash/picotool.rs` policy/UF2 rejection in `tests/updater_and_flash.rs`
 - [ ] T033 [US4] Update `.github/workflows/release.yml` and `tools/publish_release.py` to package the 4-binary release tuple (`pico2-kes-agentd`, `p2kes`, `p2kesup`, `p2kes-flash`, `picotool`, firmware, `deploy/`) under `schema_version = 2`
 
