@@ -219,6 +219,11 @@ impl<'a, T: DeviceTransport> Management<'a, T> {
                 UsbError::NotFound | UsbError::Usb(_) | UsbError::Io(_) | UsbError::Interface,
             )) => Ok(status::unavailable(recovering, pool)),
             Err(Error::Usb(UsbError::Busy)) => Ok(status::unavailable(true, pool)),
+            Err(Error::Protocol) => Ok(json!({
+                "health": "incompatible_firmware",
+                "required_protocol_major": 1,
+                "remediation": "sudo p2kes-flash flash",
+            })),
             Err(error) => Err(error),
         }
     }
