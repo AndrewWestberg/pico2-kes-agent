@@ -570,6 +570,7 @@ struct LivePoolSet {
     pools: Vec<(PoolBinding, PoolSubscription)>,
 }
 
+#[allow(dead_code)]
 impl LivePoolSet {
     fn update(&mut self, bindings: &[PoolBinding], subs: Vec<(PoolBinding, PoolSubscription)>) {
         debug_assert!(bindings.len() <= 64);
@@ -578,15 +579,11 @@ impl LivePoolSet {
     }
 }
 #[allow(dead_code)]
-fn drain_active_management(
-    active: &Mutex<usize>,
-    cv: &std::sync::Condvar,
-) {
+fn drain_active_management(active: &Mutex<usize>, cv: &std::sync::Condvar) {
     if let Ok(guard) = active.lock() {
         let _ = cv.wait_timeout_while(guard, MANAGEMENT_TIMEOUT, |count| *count > 0);
     }
 }
-
 
 struct LiveEndpoints {
     sockets: SocketRegistry,
@@ -860,11 +857,9 @@ fn serve_management(
                     Some("pool.enroll" | "pool.delete" | "operation.reconcile")
                 );
                 let bindings = if mutates_pools {
-                    Some(
-                        management
-                            .reconstructed_registry()
-                            .map_err(|_| io::Error::other("failed to reconstruct durable pool registry"))?,
-                    )
+                    Some(management.reconstructed_registry().map_err(|_| {
+                        io::Error::other("failed to reconstruct durable pool registry")
+                    })?)
                 } else {
                     None
                 };

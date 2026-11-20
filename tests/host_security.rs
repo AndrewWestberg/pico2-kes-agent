@@ -32,8 +32,6 @@ impl Drop for TestDir {
     }
 }
 
-
-
 #[test]
 fn daemon_process_memory_is_locked_nondumpable_and_coreless() {
     if std::env::var_os(CHILD).is_some() {
@@ -300,4 +298,3 @@ fn commissioning_preflight_needs_no_node_but_retains_host_protections() {
     fs::write(&policy, b"BACKUP_PRIVATE_POLICY=off-primary\n").unwrap();
     assert!(!run(&["--commission"]).status.success());
 }
-

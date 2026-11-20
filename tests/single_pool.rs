@@ -9,12 +9,7 @@ use serde_json::Value;
 use support::TestRig;
 
 fn json_out(res: support::CliResult) -> Value {
-    assert_eq!(
-        res.exit_code,
-        0,
-        "{}",
-        String::from_utf8_lossy(&res.stderr)
-    );
+    assert_eq!(res.exit_code, 0, "{}", String::from_utf8_lossy(&res.stderr));
     serde_json::from_slice(&res.stdout).unwrap()
 }
 
@@ -28,6 +23,7 @@ fn status_reports_commissioned_pool_and_revision() {
     assert!(pools[0].get("pool_id").is_some());
     assert!(pools[0].get("incarnation_id").is_some());
 }
+#[test]
 fn key_rotate_writes_vkey_and_backup() {
     let rig = TestRig::commissioned_pool();
     let status = json_out(rig.status_cli());

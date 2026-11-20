@@ -108,3 +108,25 @@ fn missing_socket_and_unknown_command_fail_closed() {
     let unknown = p2kes(&["--socket", "/nonexistent/p2kes.sock", "bogus-cmd"]);
     assert!(!unknown.status.success());
 }
+
+#[test]
+fn stalled_and_malformed_clients_do_not_block_valid_requests() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    let rig = TestRig::commissioned_pool();
+    let _stalled = UnixStream::connect(rig.management_socket()).unwrap();
+    if let Ok(mut malformed) = UnixStream::connect(rig.management_socket()) {
+        let _ = malformed.write_all(b"\xff\xff\xff\xffnot-a-valid-frame");
+    }
+
+    let start = Instant::now();
+    let res = rig.status_cli();
+    assert_eq!(res.exit_code, 0, "{}", String::from_utf8_lossy(&res.stderr));
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "valid status request delayed by stalled/malformed clients: {:?}",
+        start.elapsed()
+    );
+}
