@@ -113,7 +113,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 - [x] T030 [P] [US4] Implement bounded `picotool` v2.3.1 subprocess wrapper, policy validation (`rp2350-signed-msd-v1`, A2/A4 stepping, fitted 4-MiB flash JEDEC/SFDP check), `wipe`, and 3-stage `otp` (`prepare`, `enable`, `lock`) attended confirmation flows in `src/flash/picotool.rs`
 - [x] T031 [US4] Wire `src/flash/mod.rs` (`verify`, `flash`, `wipe`, `otp`) using `src/release.rs` canonical verification and create `src/bin/p2kes-flash.rs` CLI entrypoint per `contracts/updater-and-flash.md`
 - [x] T032 [US4] Add `proptest` and unit tests for `src/flash/uf2.rs` and `src/flash/picotool.rs` policy/UF2 rejection in `tests/updater_and_flash.rs`
-- [ ] T033 [US4] Update `.github/workflows/release.yml` and `tools/publish_release.py` to package the 4-binary release tuple (`pico2-kes-agentd`, `p2kes`, `p2kesup`, `p2kes-flash`, `picotool`, firmware, `deploy/`) under `schema_version = 2`
+- [x] T033 [US4] Update `.github/workflows/release.yml` and `tools/publish_release.py` to package the 4-binary release tuple (`pico2-kes-agentd`, `p2kes`, `p2kesup`, `p2kes-flash`, `picotool`, firmware, `deploy/`) under `schema_version = 2`
 
 **Checkpoint**: User Story 4 (`p2kes-flash`) is complete; hardware re-qualification on Pico 2 A2 is tracked in Phase 8.
 
@@ -140,7 +140,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 **Purpose**: Document migration from legacy `p2kesup`/`pico2-kes-agent-cli`, verify code-size reduction (SC-006), and execute all Software Observatory and hardware qualification gates.
 
 - [x] T037 [P] Update `README.md` and add a legacy-to-simplified migration guide (`p2kesup` / `pico2-kes-agent-cli` → `p2kes` / `p2kesup` / `p2kes-flash`) in `docs/migration.md`
-- [ ] T038 [P] Update `tests/host_security.rs` (or remove obsolete `src/manager` references) so the entire workspace test suite compiles and passes cleanly
+- [x] T038 [P] Update `tests/host_security.rs` (or remove obsolete `src/manager` references) so the entire workspace test suite compiles and passes cleanly
 - [ ] T039 Run Software Observatory gates per `contracts/quality.md`: `cargo fmt --all --check`, `cargo clippy --locked --workspace --exclude pico2-kes-firmware --all-targets -- -D warnings`, `cargo test --locked --workspace --exclude pico2-kes-firmware --features kes-core/qualification`, `cargo audit`, `cargo deny check`, and `cargo run --locked -p qualification -- load`
 - [ ] T040 Measure SC-005 (64-pool `p2kes status --json` <100 ms with 10k journal entries; idle wakeups <5/sec) and SC-006 (host management/updater LOC reduction ≥85% vs. 36,261 LOC baseline), execute `specs/003-simplify-cli-updater/quickstart.md` Q1–Q5, and record real Pico 2 A2 hardware re-qualification evidence for `p2kes-flash` (`verify`, `flash`, `wipe`, `otp`) under `evidence/`
 

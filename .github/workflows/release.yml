@@ -51,9 +51,9 @@ jobs:
           sh /tmp/rustup.sh -y --profile minimal --default-toolchain 1.99.1
           . "$HOME/.cargo/env"
           export P2KES_BUILD_ID="$(printf '%s' "$P2KES_SOURCE_COMMIT" | sha256sum | cut -d' ' -f1)"
-          cargo build --locked --release --bin p2kesup --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+          cargo build --locked --release --bin p2kesup --bin pico2-kes-agentd --bin p2kes --bin p2kes-flash
           mkdir -p host-build/bin
-          cp target/release/p2kesup target/release/pico2-kes-agentd target/release/pico2-kes-agent-cli host-build/bin/
+          cp target/release/p2kesup target/release/pico2-kes-agentd target/release/p2kes target/release/p2kes-flash host-build/bin/
       - name: Build patched picotool on Debian 12
         run: |
           set -eu
@@ -160,7 +160,7 @@ jobs:
           cargo test --locked -p kes-protocol
           cargo test --locked -p kes-core --features qualification --test crypto_compatibility
           cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore
-          cargo build --locked --release --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+          cargo build --locked --release --bin pico2-kes-agentd --bin p2kes --bin p2kesup --bin p2kes-flash
           cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
       - name: Exercise isolated signing and verifier fixtures without production secrets
         env:

@@ -126,7 +126,8 @@ PURPOSE = "pico2-kes-agent-distribution-v1"
 COMPONENT_PATHS = {
     "manager": "bin/p2kesup",
     "daemon": "bin/pico2-kes-agentd",
-    "cli": "bin/pico2-kes-agent-cli",
+    "cli": "bin/p2kes",
+    "flash": "bin/p2kes-flash",
     "firmware": "firmware/pico2-kes-firmware.signed.uf2",
     "tool": "tools/picotool",
     "deployment": "deploy/install.sh",
@@ -230,7 +231,7 @@ def host_version(path):
 
 
 def require_host_builds(root, tag, commit, build_id):
-    for name in ("p2kesup", "pico2-kes-agentd", "pico2-kes-agent-cli"):
+    for name in ("p2kesup", "pico2-kes-agentd", "p2kes", "p2kes-flash"):
         identity = host_version(Path(root) / "bin" / name)
         firmware.require(identity == {"schema_version": 1, "component": name, "version": tag,
                                       "build_id": build_id, "source_commit": commit},
