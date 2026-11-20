@@ -299,8 +299,8 @@ class ReleaseTests(unittest.TestCase):
         elf = ROOT / "target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware"
         helper = Path(os.environ.get("PICO2_PERMISSIONS_HELPER",
                                      ROOT / "target/otp-permissions/pico2-otp-permissions.elf"))
-        if not elf.is_file() or not helper.is_file():
-            self.skipTest("build firmware and permission helper first; set PICO2_PERMISSIONS_HELPER")
+        if not elf.is_file() or not helper.is_file() or not shutil.which("picotool"):
+            self.skipTest("build firmware and permission helper first and install picotool; set PICO2_PERMISSIONS_HELPER")
         offsets = firmware.validate_helper(helper)
         self.assertEqual(set(offsets), {"expected_chipid_low", "expected_chipid_high"})
         altered_helper = self.root / "configured-helper.elf"

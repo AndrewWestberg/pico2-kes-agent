@@ -225,7 +225,18 @@ impl Transport {
             Mode::Commissioning { selected_serial } => selected_serial,
             Mode::Normal { pin } => pin.serial,
         };
-        let mut matches = nusb::list_devices().wait()?.filter(|device| {
+        let device_list = match nusb::list_devices().wait() {
+            Ok(devices) => devices,
+            Err(err)
+                if err.kind() == nusb::ErrorKind::NotFound
+                    || err.os_error() == Some(libc::ENOENT as u32)
+                    || err.os_error() == Some(libc::ENODEV as u32) =>
+            {
+                return Err(Error::NotFound);
+            }
+            Err(err) => return Err(Error::Usb(err)),
+        };
+        let mut matches = device_list.filter(|device| {
             device.vendor_id() == USB_VENDOR_ID
                 && device.product_id() == USB_PRODUCT_ID
                 && device

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "purpose": "pico2-kes-picotool-checksum-v1",
+  "project": "https://github.com/AndrewWestberg/pico2-kes-agent",
+  "tool": "picotool",
+  "version": "2.3.1",
+  "sha256": "5cb1f1ffa5888308d23508ca2ab0bc1c63e6c0ebfaf7f72f56b6544ce5c0d96b",
+  "build_id": "bb8c5b42becf09492a42b02f72f568128a29ce99"
+}
