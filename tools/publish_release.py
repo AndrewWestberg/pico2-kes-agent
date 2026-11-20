@@ -162,7 +162,7 @@ def digest_file(path):
 
 def component_digest(name, artifacts):
     def belongs(path):
-        if name in ("manager", "daemon", "cli"):
+        if name in ("manager", "daemon", "cli", "flash"):
             return path == COMPONENT_PATHS[name]
         prefixes = {"firmware": ("firmware/",), "tool": ("tools/", "runtime/", "licenses/"),
                     "deployment": ("deploy/",)}
