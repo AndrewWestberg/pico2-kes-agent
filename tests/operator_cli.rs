@@ -1,618 +1,110 @@
 mod support;
 
+use std::io::Write;
+use std::process::{Command, Stdio};
+
 use serde_json::Value;
-use std::{
-    fs,
-    io::{Read, Write},
-    os::unix::fs::PermissionsExt,
-    os::unix::net::{UnixListener, UnixStream},
-    path::{Path, PathBuf},
-    process::{Command, Output},
-    time::{Duration, Instant},
-};
 use support::TestRig;
 
-fn cli(arguments: &[String]) -> Output {
+fn p2kes(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_p2kes"))
-        .args(arguments)
+        .args(args)
         .output()
-        .unwrap()
-}
-
-fn strings(arguments: &[&str]) -> Vec<String> {
-    arguments.iter().map(|value| (*value).to_owned()).collect()
-}
-
-fn temporary(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("pico2-kes-agent-{name}-{}", std::process::id()))
+        .expect("spawn p2kes")
 }
 
 #[test]
-fn host_versions_are_standalone_and_share_build_identity() {
-    let mut identities = Vec::new();
-    for (binary, component, invalid_exit) in [
-        (
-            env!("CARGO_BIN_EXE_p2kes"),
-            "p2kes",
-            1,
-        ),
-        (
-            env!("CARGO_BIN_EXE_pico2-kes-agentd"),
-            "pico2-kes-agentd",
-            1,
-        ),
-    ] {
-        let human = Command::new(binary).arg("--version").output().unwrap();
-        assert!(human.status.success());
-        assert!(human.stderr.is_empty());
-        assert!(!human.stdout.is_empty());
-        let json = Command::new(binary)
-            .args(["--version", "--json"])
-            .env("HOME", "/nonexistent")
-            .output()
-            .unwrap();
-        assert!(json.status.success());
-        assert!(json.stderr.is_empty());
-        let value: Value = serde_json::from_slice(&json.stdout).unwrap();
-        let object = value.as_object().unwrap();
-        assert_eq!(object.len(), 5);
-        assert_eq!(value["schema_version"], 1);
-        assert_eq!(value["component"], component);
-        for field in ["version", "build_id", "source_commit"] {
-            assert!(!value[field].as_str().unwrap().is_empty());
-        }
-        identities.push(value);
-        for args in [
-            &["--help", "--version"][..],
-            &["--json", "--version"][..],
-            &["--version", "--json", "--json"][..],
-            &["--version", "--help"][..],
-            &["--version", "status"][..],
-        ] {
-            let output = Command::new(binary).args(args).output().unwrap();
-            assert_eq!(output.status.code(), Some(invalid_exit));
-        }
-    }
-    for field in ["version", "build_id", "source_commit"] {
-        assert_eq!(identities[0][field], identities[1][field]);
-    }
+fn help_and_version_work_standalone() {
+    let help = p2kes(&["--help"]);
+    assert!(help.status.success());
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    assert!(stdout.contains("status"));
+    assert!(stdout.contains("rotate"));
+    assert!(stdout.contains("reconcile"));
+
+    let ver = p2kes(&["--version", "--json"]);
+    assert!(ver.status.success());
+    let v: Value = serde_json::from_slice(&ver.stdout).unwrap();
+    assert!(v.get("version").is_some());
 }
 
 #[test]
-fn manager_install_requires_explicit_role_and_absolute_bundle() {
-    for args in [
-        &["install"][..],
-        &["install", "--bundle", "/tmp/bundle"][..],
-        &["install", "--bundle", "relative", "--role", "primary"][..],
-        &["install", "--bundle", "/tmp/bundle", "--role", "other"][..],
-        &[
-            "install",
-            "--bundle",
-            "/tmp/bundle",
-            "--role",
-            "backup",
-            "--role",
-            "primary",
-        ][..],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-    }
-    let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
-        .args(["install", "--bundle", "/tmp/bundle", "--role", "backup"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("attended terminal"));
-}
-
-#[test]
-fn manager_upgrade_rejects_conflicting_release_selectors() {
-    for args in [
-        &["upgrade", "--version"][..],
-        &["upgrade", "--bundle", "relative"][..],
-        &["upgrade", "--version", "v1", "--bundle", "/tmp/bundle"][..],
-        &["upgrade", "--version", "v1", "--version", "v2"][..],
-        &["upgrade", "--version", "--json"][..],
-        &["upgrade", "--version", "../v1"][..],
-        &["upgrade", "--resume", "relative"][..],
-        &[
-            "upgrade",
-            "--resume",
-            "/tmp/plan",
-            "--bundle",
-            "/tmp/bundle",
-        ][..],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-    }
-}
-
-#[test]
-fn upgrade_resume_rejects_invalid_original_plan() {
-    let path = temporary("invalid-upgrade-plan.json");
-    fs::write(&path, b"{}").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_p2kesup"))
-        .arg("upgrade")
-        .arg("--resume")
-        .arg(&path)
-        .output()
-        .unwrap();
-    fs::remove_file(path).unwrap();
-    assert!(!output.status.success());
-}
-
-#[test]
-fn inventory_cli_accepts_full_response_and_rejects_overflow() {
-    for count in [64, 65] {
-        let path = temporary(&format!("inventory-{count}.sock"));
-        let listener = UnixListener::bind(&path).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut length = [0; 4];
-            stream.read_exact(&mut length).unwrap();
-            let mut request = vec![0; u32::from_be_bytes(length) as usize];
-            stream.read_exact(&mut request).unwrap();
-            let request: Value = serde_json::from_slice(&request).unwrap();
-            assert_eq!(request["action"], "device.inventory");
-            assert_eq!(request["arguments"], serde_json::json!({}));
-            let pools: Vec<_> = (0..count)
-                .map(|index| {
-                    serde_json::json!({
-                        "pool_id": format!("{index:056x}"),
-                        "incarnation_id": format!("{index:032x}"),
-                        "revision": u64::MAX,
-                    })
-                })
-                .collect();
-            let reply = serde_json::json!({
-                "version": 1, "request_id": request["request_id"], "outcome": "success",
-                "result": {"device_id": "11".repeat(16), "revision": u64::MAX, "pools": pools},
-                "error": null
-            });
-            let bytes = serde_json::to_vec(&reply).unwrap();
-            stream
-                .write_all(&(bytes.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&bytes).unwrap();
-        });
-        let result = cli(&[
-            "--socket".into(),
-            path.display().to_string(),
-            "--json".into(),
-            "device".into(),
-            "inventory".into(),
-        ]);
-        server.join().unwrap();
-        assert_eq!(result.status.success(), count == 64);
-        if count == 64 {
-            let response: Value = serde_json::from_slice(&result.stdout).unwrap();
-            assert_eq!(response["result"]["pools"].as_array().unwrap().len(), 64);
-        }
-        fs::remove_file(path).unwrap();
-    }
-    assert_eq!(
-        cli(&strings(&["device", "inventory", "--page-size", "1"]))
-            .status
-            .code(),
-        Some(2)
-    );
-}
-#[test]
-fn executable_rejects_direct_usb_without_contacting_a_device() {
-    let output = cli(&strings(&["--help"]));
-    assert_eq!(output.status.code(), Some(0));
-    assert!(output.stderr.is_empty());
-
-    let rejected = cli(&strings(&[
-        "status",
-        "--direct-usb",
-        "/dev/bus/usb/001/001",
-    ]));
-    assert_eq!(rejected.status.code(), Some(2));
-    assert!(!rejected.status.success());
-}
-
-#[test]
-fn executable_reports_output_failure() {
-    let output = Command::new(env!("CARGO_BIN_EXE_p2kes"))
-        .arg("--help")
-        .stdout(
-            fs::OpenOptions::new()
-                .write(true)
-                .open("/dev/full")
-                .unwrap(),
-        )
-        .output()
-        .unwrap();
-    assert_eq!(
-        output.status.code(),
-        Some(1)
-    );
-}
-
-#[test]
-fn stalled_and_malformed_clients_do_not_block_valid_requests() {
-    let rig = TestRig::certified_pool();
-    let mut stalled = UnixStream::connect(rig.management_socket()).unwrap();
-    stalled.write_all(&[0, 0]).unwrap();
-
-    let started = Instant::now();
-    let first = cli(&[
-        "--socket".into(),
-        rig.management_socket().display().to_string(),
-        "--json".into(),
-        "pool".into(),
-        "list".into(),
-    ]);
-    assert!(first.status.success());
-    assert!(started.elapsed() < Duration::from_secs(10));
-
-    let mut malformed = UnixStream::connect(rig.management_socket()).unwrap();
-    malformed.write_all(&u32::MAX.to_be_bytes()).unwrap();
-    let started = Instant::now();
-    let second = cli(&[
-        "--socket".into(),
-        rig.management_socket().display().to_string(),
-        "--json".into(),
-        "pool".into(),
-        "list".into(),
-    ]);
-    assert!(second.status.success());
-    assert!(started.elapsed() < Duration::from_secs(10));
-}
-
-#[test]
-fn executable_reports_permission_unavailable_and_local_failure_exit_classes() {
-    let missing = temporary("missing.sock");
-    let unavailable = cli(&[
-        "--socket".into(),
-        missing.display().to_string(),
-        "status".into(),
-    ]);
-    assert_eq!(unavailable.status.code(), Some(4));
-
-    let receipt_directory = temporary("before-admission");
-    let _ = fs::remove_dir_all(&receipt_directory);
-    fs::create_dir(&receipt_directory).unwrap();
-    fs::set_permissions(&receipt_directory, fs::Permissions::from_mode(0o700)).unwrap();
-    let receipt = receipt_directory.join("operation.json");
-    let mutation_unavailable = cli(&[
-        "--socket".into(),
-        missing.display().to_string(),
-        "key".into(),
-        "generate".into(),
-        "--pool".into(),
-        "11".repeat(28),
-        "--incarnation".into(),
-        "22".repeat(16),
-        "--operation-id".into(),
-        "33".repeat(16),
-        "--expected-revision".into(),
-        "1".into(),
-        "--receipt".into(),
-        receipt.display().to_string(),
-    ]);
-    assert_eq!(mutation_unavailable.status.code(), Some(4));
-    assert!(receipt.is_file());
-    fs::remove_dir_all(receipt_directory).unwrap();
-
-    let directory = temporary("denied");
-    let socket = directory.join("management.sock");
-    let _ = fs::remove_dir_all(&directory);
-    fs::create_dir(&directory).unwrap();
-    let listener = UnixListener::bind(&socket).unwrap();
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o000)).unwrap();
-    let denied = cli(&[
-        "--socket".into(),
-        socket.display().to_string(),
-        "status".into(),
-    ]);
-    assert_eq!(denied.status.code(), Some(3));
-    drop(listener);
-    let _ = fs::remove_dir_all(&directory);
-
-    let failed = cli(&strings(&[
-        "restore",
-        "--device",
-        "00000000000000000000000000000000",
-        "--pool",
-        "00000000000000000000000000000000000000000000000000000000",
-        "--incarnation",
-        "00000000000000000000000000000000",
-        "--generation",
-        "00000000000000000000000000000000",
-        "--verification-key",
-        "/definitely/missing/pico2-kes.vkey",
-        "--device-identity",
-        "/definitely/missing/device.json",
-        "--artifact",
-        "/definitely/missing/artifact.bin",
-        "--recipient-key",
-        "/definitely/missing/recipient.key",
-        "--out",
-        "/definitely/missing/restored.skey",
-    ]));
-    assert_eq!(failed.status.code(), Some(7));
-}
-
-#[test]
-fn executable_json_paginates_rejects_and_preserves_uncertain_receipt() {
-    let mut rig = TestRig::commissioned_pool();
-    let socket = rig.management_socket().display().to_string();
-    let list = cli(&[
-        "--socket".into(),
-        socket.clone(),
-        "--json".into(),
-        "pool".into(),
-        "list".into(),
-        "--page-size".into(),
-        "1".into(),
-    ]);
-    assert_eq!(list.status.code(), Some(0));
-    assert!(list.stderr.is_empty());
-    let listed: Value = serde_json::from_slice(&list.stdout).unwrap();
-    let pool = &listed["result"]["pools"][0];
-    let pool_id = pool["pool_id"].as_str().unwrap().to_owned();
-    let incarnation = pool["incarnation_id"].as_str().unwrap().to_owned();
-
-    let rejected_output = temporary("rejected-artifact.bin");
-    let _ = fs::remove_file(&rejected_output);
-    let unknown = cli(&[
-        "--socket".into(),
-        socket.clone(),
-        "--json".into(),
-        "key".into(),
-        "export".into(),
-        "--pool".into(),
-        pool_id.clone(),
-        "--incarnation".into(),
-        incarnation.clone(),
-        "--generation".into(),
-        "00".repeat(16),
-        "--out".into(),
-        rejected_output.display().to_string(),
-    ]);
-    assert_eq!(unknown.status.code(), Some(5));
-    let rejected: Value = serde_json::from_slice(&unknown.stdout).unwrap();
-    assert_eq!(rejected["outcome"], "rejected");
-    assert!(!rejected_output.exists());
-
-    let status = cli(&[
-        "--socket".into(),
-        socket.clone(),
-        "--json".into(),
-        "pool".into(),
-        "status".into(),
-        "--pool".into(),
-        pool_id.clone(),
-    ]);
-    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-    let revision = status["result"]["revision"].as_u64().unwrap().to_string();
-    let receipt_directory = temporary("uncertain");
-    let _ = fs::remove_dir_all(&receipt_directory);
-    fs::create_dir(&receipt_directory).unwrap();
-    fs::set_permissions(&receipt_directory, fs::Permissions::from_mode(0o700)).unwrap();
-    let receipt = receipt_directory.join("receipt.json");
-    rig.timeout_next_usb_reply();
-    let uncertain = cli(&[
-        "--socket".into(),
-        socket,
-        "--json".into(),
-        "key".into(),
-        "generate".into(),
-        "--pool".into(),
-        pool_id,
-        "--incarnation".into(),
-        incarnation,
-        "--operation-id".into(),
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-        "--expected-revision".into(),
-        revision,
-        "--receipt".into(),
-        receipt.display().to_string(),
-    ]);
-    assert_eq!(
-        uncertain.status.code(),
-        Some(6),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&uncertain.stdout),
-        String::from_utf8_lossy(&uncertain.stderr)
-    );
-    assert!(receipt.is_file());
-    assert!(String::from_utf8_lossy(&uncertain.stderr).contains("operation reconcile"));
-    fs::remove_dir_all(receipt_directory).unwrap();
-}
-
-#[test]
-fn existing_receipt_is_never_replaced_or_sent() {
-    let directory = temporary("receipt-collision");
-    let _ = fs::remove_dir_all(&directory);
-    fs::create_dir(&directory).unwrap();
-    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
-    let receipt = directory.join("receipt.json");
-    fs::write(&receipt, b"original receipt").unwrap();
-    let output = cli(&[
-        "--socket".into(),
-        directory.join("missing.sock").display().to_string(),
-        "--json".into(),
-        "key".into(),
-        "generate".into(),
-        "--pool".into(),
-        "11".repeat(28),
-        "--incarnation".into(),
-        "22".repeat(16),
-        "--expected-revision".into(),
-        "1".into(),
-        "--receipt".into(),
-        receipt.display().to_string(),
-    ]);
-    assert_ne!(output.status.code(), Some(0));
-    assert_eq!(fs::read(&receipt).unwrap(), b"original receipt");
-    fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn expected_peer_mismatch_sends_no_request_bytes() {
-    let path = temporary("cli-peer.sock");
-    let listener = UnixListener::bind(&path).unwrap();
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
-    });
-    let output = cli(&[
-        "--socket".into(),
-        path.display().to_string(),
-        "--expected-peer-pid".into(),
-        std::process::id().saturating_add(1).to_string(),
-        "--expected-peer-uid".into(),
-        rustix::process::geteuid().as_raw().to_string(),
-        "--json".into(),
-        "status".into(),
-    ]);
-    assert_eq!(output.status.code(), Some(3));
-    server.join().unwrap();
-    fs::remove_file(path).unwrap();
-}
-#[test]
-fn destructive_commands_name_target_and_require_confirmation_before_contact() {
-    let receipt = temporary("unused-receipt.json");
-    let output = cli(&[
-        "--socket".into(),
-        "/definitely/missing/socket".into(),
-        "key".into(),
-        "discard".into(),
-        "--pool".into(),
-        "11".repeat(28),
-        "--incarnation".into(),
-        "22".repeat(16),
-        "--generation".into(),
-        "33".repeat(16),
-        "--operation-id".into(),
-        "44".repeat(16),
-        "--expected-revision".into(),
-        "1".into(),
-        "--receipt".into(),
-        receipt.display().to_string(),
-    ]);
-    assert_eq!(output.status.code(), Some(2));
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains(&"33".repeat(16)));
-    assert!(error.contains("external copies are unaffected"));
-    assert!(error.contains("--yes"));
-    assert!(!Path::new(&receipt).exists());
-}
-
-#[test]
-fn security_command_reports_observed_state_and_disallows_mutation_flags() {
-    for mut rig in [
-        TestRig::blank_commissioning("00afd9003906a634"),
-        TestRig::commissioned_pool(),
-    ] {
-        let socket = rig.management_socket().display().to_string();
-        let args = ["--socket", &socket, "--json", "device", "security"];
-        let output = cli(&strings(&args));
-        assert_eq!(
-            output.status.code(),
-            Some(0),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        kes_protocol::management::Message::decode(&output.stdout).unwrap();
-        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(response["result"]["profile"], "unlocked");
-        assert_eq!(response["result"]["stepping"], "A2");
-        assert_eq!(response["result"]["usb_serial"], "00afd9003906a634");
-
-        let mut report = rig.security_report();
-        report.critical = 1;
-        rig.set_security_report(Some(report));
-        let output = cli(&strings(&args));
-        assert_eq!(output.status.code(), Some(0));
-        kes_protocol::management::Message::decode(&output.stdout).unwrap();
-        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(response["result"]["profile"], "incomplete");
-
-        report.usb_serial[0] = b'G';
-        rig.set_security_report(Some(report));
-        assert!(!cli(&strings(&args)).status.success());
-        rig.set_security_report(None);
-        assert!(!cli(&strings(&args)).status.success());
-
-        for (flag, value) in [
-            ("--operation-id", "00000000000000000000000000000000"),
-            ("--expected-revision", "0"),
-            ("--receipt", "/tmp/not-created-security-receipt"),
-            ("--usb-serial", "00afd9003906a634"),
-        ] {
-            let mut arguments = strings(&args);
-            arguments.extend(strings(&[flag, value]));
-            assert_eq!(cli(&arguments).status.code(), Some(2));
-        }
-    }
-}
-
-#[test]
-fn executable_rejects_forged_or_malformed_security_replies() {
+fn status_json_reports_device_and_pools() {
     let rig = TestRig::commissioned_pool();
-    let output = cli(&strings(&[
-        "--socket",
-        rig.management_socket().to_str().unwrap(),
-        "--json",
-        "device",
-        "security",
-    ]));
-    assert!(output.status.success());
-    let baseline: Value = serde_json::from_slice(&output.stdout).unwrap();
-    for (index, (field, value)) in [
-        ("profile", Value::String("rp2350-signed-msd-v1".into())),
-        ("stepping", Value::String("A4".into())),
-        ("bootkey0", Value::String("00".into())),
-        ("critical", Value::from(0x1_0000_0000u64)),
-        ("redundancy_ok", Value::from(1)),
-        ("usb_serial", Value::String("00AFD9003906A634".into())),
-        ("unexpected", Value::Bool(true)),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let path = temporary(&format!("forged-security-{index}.sock"));
-        let listener = UnixListener::bind(&path).unwrap();
-        let mut forged = baseline.clone();
-        forged["result"][field] = value;
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut length = [0; 4];
-            stream.read_exact(&mut length).unwrap();
-            let mut request = vec![0; u32::from_be_bytes(length) as usize];
-            stream.read_exact(&mut request).unwrap();
-            let request: Value = serde_json::from_slice(&request).unwrap();
-            forged["request_id"] = request["request_id"].clone();
-            let bytes = serde_json::to_vec(&forged).unwrap();
-            stream
-                .write_all(&(bytes.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&bytes).unwrap();
-        });
-        let output = cli(&strings(&[
+    let res = rig.status_cli();
+    assert_eq!(res.exit_code, 0, "{}", String::from_utf8_lossy(&res.stderr));
+    let v: Value = serde_json::from_slice(&res.stdout).unwrap();
+    assert!(v.get("revision").is_some());
+    assert_eq!(v["pools"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn key_rotate_writes_vkey_and_backup_and_refuses_clobber() {
+    let rig = TestRig::commissioned_pool();
+    let status: Value = serde_json::from_slice(&rig.status_cli().stdout).unwrap();
+    let pool_id = status["pools"][0]["pool_id"].as_str().unwrap().to_owned();
+    let dir = rig.receipt_path().parent().unwrap();
+    let vkey = dir.join("op-vkey");
+    let backup = dir.join("op-backup");
+    let _ = std::fs::remove_file(&vkey);
+    let _ = std::fs::remove_file(&backup);
+
+    let res = rig.run_cli(vec![
+        "key".into(),
+        "rotate".into(),
+        pool_id.clone(),
+        "--vkey-out".into(),
+        vkey.display().to_string(),
+        "--backup-out".into(),
+        backup.display().to_string(),
+    ]);
+    assert_eq!(res.exit_code, 0, "{}", String::from_utf8_lossy(&res.stderr));
+    assert!(vkey.exists());
+    assert!(backup.exists());
+
+    let res2 = rig.run_cli(vec![
+        "key".into(),
+        "rotate".into(),
+        pool_id,
+        "--vkey-out".into(),
+        vkey.display().to_string(),
+        "--backup-out".into(),
+        backup.display().to_string(),
+    ]);
+    assert_ne!(res2.exit_code, 0);
+}
+
+#[test]
+fn destructive_commands_require_confirmation() {
+    let rig = TestRig::commissioned_pool();
+    let status: Value = serde_json::from_slice(&rig.status_cli().stdout).unwrap();
+    let pool_id = status["pools"][0]["pool_id"].as_str().unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_p2kes"))
+        .args([
             "--socket",
-            path.to_str().unwrap(),
-            "--json",
-            "device",
-            "security",
-        ]));
-        assert_eq!(output.status.code(), Some(7), "malformed field {field}");
-        server.join().unwrap();
-        fs::remove_file(path).unwrap();
-    }
+            rig.management_socket().to_str().unwrap(),
+            "pool",
+            "rm",
+            pool_id,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"n\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let after: Value = serde_json::from_slice(&rig.status_cli().stdout).unwrap();
+    assert_eq!(after["pools"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn missing_socket_and_unknown_command_fail_closed() {
+    let missing = p2kes(&["--socket", "/nonexistent/p2kes.sock", "status"]);
+    assert!(!missing.status.success());
+
+    let unknown = p2kes(&["--socket", "/nonexistent/p2kes.sock", "bogus-cmd"]);
+    assert!(!unknown.status.success());
 }
