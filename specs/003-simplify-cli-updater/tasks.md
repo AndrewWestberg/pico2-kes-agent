@@ -129,7 +129,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 - [x] T034 [US5] Update `src/backup/recover.rs` to extract `device`, `pool`, `incarnation`, `generation`, and `verification_key` directly from the signed CBOR artifact header, verify `device` and Ed25519 signature against `DeviceIdentityFile` (`--device-identity`), check any optional assertion flags (`--pool`, `--incarnation`, `--generation`, `--verification-key`), and decrypt/verify `SecretBuffer` immediately
 - [x] T035 [US5] Wire `p2kes backup keygen`, `p2kes backup set-recipient`, and 4-input `p2kes backup restore` (printing verified device, pool, incarnation, generation, and verification key to stdout) in `src/cli/mod.rs`
-- [ ] T036 [US5] Update `tests/backup_restore.rs` to test 4-input offline `p2kes backup restore`, tampered artifact rejection, wrong `--device-identity` rejection, and optional assertion flag mismatch rejection
+- [x] T036 [US5] Update `tests/backup_restore.rs` to test 4-input offline `p2kes backup restore`, tampered artifact rejection, wrong `--device-identity` rejection, and optional assertion flag mismatch rejection
 
 **Checkpoint**: All 5 user stories are complete and independently testable.
 
