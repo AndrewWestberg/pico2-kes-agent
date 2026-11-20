@@ -809,7 +809,15 @@ fn serve_pool(listener: UnixListener, subscription: PoolSubscription) {
                     });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(50));
+                let ts = rustix::event::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 200_000_000,
+                };
+                let mut pfd = [rustix::event::PollFd::new(
+                    &listener,
+                    rustix::event::PollFlags::IN,
+                )];
+                let _ = rustix::event::poll(&mut pfd, Some(&ts));
             }
             Err(_) => return,
         }
