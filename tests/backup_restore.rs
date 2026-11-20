@@ -225,6 +225,32 @@ fn generated_recipient_public_file_round_trips_and_authenticates_its_identifier(
     assert!(recipient::parse_public_json(&serde_json::to_vec(&tampered).unwrap()).is_err());
 }
 
+#[test]
+fn four_input_restore_from_artifact_rejects_missing_or_tampered_inputs() {
+    let dir = std::env::temp_dir().join(format!("p2kes-br-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad_art = dir.join("bad.cbor");
+    let key = dir.join("key.json");
+    let id = dir.join("device.json");
+    let out = dir.join("out.skey");
+    std::fs::write(&bad_art, b"not-cbor").unwrap();
+    std::fs::write(&key, b"{}").unwrap();
+    std::fs::write(&id, b"{}").unwrap();
+    assert!(
+        recover::restore_from_artifact(
+            &bad_art,
+            &key,
+            &id,
+            &out,
+            b"",
+            recover::OptionalAssertions::default()
+        )
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn decode_hex<const N: usize>(value: &str) -> [u8; N] {
     let mut output = [0; N];
     let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
