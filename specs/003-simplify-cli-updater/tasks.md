@@ -71,7 +71,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 
 ### Implementation for User Story 2
 
-- [ ] T017 [US2] Add `LivePoolSet { version: u64, pools: Vec<(PoolBinding, PoolSubscription)> }` (`pools.len() <= 64`) in `src/daemon/runtime.rs`; update `LiveEndpoints::reconcile()` to mutate `LivePoolSet`, bump `version`, and wake the accept loop; always spawn `poll_pools` in `RunMode::Normal` and refresh its snapshot whenever `version` changes
+- [x] T017 [US2] Add `LivePoolSet { version: u64, pools: Vec<(PoolBinding, PoolSubscription)> }` (`pools.len() <= 64`) in `src/daemon/runtime.rs`; update `LiveEndpoints::reconcile()` to mutate `LivePoolSet`, bump `version`, and wake the accept loop; always spawn `poll_pools` in `RunMode::Normal` and refresh its snapshot whenever `version` changes
 - [ ] T018 [US2] Replace the per-pool `serve_pool` `accept()` + `sleep(50ms)` threads in `src/daemon/runtime.rs` with a single `rustix::event::poll` accept loop over the management listener, all active pool listeners, and a self-pipe/eventfd wakeup
 - [ ] T019 [US2] Implement graceful shutdown drain in `src/daemon/runtime.rs`: on `SIGTERM`/`SIGINT`, stop accepting new management connections, wait up to `MANAGEMENT_TIMEOUT` (5s) via `Condvar` for `active_management == 0` before joining `poller`, and log+drop instead of returning `Err` when management thread spawn fails
 - [x] T020 [US2] Restrict `management.reconstructed_registry()` + `endpoints.reconcile()` in `serve_management` (`src/daemon/runtime.rs`) to run **only** when a mutation commits `CommittedResult::Enrolled` or `CommittedResult::Deleted`, never on read-only requests
