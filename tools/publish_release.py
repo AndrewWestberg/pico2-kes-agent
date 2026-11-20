@@ -130,7 +130,7 @@ COMPONENT_PATHS = {
     "flash": "bin/p2kes-flash",
     "firmware": "firmware/pico2-kes-firmware.signed.uf2",
     "tool": "tools/picotool",
-    "deployment": "deploy/install.sh",
+    "deployment": "deploy/pico2-kes-agentd.service",
 }
 RUNTIME_PACKAGES = {
     "runtime/libusb-1.0.so.0": "libusb-1.0-0",
@@ -140,7 +140,7 @@ RUNTIME_PACKAGES = {
 }
 REQUIRED_ASSETS = set(COMPONENT_PATHS.values()) | {
     "install.sh", "distribution-authority.json", "distribution-authority.json.asc",
-    "tools/firmware.py", "deploy/uninstall.sh",
+    "tools/firmware.py",
     "deploy/pico2-kes-agentd.service", "deploy/70-pico2-kes-agent.rules",
     "deploy/pico2-kes-agent-host-check", "deploy/cardano-node-memory-hardening.conf",
     "licenses/picotool.txt", "licenses/mbedtls.txt", "licenses/libusb-1.0-0.txt",

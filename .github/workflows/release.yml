@@ -277,7 +277,7 @@ jobs:
           cp install.sh payload/install.sh
           cp security/distribution-authority.json security/distribution-authority.json.asc payload/
           chmod 0644 payload/distribution-authority.json payload/distribution-authority.json.asc
-          cp deploy/install.sh deploy/uninstall.sh deploy/pico2-kes-agentd.service \
+          cp deploy/pico2-kes-agentd.service \
             deploy/70-pico2-kes-agent.rules deploy/pico2-kes-agent-host-check \
             deploy/cardano-node-memory-hardening.conf payload/deploy/
           export PATH="$GITHUB_WORKSPACE/payload/tools:/usr/bin:/bin"
