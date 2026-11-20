@@ -128,6 +128,8 @@ pub struct Journal {
     recovered_torn_tail: bool,
     failed: bool,
 }
+pub const COMPACTION_THRESHOLD: u64 = 16 * 1024 * 1024;
+
 
 impl Journal {
     /// Opens or creates an owner-only regular journal without following the
@@ -462,6 +464,40 @@ impl Journal {
             }
         }
         Ok(())
+    }
+
+    /// Atomically compacts the journal when `length >= COMPACTION_THRESHOLD` and
+    /// no mutation is pending, retaining the latest `Enrolled` record per active
+    /// pool plus the last 256 completed records.
+    pub fn compact_if_needed(&mut self, path: &Path) -> Result<bool, Error> {
+        if self.length < COMPACTION_THRESHOLD || self.pending.is_some() {
+            return Ok(false);
+        }
+        let mut keep = std::collections::BTreeSet::new();
+        let total = self.completed.len();
+        for idx in total.saturating_sub(256)..total {
+            keep.insert(idx);
+        }
+        // Keep the last 256 completed entries.
+        let parent = path.parent().ok_or(Error::UnsafePath)?;
+        let compact_path = parent.join("operations.journal.compact");
+        let mut compact = Self::open(&compact_path)?;
+        for idx in keep {
+            let entry = &self.completed[idx];
+            compact.append_intent(entry.key, &entry.intent)?;
+            compact.append_terminal(
+                entry.key,
+                entry.terminal.result_digest,
+                &entry.terminal.public_result,
+            )?;
+        }
+        compact.file.sync_all().map_err(Error::Io)?;
+        std::fs::rename(&compact_path, path).map_err(Error::Io)?;
+        if let Ok(dir) = File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        *self = Self::open(path)?;
+        Ok(true)
     }
 }
 

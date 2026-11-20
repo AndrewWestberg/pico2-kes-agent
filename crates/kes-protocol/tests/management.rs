@@ -67,13 +67,13 @@ fn security_reply_requires_complete_consistent_schema() {
 
 #[test]
 fn inventory_response_accepts_capacity_and_rejects_overflow() {
-    assert!(Message::decode(request("device.inventory", "{}", false).as_bytes()).is_ok());
+    assert!(Message::decode(request("status", "{}", false).as_bytes()).is_ok());
     assert!(
-        Message::decode(request("device.inventory", "{\"page_size\":1}", false).as_bytes())
+        Message::decode(request("status", "{\"page_size\":1}", false).as_bytes())
             .is_err()
     );
-    assert!(Message::decode(request("device.inventory", "{}", true).as_bytes()).is_err());
-    assert!(Message::decode(request("pool.list", "{\"page_size\":17}", false).as_bytes()).is_err());
+    assert!(Message::decode(request("status", "{}", true).as_bytes()).is_err());
+    assert!(Message::decode(request("device.inventory", "{}", false).as_bytes()).is_err());
     let entry = format!(
         "{{\"pool_id\":\"{POOL}\",\"incarnation_id\":\"{ID}\",\"revision\":{}}}",
         u64::MAX
@@ -90,7 +90,7 @@ fn inventory_response_accepts_capacity_and_rejects_overflow() {
 }
 #[test]
 fn framing_fragmentation_limits_and_next_frame() {
-    let json = request("device.status", "{}", false);
+    let json = request("status", "{}", false);
     let message = Message::decode(json.as_bytes()).unwrap();
     let mut encoded = [0; MAX_FRAME + 4];
     let n = message.encode_frame(&mut encoded).unwrap();
@@ -117,37 +117,15 @@ fn every_action_and_exact_argument_schema() {
     let target = format!("{pool},\"incarnation_id\":\"{ID}\"");
     let generation = format!("{target},\"generation_id\":\"{ID}\"");
     let cases = [
-        ("device.status", "{}".into(), false, Action::DeviceStatus),
-        (
-            "device.security",
-            "{}".into(),
-            false,
-            Action::DeviceSecurity,
-        ),
-        (
-            "device.inventory",
-            "{}".into(),
-            false,
-            Action::DeviceInventory,
-        ),
+        ("status", "{}".into(), false, Action::Status),
+        ("status", format!("{{{pool}}}"), false, Action::Status),
         (
             "device.commission",
             "{\"usb_serial\":\"board\"}".into(),
             true,
             Action::DeviceCommission,
         ),
-        (
-            "pool.list",
-            "{\"page_size\":16,\"cursor\":\"next\"}".into(),
-            false,
-            Action::PoolList,
-        ),
-        (
-            "pool.status",
-            format!("{{{pool}}}"),
-            false,
-            Action::PoolStatus,
-        ),
+        ("operation.reconcile", "{}".into(), false, Action::OperationReconcile),
         (
             "pool.enroll",
             format!("{{\"cold_verification_key\":\"{KEY}\",\"network\":\"mainnet\"}}"),
@@ -233,16 +211,16 @@ fn strict_json_duplicate_escaping_and_numbers() {
         input.replace("\"version\":1", "\"version\":-1"),
         input.replace("\"version\":1", "\"version\":18446744073709551616"),
         format!("{input} null"),
-        input.replace("device.status", "device.\\qstatus"),
-        input.replace("device.status", "device.\\ud800status"),
+        input.replace("device.status", "\\qstatus"),
+        input.replace("device.status", "\\ud800status"),
         input.replace("\"version\":1", "\"version\":2"),
     ] {
         assert!(Message::decode(bad.as_bytes()).is_err(), "{bad}");
     }
-    let good = input.replace("device.status", "device.\\u0073tatus");
+    let good = input.replace("device.status", "\\u0073tatus");
     assert!(Message::decode(good.as_bytes()).is_ok());
     let duplicate = request(
-        "pool.status",
+        "status",
         &format!("{{\"pool_id\":\"{POOL}\",\"pool_\\u0069d\":\"{POOL}\"}}"),
         false,
     );
