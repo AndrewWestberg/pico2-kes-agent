@@ -57,7 +57,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 - [x] T013 [US1] Implement implicit state resolution in `src/cli/mod.rs`: when `--expected-revision` or incarnation/staged generation is omitted on `pool rm`, `key rotate`, `key export`, `key install-cert`, or `key discard`, query `status` first, fail closed on ambiguous/missing state (e.g., occupied staged slot on `rotate`, no staged slot on `discard`), and submit explicit IDs + revision on the wire
 - [x] T014 [US1] Implement combined `key rotate POOL_ID --vkey-out FILE --backup-out FILE` (calling `generation.create`, `generation.public_key`, and `generation.artifact`, writing both files no-clobber) and standalone `key export` re-export in `src/cli/mod.rs`
 - [x] T015 [P] [US1] Update `src/cli/status.rs` to render `UnifiedStatus` cleanly for human operators (device health/identity/security, pending operation warning, and all 0..=64 pools) and pass through `--json`
-- [ ] T016 [US1] Update `tests/operator_cli.rs`, `tests/single_pool.rs`, and `tests/management_recovery.rs` to verify the `p2kes` command surface, implicit resolution, destructive `y/N` confirmation, partial-failure `key rotate` (`--backup-out` collision) recovery via `p2kes key export` without regeneration, and receipt-free `p2kes reconcile`
+- [x] T016 [US1] Update `tests/operator_cli.rs`, `tests/single_pool.rs`, and `tests/management_recovery.rs` to verify the `p2kes` command surface, implicit resolution, destructive `y/N` confirmation, partial-failure `key rotate` (`--backup-out` collision) recovery via `p2kes key export` without regeneration, and receipt-free `p2kes reconcile`
 
 **Checkpoint**: User Story 1 (`p2kes`) is complete and independently testable.
 
@@ -77,7 +77,7 @@ description: "Task list for Simplify CLI, Daemon Lifecycle, and Software Updater
 - [x] T020 [US2] Restrict `management.reconstructed_registry()` + `endpoints.reconcile()` in `serve_management` (`src/daemon/runtime.rs`) to run **only** when a mutation commits `CommittedResult::Enrolled` or `CommittedResult::Deleted`, never on read-only requests
 - [x] T021 [P] [US2] Implement atomic journal compaction in `src/daemon/journal.rs`: when file size >= `16 * 1024 * 1024` (16 MiB) and `pending().is_none()`, retain the latest `Enrolled` record per active pool plus the last 256 completed records, write `operations.journal.compact` (`0600`), `sync_all()`, `rename()` over `operations.journal`, and `sync_all()` the parent directory
 - [x] T022 [P] [US2] Detect USB firmware protocol major version mismatch on connect in `src/daemon/usb.rs` / `src/daemon/management.rs`, fail closed for unsafe operations, and populate `health = "incompatible_firmware"` with `usb_protocol_major`, `required_protocol_major`, and `sudo p2kes-flash flash` remediation guidance
-- [ ] T023 [US2] Add integration and property tests in `tests/node_service.rs`, `tests/service_lifecycle.rs`, and `src/daemon/journal.rs` covering dynamic runtime pool add/remove, shutdown drain, firmware mismatch reporting, 10k-entry status latency (<100 ms), and journal compaction equivalence
+- [x] T023 [US2] Add integration and property tests in `tests/node_service.rs`, `tests/service_lifecycle.rs`, and `src/daemon/journal.rs` covering dynamic runtime pool add/remove, shutdown drain, firmware mismatch reporting, 10k-entry status latency (<100 ms), and journal compaction equivalence
 
 **Checkpoint**: User Stories 1 and 2 are both complete and independently verified.
 
