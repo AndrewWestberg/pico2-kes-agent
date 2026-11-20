@@ -499,8 +499,62 @@ fn cmd_backup_set_recipient(socket: &Path, args: &[String], json_mode: bool) -> 
     Ok(())
 }
 
-fn cmd_backup_restore(_args: &[String], _json_mode: bool) -> Result<(), String> {
-    Err("backup restore wiring pending T034/T035".into())
+fn cmd_backup_restore(args: &[String], json_mode: bool) -> Result<(), String> {
+    let artifact = flag_val(args, "--artifact")?;
+    let key = flag_val(args, "--key")?;
+    let identity = flag_val(args, "--device-identity")?;
+    let out = flag_val(args, "--out")?;
+    let assertions = crate::backup::recover::OptionalAssertions {
+        pool: opt_flag_val(args, "--pool")
+            .map(|s| crate::backup::recover::decode_hex::<28>(s).ok_or("invalid --pool"))
+            .transpose()?,
+        incarnation: opt_flag_val(args, "--incarnation")
+            .map(|s| crate::backup::recover::decode_hex::<16>(s).ok_or("invalid --incarnation"))
+            .transpose()?,
+        generation: opt_flag_val(args, "--generation")
+            .map(|s| crate::backup::recover::decode_hex::<16>(s).ok_or("invalid --generation"))
+            .transpose()?,
+        verification_key: opt_flag_val(args, "--verification-key")
+            .map(|s| {
+                crate::backup::recover::decode_hex::<32>(s).ok_or("invalid --verification-key")
+            })
+            .transpose()?,
+    };
+    let bindings = crate::backup::recover::restore_from_artifact(
+        Path::new(artifact),
+        Path::new(key),
+        Path::new(identity),
+        Path::new(out),
+        &[],
+        assertions,
+    )
+    .map_err(|e| format!("backup restore failed: {e:?}"))?;
+    if json_mode {
+        println!(
+            "{}",
+            json!({
+                "device": hex_str(&bindings.device),
+                "pool": hex_str(&bindings.pool),
+                "incarnation": hex_str(&bindings.incarnation),
+                "generation": hex_str(&bindings.generation),
+                "verification_key": hex_str(&bindings.verification_key),
+            })
+        );
+    } else {
+        println!(
+            "restored device={} pool={} incarnation={} generation={} verification_key={}",
+            hex_str(&bindings.device),
+            hex_str(&bindings.pool),
+            hex_str(&bindings.incarnation),
+            hex_str(&bindings.generation),
+            hex_str(&bindings.verification_key),
+        );
+    }
+    Ok(())
+}
+
+fn hex_str(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // Keep Action imported so contracts/cli.md alignment is checked.

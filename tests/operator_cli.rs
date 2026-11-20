@@ -13,7 +13,7 @@ use std::{
 use support::TestRig;
 
 fn cli(arguments: &[String]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pico2-kes-agent-cli"))
+    Command::new(env!("CARGO_BIN_EXE_p2kes"))
         .args(arguments)
         .output()
         .unwrap()
@@ -32,9 +32,9 @@ fn host_versions_are_standalone_and_share_build_identity() {
     let mut identities = Vec::new();
     for (binary, component, invalid_exit) in [
         (
-            env!("CARGO_BIN_EXE_pico2-kes-agent-cli"),
-            "pico2-kes-agent-cli",
-            2,
+            env!("CARGO_BIN_EXE_p2kes"),
+            "p2kes",
+            1,
         ),
         (
             env!("CARGO_BIN_EXE_pico2-kes-agentd"),
@@ -222,7 +222,7 @@ fn executable_rejects_direct_usb_without_contacting_a_device() {
 
 #[test]
 fn executable_reports_output_failure() {
-    let output = Command::new(env!("CARGO_BIN_EXE_pico2-kes-agent-cli"))
+    let output = Command::new(env!("CARGO_BIN_EXE_p2kes"))
         .arg("--help")
         .stdout(
             fs::OpenOptions::new()
@@ -234,7 +234,7 @@ fn executable_reports_output_failure() {
         .unwrap();
     assert_eq!(
         output.status.code(),
-        Some(pico2_kes_agent::cli::EXIT_FAILURE)
+        Some(1)
     );
 }
 

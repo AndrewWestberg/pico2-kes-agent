@@ -665,10 +665,10 @@ mod tests {
         assert!(
             matches!(regular_file(&fifo), Err(error) if error.kind() == io::ErrorKind::InvalidInput)
         );
-        assert!(crate::manager::setup::review_config(&fifo, RunMode::Normal).is_err());
+        assert!(Config::load(&fifo, RunMode::Normal).is_err());
         let link = fixture.0.join("candidate-link.json");
         std::os::unix::fs::symlink(&fifo, &link).unwrap();
-        assert!(crate::manager::setup::review_config(&link, RunMode::Normal).is_err());
+        assert!(Config::load(&link, RunMode::Normal).is_err());
     }
 
     #[test]

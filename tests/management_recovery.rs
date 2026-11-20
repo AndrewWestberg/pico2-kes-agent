@@ -1,6 +1,6 @@
 mod support;
 
-use pico2_kes_agent::cli::{client, receipt};
+use pico2_kes_agent::cli::client;
 use serde_json::Value;
 use support::{CliResult, TestRig};
 

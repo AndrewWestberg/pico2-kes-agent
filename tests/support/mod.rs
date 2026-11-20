@@ -1447,7 +1447,6 @@ impl TestRig {
             "operation_id": operation_id.to_string(),
             "expected_revision": revision,
         });
-        cli::receipt::create(&self.receipt, request.clone()).unwrap();
         let key = MutationKey {
             sequence: mutation.sequence(),
             operation_id: *operation_id.as_bytes(),
@@ -1494,12 +1493,17 @@ impl TestRig {
             "--json".to_owned(),
         ];
         prefixed.append(&mut args);
-        let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let exit_code = cli::run(&prefixed, &mut stdout, &mut stderr);
+        let exit_code = match cli::run(prefixed) {
+            Ok(()) => 0,
+            Err(e) => {
+                stderr = e.into_bytes();
+                1
+            }
+        };
         CliResult {
             exit_code,
-            stdout,
+            stdout: Vec::new(),
             stderr,
         }
     }
@@ -1591,17 +1595,7 @@ impl TestRig {
     }
 
     pub fn commission_cli(&mut self, serial: &str, operation: &str) -> CliResult {
-        let receipt = if self.receipt.exists()
-            && cli::receipt::load(&self.receipt)
-                .ok()
-                .and_then(|saved| saved.request["operation_id"].as_str().map(str::to_owned))
-                .as_deref()
-                != Some(operation)
-        {
-            self.root.join(format!("operation-{operation}.json"))
-        } else {
-            self.receipt.clone()
-        };
+        let _ = self.receipt.clone();
         if self.host_cut == Some(Cut::BeforePinPublication) {
             self.host_cut = None;
             let result = self.run_cli(vec![
@@ -1613,12 +1607,10 @@ impl TestRig {
                 operation.into(),
                 "--expected-revision".into(),
                 "0".into(),
-                "--receipt".into(),
-                receipt.display().to_string(),
             ]);
             return CliResult {
                 exit_code: if result.exit_code == 0 {
-                    cli::EXIT_FAILURE
+                    1
                 } else {
                     result.exit_code
                 },

@@ -11,11 +11,11 @@ pub const FIRMWARE_START: u32 = 0x1000_0000;
 pub const FIRMWARE_END: u32 = 0x1040_0000;
 
 pub fn validate_uf2(bytes: &[u8]) -> Result<usize, String> {
-    if bytes.is_empty() || bytes.len() % UF2_BLOCK_SIZE != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(UF2_BLOCK_SIZE) {
         return Err("UF2 length must be a non-zero multiple of 512 bytes".into());
     }
     let blocks = bytes.len() / UF2_BLOCK_SIZE;
-    for (idx, chunk) in bytes.chunks_exact(UF2_BLOCK_SIZE).enumerate() {
+    for (idx, chunk) in bytes.as_chunks::<UF2_BLOCK_SIZE>().0.iter().enumerate() {
         let m0 = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
         let m1 = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
         let target_addr = u32::from_le_bytes(chunk[12..16].try_into().unwrap());
@@ -32,7 +32,7 @@ pub fn validate_uf2(bytes: &[u8]) -> Result<usize, String> {
         if payload_size > 476 {
             return Err(format!("UF2 payload_size > 476 in block {idx}"));
         }
-        if target_addr < FIRMWARE_START || target_addr >= FIRMWARE_END {
+        if !(FIRMWARE_START..FIRMWARE_END).contains(&target_addr) {
             return Err(format!(
                 "UF2 target_addr 0x{target_addr:08x} outside RP2350 flash range"
             ));
