@@ -237,7 +237,7 @@ import runpy
 runpy.run_path("tools/firmware.py")["verify_authority"]("security")
 PY
   PICO2_REQUIRE_FIRMWARE_AUTHORITY=1 cargo build --locked --release \
-    --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+    --bin pico2-kes-agentd --bin p2kes --bin p2kesup --bin p2kes-flash
   PICO2_REQUIRE_FIRMWARE_AUTHORITY=1 cargo build --locked --release \
     -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
   test -f target/otp-permissions/pico2-otp-permissions.elf

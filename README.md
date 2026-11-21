@@ -88,69 +88,83 @@ Requirements:
 
 **Clock readiness:** the daemon uses host UTC as the KES period authority, without checking kernel synchronization status or querying the node. Operators must maintain and independently monitor accurate time. An incorrect clock or genesis/transition configuration can irreversibly advance or expire a key; synchronization alone does not establish correct network configuration. The service still prohibits clock-setting calls.
 
-## Install and operate with p2kesup
+## Install and operate
 
-`p2kesup` is the attended, source-free operator interface. This implementation is development software; a signed development build is not a production release. Use a supported release for production.
+The system consists of four host binaries:
 
-For a complete ordered RC tag/build, authenticated installation, setup, lifecycle, recovery and whole-system test sequence, start with the [manual testing runbook](docs/manual-testing.md). It names the required host roles, exact commands and stop conditions; it does not establish production readiness.
+- `pico2-kes-agentd`: the background daemon managing the Pico 2 device and pool sockets.
+- `p2kes`: everyday operator CLI (`status`, `commission`, `pool`, `key`, `backup`).
+- `p2kesup`: non-interactive software installer/updater (`install`, `update`, `uninstall`, `status`).
+- `p2kes-flash`: standalone firmware verifier and flasher (`verify`, `flash`).
 
-### Install p2kesup
+### Install from a release bundle
 
-The launcher itself is trusted from the project's HTTPS-hosted default branch. Downloaded payloads use a separate trust chain: the pinned OpenPGP authority authorizes a distribution-signing secp256k1 key once; that delegated key signs each manifest and bootstrap in distinct signing contexts. No private PGP key is needed by GitHub or the installer. For independent launcher verification before execution, use the separately signed release bootstrap as described in the [maintainer security guide](docs/maintainer-security.md).
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh
-```
-
-This selects the latest approved stable release. To select an explicit RC for reviewed acceptance on a disposable host:
+Download and extract a signed release bundle from GitHub Releases, then run the bootstrapper or `p2kesup` directly from the extracted directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh -s -- --version v0.1.0-rc.12
+gh release download v0.1.0-rc.24 --repo AndrewWestberg/pico2-kes-agent --pattern '*.tar.gz' -O - | tar -xz
+cd pico2-kes-agent-*
+./install.sh
 ```
 
-Use `--role backup` on an isolated backup host, or `--bundle /absolute/path` for an already obtained offline distribution. Explicit candidate tags or bundles require attended disposable-host acceptance and review; they are not production releases. The bootstrap reviews proposed dependencies, privileges and installation changes, and installs the persistent command directly after approval, rather than requiring a menu installation. It reads interactive confirmations from `/dev/tty` even when piped and refuses noninteractive mutation. Signature, inventory, inner firmware, compatibility and applicable hardware checks remain mandatory. Offline verification cannot establish current global revocation status or the latest release.
-
-Reopen with `p2kesup`, or `p2kesup --role backup` on the separate backup host, then perform device setup when ready. `--socket PATH` selects the primary management socket and `--bundle DIRECTORY` selects an offline bundle; standalone `p2kesup --help` and `p2kesup --version --json` need no service. Use an attended terminal at least 80×24: arrows or j/k select, Tab/Shift-Tab changes section, 1–6 jumps to a section, `d` opens the 4-tab technical evidence drawer (`1–4` or `Tab`), Enter opens/reviews, Esc cancels, `r` refreshes, `?` opens help, and `q` quits when not applying. Text fields support full cursor editing (`Left`/`Right`/`Home`/`End`/`Delete`/`Ctrl+U`/`Ctrl+W`), `< >` cycles selector choices, and validation errors keep typed values intact. Labels remain meaningful with `NO_COLOR=1`.
-
-### Upgrade the installed system
+Or invoke `p2kesup` directly:
 
 ```sh
-p2kesup upgrade
+sudo ./bin/p2kesup install --bundle .
+p2kesup status
+p2kes --version
 ```
 
-The command detects the installed primary/backup role, downloads and verifies the latest qualified stable release, and reviews the complete change (you can also launch the same workflow interactively via **Software → Upgrade or switch complete release tuple**). For RC testing use `p2kesup upgrade --version v0.1.0-rc.12`; for offline use, `p2kesup upgrade --bundle /absolute/path`.
+`p2kesup` installs the four binaries into `/usr/local/bin/` and stages firmware, tools, and deploy assets into `/usr/local/share/pico2-kes-agent/`. It does not modify systemd units or `/etc/fstab`.
 
-On a commissioned primary, keep the pinned device connected and allow an attended maintenance window. Firmware changes guide the physical transfer; backup-host upgrades do not touch a device. The daemon is persistently inhibited during transfer and partial publication, including across reboot. Completion requires the selected host binaries, live firmware, retained identity/state and original service state—not just a successful copy.
+### Update and uninstall
 
-If interrupted, retain the displayed plan and run `p2kesup upgrade --resume /absolute/original-upgrade-plan.json` (or select the unresolved upgrade record directly in **Activity**). Recovery never reflashes or restores older KES state. A proven cancellation before any transfer restores the old installation; ambiguous transfers remain blocked. Do not manually unmask the service to bypass a pending upgrade.
+```sh
+sudo p2kesup update --bundle /path/to/signed-bundle
+```
 
-### Guided workflows
+After updating, restart the daemon and flash updated firmware if prompted:
 
-- **Set up my Pico 2** (Device or Host) discovers attached boards and guides authenticated first firmware installation when needed, restricted blank-device commissioning, reviewed normal configuration and service start. A compatible blank application skips flashing. For an already commissioned board choose **Keep** using its matching trusted `device.json`; a configured board keeps its existing configuration and pin. Neither the board's self-report nor a USB serial is independent identity attestation. Missing, ambiguous or inconsistent evidence blocks the relevant step.
-- **Wipe board and start over** is an explicit destructive alternative only for an eligible OTP-unlocked commissioned board. Stop and fence block producers first; all board pools and KES keys will be lost and new operational certificates are needed. The attended action stops the services and moves the old host configuration and agent state, including the journal, into `/var/lib/p2kesup/archive/<operation-id>/`, root-owned mode 0700. The foreground firmware tool erases and verifies the state region; after a blank post-check, commission separately. Locked or uncertain boards cannot be wiped this way. An interrupted wipe is recovered forward from its original **Activity** record: never retry an uncertain erase or automatically restore the archive. This does not revoke copies already delivered or backed up.
-- **Add a pool** selects the public cold verification key, enrolls and binds the pool, then continues to **Rotate KES key**. The manager does not presume recipient status from firmware. If generation is durably rejected specifically because the recipient is missing, select and install the public recipient record and generate a fresh operation; uncertain or other failures must instead be reconciled or addressed, never blindly retried. Recipient rotation affects future artifacts only.
-- **Rotate KES key** generates a staged key and exports its public verification key and encrypted backup to the managed workspace. It displays the current absolute KES period calculated locally from the validated genesis timing and host UTC, and prints the offline `cardano-cli` certificate command; it does not run that command or query the node. Sign on the cold host, return the public certificate for installation, and use the displayed node flags. Independently maintain accurate time and verify the network and transition epoch: an incorrect period can cause irreversible advancement or expiry.
+```sh
+sudo systemctl restart pico2-kes-agentd
+sudo p2kes-flash flash
+```
 
-The manager reads bounded local systemd node-unit configuration and referenced public genesis files to suggest network settings and producer units. It does not execute node scripts, contact node sockets, run `cardano-cli`, or establish forging readiness. Custom networks require the actual Byron-to-Shelley transition epoch. Reviewed configuration imports public genesis files under `/etc/pico2-kes-agent/genesis/<network>/`, root-owned mode 0644, with digest verification and no clobber of different files. The existing host-memory preflight remains mandatory, including its literal `cardano-node.service` constraint.
+To remove managed binaries and staged assets (leaving `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/` untouched):
 
-Configuration review and the local KES clock inspect public config without requiring ownership of the daemon's private directories. Before installing configuration, the root helper creates the default service runtime when needed and validates the full configuration as the service user; daemon startup still enforces directory ownership and permissions. Wipe archival uses no-clobber renames and requires the configuration, agent state and archive to share a filesystem; split mounts fail closed before erasure.
+```sh
+sudo p2kesup uninstall --yes
+```
 
-Approvals describe the action, target, service interruption and any data loss in plain language, with default-no `y/N` confirmation. Machine-verifiable checks run automatically; normal firmware installation does not ask for evidence references, typed magic words or JSON review. Factory installation checks the signed image, supported board and USB volume before its single **Install firmware now?** prompt. If the Pico drive is not mounted, open it in the file manager when prompted; the tool discovers and verifies the mount rather than asking you to type its path. Physical BOOTSEL transitions still require the operator. Approval remains bound to the saved plan and revalidated inputs; unattended input cannot authorize a mutation.
+### Flash firmware (`p2kes-flash`)
 
-**Activity** opens a readable action/result summary; `d` reveals the original technical record when needed. Unreadable history is a warning, not an empty or healthy state. A factory attempt is retryable only after the protected helper proves that no write began under the original operation ID. Once a transfer could have started, keep using that original record for recovery.
+```sh
+p2kes-flash verify
+# Hold BOOTSEL on the Pico 2 A2 and connect USB:
+sudo p2kes-flash flash
+```
 
-Before any device commissioning or firmware transfer, the signed installer can replace an existing unused host installation without resetting it. Both agent services must be stopped, configuration and private state must be absent/empty, and the protected history must exclude a transfer. The installer preserves host-security policy, service accounts and records; an interrupted replacement is recoverable from its original Activity item. Configured or commissioned hosts still require the normal software-update workflow.
+### Everyday CLI (`p2kes`)
 
-**Activity** lists retained plans, maintenance records and lifecycle receipts, with pending/reconcile items prioritized. Select the original item to reconcile; never issue a new mutation for an uncertain result. Original commissioning recovery uses the saved serial and restricted authority, not a new blank admission. The protected workspace under `$XDG_STATE_HOME/p2kesup/` retains plans, receipts, references, candidates and exports. **Software** handles authenticated release changes, **Host** service and producer memory policy, and **Device** optional OTP provisioning. Producer drop-ins require explicit approval and never start a stopped producer. OTP is separate, irreversible and never automatic; preserve its original records and never retry an uncertain write. Uninstall preserves host and device state and is not a wipe.
+```sh
+p2kes status
+p2kes commission --out /tmp/device.json
+p2kes backup keygen --out /tmp/recipient.key --public-out /tmp/recipient.pub
+p2kes backup set-recipient /tmp/recipient.pub
+p2kes pool add --cold-vkey /tmp/cold.vkey --network mainnet
+p2kes key rotate <POOL_ID> --vkey-out /tmp/kes.vkey --backup-out /tmp/kes.backup
+p2kes key install-cert <POOL_ID> /tmp/node.cert
+```
 
-### Backup host and secrets
+Offline restore on an isolated host:
 
-Run `p2kesup --role backup` only on an isolated host that has not been a primary; local checks cannot prove its history. **Overview**, **Recipients** and **Restore** show backup readiness (including active-swap preflight) and offer recipient creation (with pre-filled `exports/` paths), local restore (with optional `.metadata.json` ID pre-population) and public-recipient transfer guidance. Active/configured primary evidence or inaccessible evidence blocks private work. Before private-path forms and again before the child, explicitly approve finite root read-only inspection of local process executables under `/proc` and role evidence; it does not read private paths or contact a daemon, device or node.
-
-The authenticated CLI takes over the foreground terminal with inherited streams for passphrases and private work; the manager does not capture the secret or restored key. Independently verify the public device identity, pool/incarnation/generation and verification key. Restore writes plaintext KES signing material to a new protected path: protect it, fence other producers and remember the original certificate lifetime. Transfer only the public recipient record to the primary; preserve the private recipient and passphrase off-primary for old artifacts. Existing memory protection can refuse backup/restore; do not bypass it.
-
-The remaining CLI examples are detailed operator/reference procedures, not a substitute for manager admission or authenticated release selection.
-
+```sh
+p2kes backup restore \
+  --artifact /tmp/kes.backup \
+  --key /tmp/recipient.key \
+  --device-identity /tmp/device.json \
+  --out /tmp/restored-kes.skey
+```
 ## Build, flash, and install
 
 ### Developer build
@@ -160,7 +174,7 @@ The remaining CLI examples are detailed operator/reference procedures, not a sub
 ```bash
 rustup toolchain install 1.99.1 --profile minimal
 rustup target add --toolchain 1.99.1 thumbv8m.main-none-eabihf
-cargo build --locked --release --bin p2kesup --bin pico2-kes-agentd --bin pico2-kes-agent-cli
+cargo build --locked --release --bin p2kesup --bin pico2-kes-agentd --bin p2kes --bin p2kes-flash
 cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
 ```
 
@@ -168,7 +182,8 @@ Outputs:
 
 - `target/release/p2kesup`
 - `target/release/pico2-kes-agentd`
-- `target/release/pico2-kes-agent-cli`
+- `target/release/p2kes`
+- `target/release/p2kes-flash`
 - `target/thumbv8m.main-none-eabihf/release/pico2-kes-firmware`
 
 All three host executables support standalone `--version` and `--version --json`
