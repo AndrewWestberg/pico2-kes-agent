@@ -378,6 +378,10 @@ class PublishTests(unittest.TestCase):
                 unpacked = self.bundle / "unpacked"
                 with self.assertRaisesRegex(ValueError, "requested source tag"):
                     publisher.unpack_distribution_assets(assets, unpacked, expected_tag="vother", trust=trust)
+                with self.assertRaisesRegex(ValueError, "publication tag"):
+                    publisher.unpack_distribution_assets(assets, unpacked, publication_tag="qualified-vfixture", trust=trust)
+                with self.assertRaisesRegex(ValueError, "not a qualified stable"):
+                    publisher.unpack_distribution_assets(assets, unpacked, stable_only=True, trust=trust)
                 self.assertEqual(publisher.unpack_distribution_assets(
                     assets, unpacked, expected_tag="vfixture", trust=trust), manifest)
                 for name in ("distribution-authority.json", "distribution-authority.json.asc",
@@ -416,6 +420,11 @@ class PublishTests(unittest.TestCase):
                 self.assertEqual(promoted["release"], manifest["release"])
                 self.assertEqual(promoted["components"], manifest["components"])
                 self.assertEqual(promoted["compatibility"], manifest["compatibility"])
+                qualified_assets = self.bundle / "qualified-assets"
+                publisher.pack_distribution_assets(qualified, qualified_assets, evidence_dir, trust=trust)
+                self.assertEqual(publisher.unpack_distribution_assets(
+                    qualified_assets, self.bundle / "stable", publication_tag="qualified-vfixture",
+                    stable_only=True, trust=trust), promoted)
                 artifact = candidate / "bin/p2kesup"
                 original = artifact.read_bytes()
                 artifact.write_bytes(original + b"altered")

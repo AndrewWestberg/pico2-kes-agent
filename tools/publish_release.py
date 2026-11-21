@@ -759,7 +759,14 @@ def require_archive_member(member, entries, seen):
                      "invalid, duplicate or undeclared archive member")
 
 
-def unpack_distribution_assets(assets, output, *, expected_tag=None, trust=(firmware.PRIMARY, firmware.SIGNER)):
+def publication_identity(manifest):
+    qualified = manifest["qualification"] == "qualified"
+    return (("qualified-" if qualified else "") + manifest["release"]["tag"],
+            qualified and manifest["release"]["channel"] == "stable")
+
+
+def unpack_distribution_assets(assets, output, *, expected_tag=None, publication_tag=None,
+                               stable_only=False, trust=(firmware.PRIMARY, firmware.SIGNER)):
     assets, output = Path(assets), Path(output)
     metadata = assets / "distribution.json"
     signature = assets / "distribution.json.sig"
@@ -773,6 +780,10 @@ def unpack_distribution_assets(assets, output, *, expected_tag=None, trust=(firm
     validate_distribution_manifest(manifest)
     firmware.require(expected_tag is None or manifest["release"]["tag"] == expected_tag,
                      "signed distribution does not match requested source tag")
+    published, stable = publication_identity(manifest)
+    firmware.require(publication_tag is None or published == publication_tag,
+                     "signed distribution does not match requested publication tag")
+    firmware.require(not stable_only or stable, "signed distribution is not a qualified stable release")
     artifacts = manifest["artifacts"]
     firmware.require(type(artifacts) is list and 0 < len(artifacts) <= 256, "invalid artifact count")
     entries = {}
@@ -873,10 +884,10 @@ def pack_distribution_assets(bundle, assets, evidence=None, *, trust=(firmware.P
 def publish_distribution(bundle, tag, commit, evidence=None):
     manifest = verify_distribution(bundle)
     firmware.require(manifest["release"]["source_commit"] == commit, "release commit mismatch")
-    publication_tag = ("qualified-" if manifest["qualification"] == "qualified" else "") + manifest["release"]["tag"]
+    publication_tag, stable = publication_identity(manifest)
     firmware.require(tag == publication_tag,
                      "publication tag must match the signed release, prefixed with qualified- only for promotion")
-    prerelease = manifest["qualification"] != "qualified" or manifest["release"]["channel"] != "stable"
+    prerelease = not stable
     classification = ("--prerelease", "--latest=false") if prerelease else ("--prerelease=false", "--latest=true")
     target = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{quote(tag, safe='')}", "--jq", "{sha: .sha}"))
     firmware.require(target.get("sha") == commit, "publication tag does not identify candidate source")
@@ -967,8 +978,11 @@ def main():
         parser.add_argument("--assets", required=True, type=Path)
         parser.add_argument("--output", required=True, type=Path)
         parser.add_argument("--expected-tag", help="require this signed source tag before extraction")
+        parser.add_argument("--publication-tag", help="require this signed publication identity")
+        parser.add_argument("--stable-only", action="store_true", help="refuse candidates and prereleases")
         args = parser.parse_args(sys.argv[2:])
-        unpack_distribution_assets(args.assets, args.output, expected_tag=args.expected_tag)
+        unpack_distribution_assets(args.assets, args.output, expected_tag=args.expected_tag,
+                                   publication_tag=args.publication_tag, stable_only=args.stable_only)
         return
     if len(sys.argv) > 1 and sys.argv[1] == "publish-distribution":
         parser = argparse.ArgumentParser(description=__doc__)
