@@ -12,23 +12,22 @@ Use this guide to validate the redesigned 4-binary system (`pico2-kes-agentd`, `
 
 ## Q1. Updater Install, Update, and Uninstall (`p2kesup`)
 
-1. On a clean test host, follow [Install p2kesup](../../README.md#install-p2kesup) to download and verify the release assets. If the verified bundle was prepared offline instead, install from its directory:
+1. On a clean, disposable test host, use the explicit RC launcher in [Install p2kesup](../../README.md#install-p2kesup). It removes its temporary download. For the update, tamper and firmware checks below, prepare and retain separate [verified bundles](../../README.md#offline-install-or-retained-bundle); to test offline installation, run `sh ./install.sh --bundle /path/to/verified-bundle-v1` from the trusted checkout after verification. After either path:
    ```sh
-   sh /path/to/signed-bundle-v1/install.sh /path/to/signed-bundle-v1
-   p2kesup status
-   p2kes --version
+   /usr/local/bin/p2kesup status
+   /usr/local/bin/p2kes --version
    ```
-   **Expected**: `/usr/local/bin/{pico2-kes-agentd,p2kes,p2kesup,p2kes-flash}` and `/usr/local/share/pico2-kes-agent/{installed.json,firmware/,tools/,deploy/}` are installed; no systemd units or `/etc/fstab` are modified. The installed updater does not require Python.
-2. Tamper with one byte of any file in a copied bundle and run `sudo p2kesup update --bundle /tmp/tampered`.
+   **Expected**: `/usr/local/bin/{pico2-kes-agentd,p2kes,p2kesup,p2kes-flash}` and `/usr/local/share/pico2-kes-agent/{installed.json,firmware/,tools/,deploy/}` are installed; no systemd units or `/etc/fstab` are modified and no device is needed. The installed updater does not require Python; the launcher and offline unpack verifier do.
+2. Tamper with one byte of any file in a copied bundle and run `sudo /usr/local/bin/p2kesup update --bundle /tmp/tampered`.
    **Expected**: Fails closed with non-zero exit; existing `/usr/local/bin/*` and `installed.json` remain untouched.
 3. Update to a newer signed bundle containing a new firmware version:
    ```sh
-   sudo p2kesup update --bundle /path/to/signed-bundle-v2
+   sudo /usr/local/bin/p2kesup update --bundle /path/to/verified-bundle-v2
    ```
    **Expected**: Binaries and staged firmware update atomically; `p2kesup` does **not** restart systemd, and prints both `sudo systemctl restart pico2-kes-agentd` and `sudo p2kes-flash flash`.
 4. Uninstall:
    ```sh
-   sudo p2kesup uninstall --yes
+   sudo /usr/local/bin/p2kesup uninstall --yes
    ```
    **Expected**: Managed files removed cleanly; `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/` untouched.
 
@@ -70,15 +69,9 @@ Use this guide to validate the redesigned 4-binary system (`pico2-kes-agentd`, `
 
 ## Q4. Standalone Firmware Tool (`p2kes-flash`)
 
-1. Verify staged firmware offline:
-   ```sh
-   p2kes-flash verify
-   ```
-2. Hold BOOTSEL on a disposable Pico 2 A2 and flash:
-   ```sh
-   sudo p2kes-flash flash
-   ```
-   **Expected**: Signature, ELF/UF2, and board checks pass; firmware flashes cleanly without touching host service configs.
+1. With the host software installed, [verify the retained bundle and compare its UF2 to the staged copy](../../README.md#flash-firmware-p2kes-flash). The comparison and verification need no device.
+2. Only after those checks pass, hold BOOTSEL on a disposable Pico 2 A2 and use the explicit staged path from the same procedure.
+   **Expected**: Bundle and image verification passes before transfer, and the firmware flashes without touching host service configs.
 3. Connect a device with an older protocol version to `pico2-kes-agentd` and run `p2kes status`.
    **Expected**: Status reports `incompatible_firmware`, observed vs. required version, and prints `sudo p2kes-flash flash`.
 

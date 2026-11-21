@@ -392,6 +392,62 @@ jobs:
           python3 tools/publish_release.py publish-distribution --bundle candidate \
             --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"
 
+  smoke-public-candidate:
+    needs: publish-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Install launcher and smoke prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils ca-certificates curl expect gpg gpgv jq openssl python3
+      - name: Install from the public launcher in a terminal
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf -- "$work"' EXIT
+          raw=https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent
+          export LAUNCHER_URL="$raw/master/install.sh"
+          curl -fsSLo "$work/master" "$LAUNCHER_URL"
+          curl -fsSLo "$work/tagged" "$raw/$SOURCE_COMMIT/install.sh"
+          if ! cmp -s "$work/master" "$work/tagged"; then
+            echo "Master launcher differs from the release source; testing the immutable candidate launcher."
+            LAUNCHER_URL="$raw/$SOURCE_COMMIT/install.sh"
+          fi
+
+          # Exercise the real default prefix without relying on hosted-image directory ownership.
+          export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+          sudo mount -t tmpfs -o mode=0755 tmpfs /usr/local
+          trap 'sudo umount /usr/local; rm -rf -- "$work"' EXIT
+          expect <<'TCL'
+          set timeout 180
+          spawn bash -o pipefail -c {curl -fsSL "$LAUNCHER_URL" | sh -s -- --version "$RELEASE_TAG"}
+          expect {
+              -exact {[y/N]} { send -- "y\r" }
+              timeout { error "launcher did not prompt for confirmation" }
+              eof { error "launcher exited before prompting for confirmation" }
+          }
+          expect {
+              eof {}
+              timeout { error "confirmed launcher did not finish" }
+          }
+          set result [wait]
+          if {[llength $result] != 4 || [lindex $result 2] != 0 || [lindex $result 3] != 0} {
+              error "launcher failed: $result"
+          }
+          TCL
+          /usr/local/bin/p2kesup status | jq -e --arg tag "$RELEASE_TAG" '.version == $tag'
+          for bin in p2kes p2kesup p2kes-flash pico2-kes-agentd; do
+            "/usr/local/bin/$bin" --version --json |
+              jq -e --arg tag "$RELEASE_TAG" --arg commit "$SOURCE_COMMIT" \
+                '.version == $tag and .source_commit == $commit'
+          done
+          test -s /usr/local/share/pico2-kes-agent/firmware/pico2-kes-firmware.signed.uf2
+
   prepare-promotion:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04

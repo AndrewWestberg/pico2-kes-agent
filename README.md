@@ -79,7 +79,7 @@ The optional `rp2350-signed-msd-v1` profile uses native ROM secp256k1 signatures
 Requirements:
 
 - Operator installation targets Debian 12, Ubuntu 24.04 or Ubuntu 26.04 x86-64 with systemd, udev and glibc 2.36 or newer. These are targets, not a claim of completed release qualification. Ubuntu 26.04 requires a newly published release containing this support change; RC.13 and earlier retain their original platform restrictions.
-- The attended bootstrap reviews missing dependencies and offers installation through the trusted OS apt channel. Non-root installation and manager host actions use `sudo` in the current terminal; no desktop, GUI authentication agent or polkit is required. Use an account authorized by the host's sudo policy. If sudo is absent, an administrator must install it or run the installer from a root terminal. It does not install Cardano software. Source builds additionally need Git, a native C compiler/linker, rustup and the pinned tools below.
+- Host installation uses `sudo` in the current terminal after verification and confirmation. Use an account authorized by the host's sudo policy; no desktop, GUI authentication agent or polkit is required. Install the verification prerequisites below through the trusted OS package channel first. The launcher does not install Cardano software. Source builds additionally need Git, a native C compiler/linker, rustup and the pinned tools below.
 - Firmware verification and attended provisioning require Python 3, OpenSSL, GPG/GPGV and patched picotool 2.3.1 with signing/verification and libusb support. The authenticated distribution supplies the patched tool and its runtime libraries; do not replace it with stock picotool. Locked-device updates use verified UF2 through physical mass-storage BOOTSEL, not PICOBOOT.
 - Pico 2 with the fitted 4-MiB flash profile checked by [firmware/src/flash.rs](firmware/src/flash.rs): JEDEC `ef4016`, SFDP `534644500a0100ff00080117800000ff`, density-minus-one `0x01ffffff`. The shared profile identifies A2/A4; A4 is expected-compatible and hardware-unverified. A2 secure-boot qualification is separate from the existing storage evidence. A3, RP2040, unknown revisions and other flash profiles are not admitted for this profile.
 - A `cardano-node` release supporting the standard `--shelley-kes-agent-socket` interface and a matching `cardano-cli`. Obtain these using the [Cardano node installation guide](https://developers.cardano.org/docs/get-started/infrastructure/node/installing-cardano-node/). Check your installed node's help before cutover.
@@ -99,40 +99,54 @@ The system consists of four host binaries:
 
 ### Install p2kesup
 
-For RC testing on a disposable x86-64 Debian 12 / Ubuntu 24.04 or 26.04 host, download **all** assets of the selected release. The payload is **`distribution.tar`**, an uncompressed archive with `bin/` at its root. The signed manifest and its signature are separate assets. Do not pipe a source archive into `tar` or run an unverified binary with `sudo`.
+Run the launcher in a terminal as your regular user. Install `curl`, Python 3, GnuPG (`gpg` and `gpgv`), OpenSSL and binutils from your OS package manager first. No GitHub CLI, GitHub token, Rust build, running daemon or Pico is needed.
 
-Run this in a terminal as your regular user. It uses GitHub CLI, curl, Python 3, GnuPG, OpenSSL and binutils for download/verification; no Rust build, running daemon or Pico is needed. The two verifier files come from the project's tagged source over HTTPS, **not** from inside the archive they authenticate. For offline use, use those same tools from an independently trusted checkout.
+For a qualified stable release:
 
 ```sh
-(
-  set -eu
-  tag=v0.1.0-rc.25
-  repo=AndrewWestberg/pico2-kes-agent
-  work=$(mktemp -d)
-  cd "$work"
-  gh release download "$tag" --repo "$repo" --dir assets
-  for tool in publish_release.py firmware.py; do
-    curl -fsSLo "$tool" "https://raw.githubusercontent.com/$repo/$tag/tools/$tool"
-  done
-  python3 -Es publish_release.py unpack --assets assets --output bundle --expected-tag "$tag"
-  printf 'Verified bundle: %s/bundle\n' "$PWD"
-  sh bundle/install.sh "$PWD/bundle"
-)
+curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh
 ```
 
-After installation, run the persistent commands from any directory:
+This selects only the project's `/releases/latest` publication with a `qualified-v…` tag and an authenticated manifest marked qualified and stable. If there is no such release, it stops; it never falls back to a release candidate.
+
+To test RC.26 on a disposable host, opt in explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AndrewWestberg/pico2-kes-agent/master/install.sh | sh -s -- --version v0.1.0-rc.26
+```
+
+These commands trust and execute `install.sh` from the project's `master` branch over HTTPS. The launcher fetches the public assets from the selected publication and checks the two verifier files against pinned checksums. It authenticates the manifest, checks that the signed metadata matches the selected publication and verifies the bundle before running any downloaded binary or requesting elevation. Review the selected release and answer `y` at `[y/N]` to install. The downloaded bundle is temporary and is removed after the launcher exits.
+
+#### Offline install or retained bundle
+
+If you need an offline install, an update using `--bundle`, or a copy to archive, obtain the eight matching files from the [chosen release](https://github.com/AndrewWestberg/pico2-kes-agent/releases): `install.sh`, `install.sh.sig`, `distribution.tar`, `distribution.json`, `distribution.json.sig`, `distribution-authority.json`, `distribution-authority.json.asc` and `release-authority.asc`. The archive is not a GitHub source tarball. Use the verifier and launcher from an independently trusted checkout, not from the unverified download. Run from that checkout's root:
+
+```sh
+python3 -Es tools/publish_release.py unpack --assets /path/to/release-assets \
+  --output /path/to/verified-bundle --publication-tag v0.1.0-rc.26
+```
+
+Use the exact publication tag (including `qualified-` for a qualified release). Add `--stable-only` if you require qualified stable. The output directory must not already exist. Stop if verification fails; otherwise, keep the verified directory intact. To install offline from that directory:
+
+```sh
+sh ./install.sh --bundle /path/to/verified-bundle
+```
+
+After either installation path, run the persistent commands from any directory:
 
 ```sh
 /usr/local/bin/p2kesup status
 /usr/local/bin/p2kes --version
 ```
 
-`p2kesup` installs the four binaries into `/usr/local/bin/` and stages firmware, tools, and deploy assets into `/usr/local/share/pico2-kes-agent/`. It does not modify systemd units or `/etc/fstab`.
+`p2kesup` installs the four binaries into `/usr/local/bin/`. It writes `installed.json` and stages firmware, tools, runtime libraries and deployment files under `/usr/local/share/pico2-kes-agent/`. It does not modify systemd units or `/etc/fstab`.
 
 ### Update and uninstall
 
+Authenticate and retain the newer release using the [offline preparation steps](#offline-install-or-retained-bundle), then use its verified output directory:
+
 ```sh
-sudo p2kesup update --bundle /path/to/signed-bundle
+sudo /usr/local/bin/p2kesup update --bundle /path/to/verified-bundle
 ```
 
 If the daemon was already configured and running, restart it during your maintenance window. Installation alone does not configure a service or write firmware to a device.
@@ -140,19 +154,22 @@ If the daemon was already configured and running, restart it during your mainten
 To remove managed binaries and staged assets (leaving `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/` untouched):
 
 ```sh
-sudo p2kesup uninstall --yes
+sudo /usr/local/bin/p2kesup uninstall --yes
 ```
 
 ### Flash firmware (`p2kes-flash`)
 
-Flashing is separate from installing host software. On a disposable Pico 2 A2, use the verified bundle directory printed by the installer procedure above. Verify the bundle again and compare its UF2 with the protected installed copy before any transfer. Stop if either check fails.
+Flashing is separate from installing host software. On a disposable Pico 2 A2, use a complete bundle retained via the [offline preparation steps](#offline-install-or-retained-bundle); the online launcher's temporary bundle is not available after installation. Verify the retained bundle again and compare its UF2 with the protected installed copy before any transfer. Stop if either check fails.
 
 ```sh
-cd /path/to/verified/bundle
-uf2=firmware/pico2-kes-firmware.signed.uf2
-staged=/usr/local/share/pico2-kes-agent/$uf2
-# With only the intended board connected in BOOTSEL mode:
-p2kes-flash verify && cmp "$uf2" "$staged" && sudo p2kes-flash flash "$staged"
+(
+  cd /path/to/verified-bundle || exit
+  uf2=firmware/pico2-kes-firmware.signed.uf2
+  staged=/usr/local/share/pico2-kes-agent/$uf2
+  # With only the intended board connected in BOOTSEL mode:
+  /usr/local/bin/p2kes-flash verify && cmp "$uf2" "$staged" &&
+    sudo /usr/local/bin/p2kes-flash flash "$staged"
+)
 ```
 
 ### Everyday CLI (`p2kes`)
@@ -327,7 +344,7 @@ After authentication, check `release.json.tag` and `.commit` against the release
 
 ### Host access and USB inspection
 
-Use **Software → Install authenticated bundle** for host installation and review its ownership and service changes. The application udev rule does not cover BOOTSEL; never use world-writable USB rules. Preserve the storage partition: no whole-flash erase, raw-flash clone, format or speculative rollback.
+Complete [host installation](#install-p2kesup) first; it stages deployment files without applying service or USB rules. The application udev rule does not cover BOOTSEL; never use world-writable USB rules. Preserve the storage partition: no whole-flash erase, raw-flash clone, format or speculative rollback.
 
 Grant the trusted operator account membership with `sudo usermod -aG pico2-kes-agent "$(id -un)"` after the group exists, then start a new login. This grants management authority, not merely per-pool access.
 
