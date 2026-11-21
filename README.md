@@ -10,8 +10,8 @@ One USB-owning daemon supports up to **64 pools**, each with one active and one 
 
 - [Purpose and security boundary](#purpose-and-security-boundary)
 - [Requirements and compatibility](#requirements-and-compatibility)
-- [Install and operate with p2kesup](#install-and-operate-with-p2kesup)
-- [Manual RC-to-lifecycle test runbook](docs/manual-testing.md)
+- [Install p2kesup](#install-p2kesup)
+- [Test the current CLI workflows](specs/003-simplify-cli-updater/quickstart.md)
 - [Developer build and firmware verification](#build-flash-and-install)
 - [Commission and configure](#commission-and-configure)
 - [Enroll and serve the first generation](#enroll-and-serve-the-first-generation)
@@ -97,22 +97,34 @@ The system consists of four host binaries:
 - `p2kesup`: non-interactive software installer/updater (`install`, `update`, `uninstall`, `status`).
 - `p2kes-flash`: standalone firmware verifier and flasher (`verify`, `flash`).
 
-### Install from a release bundle
+### Install p2kesup
 
-Download and extract a signed release bundle from GitHub Releases, then run the bootstrapper or `p2kesup` directly from the extracted directory:
+For RC testing on a disposable x86-64 Debian 12 / Ubuntu 24.04 or 26.04 host, download **all** assets of the selected release. The payload is **`distribution.tar`**, an uncompressed archive with `bin/` at its root. The signed manifest and its signature are separate assets. Do not pipe a source archive into `tar` or run an unverified binary with `sudo`.
+
+Run this in a terminal as your regular user. It uses GitHub CLI, curl, Python 3, GnuPG, OpenSSL and binutils for download/verification; no Rust build, running daemon or Pico is needed. The two verifier files come from the project's tagged source over HTTPS, **not** from inside the archive they authenticate. For offline use, use those same tools from an independently trusted checkout.
 
 ```sh
-gh release download v0.1.0-rc.24 --repo AndrewWestberg/pico2-kes-agent --pattern '*.tar.gz' -O - | tar -xz
-cd pico2-kes-agent-*
-./install.sh
+(
+  set -eu
+  tag=v0.1.0-rc.25
+  repo=AndrewWestberg/pico2-kes-agent
+  work=$(mktemp -d)
+  cd "$work"
+  gh release download "$tag" --repo "$repo" --dir assets
+  for tool in publish_release.py firmware.py; do
+    curl -fsSLo "$tool" "https://raw.githubusercontent.com/$repo/$tag/tools/$tool"
+  done
+  python3 -Es publish_release.py unpack --assets assets --output bundle --expected-tag "$tag"
+  printf 'Verified bundle: %s/bundle\n' "$PWD"
+  sh bundle/install.sh "$PWD/bundle"
+)
 ```
 
-Or invoke `p2kesup` directly:
+After installation, run the persistent commands from any directory:
 
 ```sh
-sudo ./bin/p2kesup install --bundle .
-p2kesup status
-p2kes --version
+/usr/local/bin/p2kesup status
+/usr/local/bin/p2kes --version
 ```
 
 `p2kesup` installs the four binaries into `/usr/local/bin/` and stages firmware, tools, and deploy assets into `/usr/local/share/pico2-kes-agent/`. It does not modify systemd units or `/etc/fstab`.
@@ -123,12 +135,7 @@ p2kes --version
 sudo p2kesup update --bundle /path/to/signed-bundle
 ```
 
-After updating, restart the daemon and flash updated firmware if prompted:
-
-```sh
-sudo systemctl restart pico2-kes-agentd
-sudo p2kes-flash flash
-```
+If the daemon was already configured and running, restart it during your maintenance window. Installation alone does not configure a service or write firmware to a device.
 
 To remove managed binaries and staged assets (leaving `/etc/pico2-kes-agent/` and `/var/lib/pico2-kes-agent/` untouched):
 
@@ -138,10 +145,14 @@ sudo p2kesup uninstall --yes
 
 ### Flash firmware (`p2kes-flash`)
 
+Flashing is separate from installing host software. On a disposable Pico 2 A2, use the verified bundle directory printed by the installer procedure above. Verify the bundle again and compare its UF2 with the protected installed copy before any transfer. Stop if either check fails.
+
 ```sh
-p2kes-flash verify
-# Hold BOOTSEL on the Pico 2 A2 and connect USB:
-sudo p2kes-flash flash
+cd /path/to/verified/bundle
+uf2=firmware/pico2-kes-firmware.signed.uf2
+staged=/usr/local/share/pico2-kes-agent/$uf2
+# With only the intended board connected in BOOTSEL mode:
+p2kes-flash verify && cmp "$uf2" "$staged" && sudo p2kes-flash flash "$staged"
 ```
 
 ### Everyday CLI (`p2kes`)

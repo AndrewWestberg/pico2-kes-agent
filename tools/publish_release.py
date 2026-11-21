@@ -759,7 +759,7 @@ def require_archive_member(member, entries, seen):
                      "invalid, duplicate or undeclared archive member")
 
 
-def unpack_distribution_assets(assets, output, *, trust=(firmware.PRIMARY, firmware.SIGNER)):
+def unpack_distribution_assets(assets, output, *, expected_tag=None, trust=(firmware.PRIMARY, firmware.SIGNER)):
     assets, output = Path(assets), Path(output)
     metadata = assets / "distribution.json"
     signature = assets / "distribution.json.sig"
@@ -771,6 +771,8 @@ def unpack_distribution_assets(assets, output, *, trust=(firmware.PRIMARY, firmw
     manifest = json.loads(firmware.bounded_file(metadata, 1024 * 1024),
                           object_pairs_hook=firmware.unique_object)
     validate_distribution_manifest(manifest)
+    firmware.require(expected_tag is None or manifest["release"]["tag"] == expected_tag,
+                     "signed distribution does not match requested source tag")
     artifacts = manifest["artifacts"]
     firmware.require(type(artifacts) is list and 0 < len(artifacts) <= 256, "invalid artifact count")
     entries = {}
@@ -885,8 +887,8 @@ def publish_distribution(bundle, tag, commit, evidence=None):
         if existing is None:
             gh("release", "create", tag, "--repo", REPOSITORY, "--verify-tag", "--draft",
                *classification, "--title", tag,
-               "--notes", "Install: https://github.com/AndrewWestberg/pico2-kes-agent#install-p2kesup\n"
-               "Existing installations: p2kesup upgrade\n"
+               "--notes", f"Install: https://github.com/{REPOSITORY}/blob/{commit}/README.md#install-p2kesup\n"
+               "Existing installations: sudo p2kesup update --bundle /path/to/verified/bundle\n"
                "Authenticated distribution; qualification is recorded in signed metadata.")
         else:
             firmware.require(existing.get("tag_name") == tag and existing.get("draft") is False and
@@ -964,8 +966,9 @@ def main():
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--assets", required=True, type=Path)
         parser.add_argument("--output", required=True, type=Path)
+        parser.add_argument("--expected-tag", help="require this signed source tag before extraction")
         args = parser.parse_args(sys.argv[2:])
-        unpack_distribution_assets(args.assets, args.output)
+        unpack_distribution_assets(args.assets, args.output, expected_tag=args.expected_tag)
         return
     if len(sys.argv) > 1 and sys.argv[1] == "publish-distribution":
         parser = argparse.ArgumentParser(description=__doc__)

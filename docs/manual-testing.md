@@ -1,4 +1,6 @@
-# Manual RC-to-lifecycle test runbook
+# Historical manual RC-to-lifecycle test runbook (002 manager)
+
+**Not the RC.25 installation procedure.** This runbook records the retired TUI and bootstrap workflow. For current release downloads and installation, use [Install p2kesup](../README.md#install-p2kesup); for the four-binary validation sequence use the [003 quickstart](../specs/003-simplify-cli-updater/quickstart.md).
 
 Use this in order, stopping at the first unexpected result. It covers publishing an RC, installing `p2kesup`, commissioning, every KES lifecycle command, and the remaining manager workflows. The [Q1–Q11 acceptance procedure](../specs/002-manage-kes-agent/quickstart.md#q1--bootstrap-reopen-and-absentpartial-inventory) defines the larger acceptance matrix; this guide supplies the concrete operator sequence.
 

@@ -376,7 +376,10 @@ class PublishTests(unittest.TestCase):
                 assets = self.bundle / "assets"
                 publisher.pack_distribution_assets(candidate, assets, trust=trust)
                 unpacked = self.bundle / "unpacked"
-                self.assertEqual(publisher.unpack_distribution_assets(assets, unpacked, trust=trust), manifest)
+                with self.assertRaisesRegex(ValueError, "requested source tag"):
+                    publisher.unpack_distribution_assets(assets, unpacked, expected_tag="vother", trust=trust)
+                self.assertEqual(publisher.unpack_distribution_assets(
+                    assets, unpacked, expected_tag="vfixture", trust=trust), manifest)
                 for name in ("distribution-authority.json", "distribution-authority.json.asc",
                              "release-authority.asc", "install.sh", "install.sh.sig",
                              "distribution.json", "distribution.json.sig"):

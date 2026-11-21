@@ -12,13 +12,13 @@ Use this guide to validate the redesigned 4-binary system (`pico2-kes-agentd`, `
 
 ## Q1. Updater Install, Update, and Uninstall (`p2kesup`)
 
-1. Install from a verified release bundle:
+1. On a clean test host, follow [Install p2kesup](../../README.md#install-p2kesup) to download and verify the release assets. If the verified bundle was prepared offline instead, install from its directory:
    ```sh
-   sudo p2kesup install --bundle /path/to/signed-bundle-v1
+   sh /path/to/signed-bundle-v1/install.sh /path/to/signed-bundle-v1
    p2kesup status
    p2kes --version
    ```
-   **Expected**: `/usr/local/bin/{pico2-kes-agentd,p2kes,p2kesup,p2kes-flash}` and `/usr/local/share/pico2-kes-agent/{installed.json,firmware/,tools/,deploy/}` are installed; no systemd units or `/etc/fstab` are modified; no Python runtime is required.
+   **Expected**: `/usr/local/bin/{pico2-kes-agentd,p2kes,p2kesup,p2kes-flash}` and `/usr/local/share/pico2-kes-agent/{installed.json,firmware/,tools/,deploy/}` are installed; no systemd units or `/etc/fstab` are modified. The installed updater does not require Python.
 2. Tamper with one byte of any file in a copied bundle and run `sudo p2kesup update --bundle /tmp/tampered`.
    **Expected**: Fails closed with non-zero exit; existing `/usr/local/bin/*` and `installed.json` remain untouched.
 3. Update to a newer signed bundle containing a new firmware version:

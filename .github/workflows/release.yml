@@ -159,7 +159,7 @@ jobs:
           python3 -c 'import runpy; runpy.run_path("tools/firmware.py")["verify_authority"]("security")'
           cargo test --locked -p kes-protocol
           cargo test --locked -p kes-core --features qualification --test crypto_compatibility
-          cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore
+          cargo test --locked --test operator_cli --test service_lifecycle --test backup_restore --test updater_and_flash
           cargo build --locked --release --bin pico2-kes-agentd --bin p2kes --bin p2kesup --bin p2kes-flash
           cargo build --locked --release -p pico2-kes-firmware --target thumbv8m.main-none-eabihf
       - name: Exercise isolated signing and verifier fixtures without production secrets
@@ -357,6 +357,31 @@ jobs:
         with:
           name: signed-distribution
           path: candidate/
+      - name: Install verification prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils gpg openssl jq
+      - name: Test signed candidate installation without root or a device
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Actions artifact downloads lose Unix modes. Recover only signed modes.
+          PYTHONPATH=tools python3 - <<'PY'
+          from pathlib import Path
+          from publish_release import verify_signed_metadata
+          root = Path("candidate")
+          for entry in verify_signed_metadata(root)["artifacts"]:
+              (root / entry["path"]).chmod(entry["mode"])
+          PY
+          prefix="$(mktemp -d)"
+          candidate/bin/p2kesup install --bundle candidate --prefix "$prefix"
+          "$prefix/bin/p2kesup" status --prefix "$prefix" | jq -e --arg tag "$RELEASE_TAG" '.version == $tag'
+          for bin in p2kes p2kesup p2kes-flash pico2-kes-agentd; do
+            "$prefix/bin/$bin" --version --json | jq -e --arg tag "$RELEASE_TAG" '.version == $tag'
+          done
+          cmp candidate/firmware/pico2-kes-firmware.signed.uf2 \
+            "$prefix/share/pico2-kes-agent/firmware/pico2-kes-firmware.signed.uf2"
       - name: Reverify and publish immutable candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -364,9 +389,6 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y binutils gpg openssl
-          chmod 0755 candidate/tools/picotool
           python3 tools/publish_release.py publish-distribution --bundle candidate \
             --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"
 
