@@ -166,4 +166,37 @@ fn unsigned_legacy_manifest_is_not_a_fallback() {
         0o644,
     );
     assert!(load_and_verify_manifest(&scratch.0).is_err());
+    assert!(load_and_verify_firmware(&scratch.0).is_err());
+}
+
+#[test]
+fn validates_committed_firmware_release_and_otp_policy_bounds() {
+    let raw_policy = include_bytes!("../../../security/otp-policy.json");
+    validate_otp_policy_bounds(raw_policy).unwrap();
+
+    let mut bad_policy: Value = serde_json::from_slice(raw_policy).unwrap();
+    bad_policy["firmware_region"]["end"] = json!(0x1040_0000u32);
+    assert!(validate_otp_policy_bounds(&serde_json::to_vec(&bad_policy).unwrap()).is_err());
+
+    let raw_release = include_bytes!(
+        "../../../evidence/84df698978d37256de1bdf85cec940022d32ceaa-2593f2817f21af96923ca5693f5f776a1bd1d93c63d9c8b50e25249f06cfb92b/candidate-v0.1.0-rc.11/release.json"
+    );
+    let (tag, artifacts) = normalize_firmware_release(
+        raw_release,
+        "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+    )
+    .unwrap();
+    assert_eq!(tag, "v0.1.0-rc.11");
+    assert_eq!(artifacts.len(), FIRMWARE_ARTIFACTS.len());
+
+    assert!(normalize_firmware_release(raw_release, &"00".repeat(32)).is_err());
+    let mut bad_release: Value = serde_json::from_slice(raw_release).unwrap();
+    bad_release["firmware_region"]["end"] = json!(0x1040_0000u32);
+    assert!(
+        normalize_firmware_release(
+            &serde_json::to_vec(&bad_release).unwrap(),
+            "be364e660f6e7236cc14d3e74b33660311608fa78f38cd6cc5c4f031c910b8a0",
+        )
+        .is_err()
+    );
 }

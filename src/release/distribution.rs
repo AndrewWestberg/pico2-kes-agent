@@ -1,4 +1,4 @@
-use super::{ReleaseArtifact, ReleaseError, ReleaseManifest, ReleasePlatform};
+use super::{ReleaseArtifact, ReleaseError, ReleaseManifest, ReleasePlatform, VerifiedFirmware};
 use rustix::fs::{self as fs_at, AtFlags, CWD, Dir, FileType, Mode, OFlags, ResolveFlags};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -9,16 +9,50 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 mod signature;
-use signature::{PrivateDir, verify_authority, verify_distribution_signature};
+use signature::PRODUCTION_TRUST;
+#[cfg(not(test))]
+use signature::TrustRoots;
+#[cfg(test)]
+pub(crate) use signature::TrustRoots;
+use signature::{
+    PrivateDir, verify_authority, verify_distribution_signature, verify_firmware_authority,
+    verify_firmware_signature,
+};
 
 const DISTRIBUTION_PURPOSE: &str = "pico2-kes-agent-distribution-v1";
+const FIRMWARE_RELEASE_PURPOSE: &str = "pico2-kes-firmware-release-v1";
+const FIRMWARE_PROFILE: &str = "rp2350-signed-msd-v1";
 const FIRMWARE_IMAGE: &str = "firmware/pico2-kes-firmware.signed.uf2";
+const FIRMWARE_ELF_IN_DIST: &str = "firmware/pico2-kes-firmware.signed.elf";
 const MANIFEST: &str = "distribution.json";
 const MANIFEST_SIGNATURE: &str = "distribution.json.sig";
 const AUTHORITY: &str = "distribution-authority.json";
 const AUTHORITY_SIGNATURE: &str = "distribution-authority.json.asc";
 const CERTIFICATE: &str = "firmware/release-authority.asc";
 const FIRMWARE_KEY: &str = "firmware/firmware-signing-public.pem";
+const FIRMWARE_RELEASE_MANIFEST: &str = "release.json";
+const FIRMWARE_RELEASE_SIGNATURE: &str = "release.json.sig";
+const FIRMWARE_BOOT_AUTHORITY: &str = "firmware-key.json";
+const FIRMWARE_BOOT_AUTHORITY_SIG: &str = "firmware-key.json.asc";
+const FIRMWARE_RELEASE_CERT: &str = "release-authority.asc";
+const FIRMWARE_SIGNING_PEM: &str = "firmware-signing-public.pem";
+const FIRMWARE_OTP_POLICY: &str = "otp-policy.json";
+const FIRMWARE_SIGNED_ELF: &str = "pico2-kes-firmware.signed.elf";
+const FIRMWARE_SIGNED_UF2: &str = "pico2-kes-firmware.signed.uf2";
+const FIRMWARE_START: u32 = 0x1000_0000;
+const FIRMWARE_END: u32 = 0x1010_0000;
+const STATE_END: u32 = 0x1030_8000;
+const FIRMWARE_ARTIFACTS: &[&str] = &[
+    FIRMWARE_SIGNED_ELF,
+    FIRMWARE_SIGNED_UF2,
+    "pico2-otp-permissions.elf",
+    "firmware.py",
+    FIRMWARE_OTP_POLICY,
+    FIRMWARE_SIGNING_PEM,
+    FIRMWARE_BOOT_AUTHORITY,
+    FIRMWARE_BOOT_AUTHORITY_SIG,
+    FIRMWARE_RELEASE_CERT,
+];
 const MAX_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BUNDLE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -332,8 +366,8 @@ fn check_digest(
     if expected.len() != 64
         || !digest
             .iter()
-            .zip(expected.chunks_exact(2))
-            .all(|(&byte, pair)| pair == [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]])
+            .zip(expected.as_chunks::<2>().0)
+            .all(|(&byte, &pair)| pair == [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]])
     {
         return Err(ReleaseError::HashMismatch {
             artifact: artifact.path.clone(),
@@ -344,18 +378,182 @@ fn check_digest(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FlashRegion {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FirmwareArtifactEntry {
+    name: String,
+    size_bytes: u64,
+    sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FirmwareRelease {
+    schema_version: u32,
+    purpose: String,
+    tag: String,
+    commit: String,
+    profile: String,
+    bootkey_sha256: String,
+    firmware_region: FlashRegion,
+    state_region: FlashRegion,
+    storage_version: u32,
+    usb_protocol_major: u32,
+    artifacts: Vec<FirmwareArtifactEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OtpPolicyBounds {
+    schema_version: u32,
+    profile: String,
+    steppings: serde_json::Value,
+    flash: serde_json::Value,
+    firmware_region: FlashRegion,
+    state_region: FlashRegion,
+    fields: serde_json::Value,
+    page_locks: serde_json::Value,
+    rma: bool,
+    otp_access_keys: bool,
+    storage_version: u32,
+    usb_protocol_major: u32,
+}
+
+fn normalize_firmware_release(
+    raw: &[u8],
+    expected_bootkey_sha256: &str,
+) -> Result<(String, Vec<ReleaseArtifact>), ReleaseError> {
+    let release: FirmwareRelease =
+        serde_json::from_slice(raw).map_err(|e| invalid(format!("firmware release JSON: {e}")))?;
+    if release.schema_version != 1
+        || release.purpose != FIRMWARE_RELEASE_PURPOSE
+        || release.profile != FIRMWARE_PROFILE
+    {
+        return Err(invalid(
+            "unsupported firmware release schema, purpose or profile",
+        ));
+    }
+    if release.tag.is_empty()
+        || release.tag.len() > 255
+        || !release.tag.starts_with('v')
+        || !release.tag.bytes().all(|b| (32..127).contains(&b))
+    {
+        return Err(invalid("invalid firmware release tag"));
+    }
+    if !matches!(release.commit.len(), 40 | 64)
+        || !release
+            .commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid("invalid firmware commit digest"));
+    }
+    if release.bootkey_sha256 != expected_bootkey_sha256 {
+        return Err(ReleaseError::SignatureFailed(
+            "firmware release bootkey_sha256 does not match authority".into(),
+        ));
+    }
+    if release.firmware_region.start != FIRMWARE_START
+        || release.firmware_region.end != FIRMWARE_END
+        || release.state_region.start != FIRMWARE_END
+        || release.state_region.end != STATE_END
+        || release.storage_version != 2
+        || release.usb_protocol_major != 1
+    {
+        return Err(invalid(
+            "incompatible firmware flash region or storage policy",
+        ));
+    }
+    if release.artifacts.len() != FIRMWARE_ARTIFACTS.len() {
+        return Err(invalid("unexpected firmware artifact count"));
+    }
+    let mut seen = HashSet::new();
+    let mut total_bytes = 0u64;
+    let mut artifacts = Vec::with_capacity(release.artifacts.len());
+    for entry in release.artifacts {
+        safe_path(&entry.name)?;
+        if entry.name.contains('/')
+            || !FIRMWARE_ARTIFACTS.contains(&entry.name.as_str())
+            || !seen.insert(entry.name.clone())
+            || entry.size_bytes > MAX_FILE_BYTES
+            || entry.sha256.len() != 64
+            || !entry
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid(format!(
+                "invalid or duplicate firmware artifact {}",
+                entry.name
+            )));
+        }
+        total_bytes += entry.size_bytes;
+        artifacts.push(ReleaseArtifact {
+            name: entry.name.clone(),
+            path: entry.name,
+            size: entry.size_bytes,
+            sha256: entry.sha256,
+            mode: None,
+        });
+    }
+    if total_bytes > MAX_BUNDLE_BYTES {
+        return Err(invalid("firmware bundle exceeds size limit"));
+    }
+    Ok((release.tag, artifacts))
+}
+
+fn validate_otp_policy_bounds(raw: &[u8]) -> Result<(), ReleaseError> {
+    let policy: OtpPolicyBounds =
+        serde_json::from_slice(raw).map_err(|e| invalid(format!("otp-policy.json: {e}")))?;
+    let _ = (
+        &policy.steppings,
+        &policy.flash,
+        &policy.fields,
+        &policy.page_locks,
+    );
+    if policy.schema_version != 1
+        || policy.profile != FIRMWARE_PROFILE
+        || policy.firmware_region.start != FIRMWARE_START
+        || policy.firmware_region.end != FIRMWARE_END
+        || policy.state_region.start != FIRMWARE_END
+        || policy.state_region.end != STATE_END
+        || policy.rma
+        || policy.otp_access_keys
+        || policy.storage_version != 2
+        || policy.usb_protocol_major != 1
+    {
+        return Err(invalid("otp-policy.json flash region or profile mismatch"));
+    }
+    Ok(())
+}
+
 fn copy_artifact(
     root: &File,
     artifact: &ReleaseArtifact,
     mut destination: impl Write,
 ) -> Result<(), ReleaseError> {
     let (file, metadata) = open_bundle_file(root, &artifact.path)?;
-    let mode = match artifact.mode.as_deref() {
-        Some("0o644") => 0o644,
-        Some("0o755") => 0o755,
+    match artifact.mode.as_deref() {
+        Some("0o644") => check_mode(&artifact.path, &metadata, 0o644)?,
+        Some("0o755") => check_mode(&artifact.path, &metadata, 0o755)?,
+        None => {
+            if metadata.mode() & 0o022 != 0 {
+                return Err(invalid(format!(
+                    "unsafe writable mode for {}: {:#o}",
+                    artifact.path,
+                    metadata.mode() & 0o7777
+                )));
+            }
+        }
         _ => return Err(invalid(format!("invalid mode for {}", artifact.path))),
-    };
-    check_mode(&artifact.path, &metadata, mode)?;
+    }
     check_size(artifact, metadata.len())?;
     if artifact.size > MAX_FILE_BYTES {
         return Err(invalid(format!(
@@ -468,6 +666,25 @@ fn verify_inventory(root: &File, artifacts: &[ReleaseArtifact]) -> Result<(), Re
 fn read_metadata(root: &File, path: &str) -> Result<Vec<u8>, ReleaseError> {
     let (file, metadata) = open_bundle_file(root, path)?;
     check_mode(path, &metadata, 0o644)?;
+    read_bounded_metadata(file, &metadata, path)
+}
+
+fn read_firmware_metadata(root: &File, path: &str) -> Result<Vec<u8>, ReleaseError> {
+    let (file, metadata) = open_bundle_file(root, path)?;
+    if metadata.mode() & 0o022 != 0 {
+        return Err(invalid(format!(
+            "unsafe writable mode for {path}: {:#o}",
+            metadata.mode() & 0o7777
+        )));
+    }
+    read_bounded_metadata(file, &metadata, path)
+}
+
+fn read_bounded_metadata(
+    file: File,
+    metadata: &Metadata,
+    path: &str,
+) -> Result<Vec<u8>, ReleaseError> {
     if metadata.len() > MAX_METADATA_BYTES {
         return Err(invalid(format!("oversized metadata {path}")));
     }
@@ -479,17 +696,25 @@ fn read_metadata(root: &File, path: &str) -> Result<Vec<u8>, ReleaseError> {
     Ok(bytes)
 }
 
-pub fn load_and_verify_manifest(bundle_root: &Path) -> Result<ReleaseManifest, ReleaseError> {
-    let root = open_bundle(bundle_root)?;
-    let raw = read_metadata(&root, MANIFEST)?;
-    let signature = read_metadata(&root, MANIFEST_SIGNATURE)?;
-    let authority = read_metadata(&root, AUTHORITY)?;
-    let authority_signature = read_metadata(&root, AUTHORITY_SIGNATURE)?;
-    let certificate = read_metadata(&root, CERTIFICATE)?;
-    let firmware_key = read_metadata(&root, FIRMWARE_KEY)?;
+fn load_and_verify_manifest_at(
+    root: &File,
+    trust: TrustRoots<'_>,
+) -> Result<ReleaseManifest, ReleaseError> {
+    let raw = read_metadata(root, MANIFEST)?;
+    let signature = read_metadata(root, MANIFEST_SIGNATURE)?;
+    let authority = read_metadata(root, AUTHORITY)?;
+    let authority_signature = read_metadata(root, AUTHORITY_SIGNATURE)?;
+    let certificate = read_metadata(root, CERTIFICATE)?;
+    let firmware_key = read_metadata(root, FIRMWARE_KEY)?;
 
     let scratch = PrivateDir::new()?;
-    let key = verify_authority(&scratch.0, &authority, &authority_signature, &certificate)?;
+    let key = verify_authority(
+        &scratch.0,
+        &authority,
+        &authority_signature,
+        &certificate,
+        trust,
+    )?;
     if key.as_bytes() != firmware_key.as_slice() {
         return Err(ReleaseError::SignatureFailed(
             "distribution and firmware keys differ".into(),
@@ -509,8 +734,151 @@ pub fn load_and_verify_manifest(bundle_root: &Path) -> Result<ReleaseManifest, R
         check_size(artifact, bytes.len() as u64)?;
         check_digest(artifact, Sha256::digest(bytes))?;
     }
-    verify_inventory(&root, &manifest.artifacts)?;
+    verify_inventory(root, &manifest.artifacts)?;
     Ok(manifest)
+}
+
+fn load_and_verify_firmware_at(
+    root: &File,
+    trust: TrustRoots<'_>,
+) -> Result<VerifiedFirmware, ReleaseError> {
+    let raw = read_firmware_metadata(root, FIRMWARE_RELEASE_MANIFEST)?;
+    let signature = read_firmware_metadata(root, FIRMWARE_RELEASE_SIGNATURE)?;
+    let authority = read_firmware_metadata(root, FIRMWARE_BOOT_AUTHORITY)?;
+    let authority_sig = read_firmware_metadata(root, FIRMWARE_BOOT_AUTHORITY_SIG)?;
+    let certificate = read_firmware_metadata(root, FIRMWARE_RELEASE_CERT)?;
+    let signing_pem = read_firmware_metadata(root, FIRMWARE_SIGNING_PEM)?;
+    let policy_raw = read_firmware_metadata(root, FIRMWARE_OTP_POLICY)?;
+
+    let scratch = PrivateDir::new()?;
+    let bootkey_sha256 = verify_firmware_authority(
+        &scratch.0,
+        &authority,
+        &authority_sig,
+        &certificate,
+        &signing_pem,
+        trust,
+    )?;
+    verify_firmware_signature(&scratch.0, &signature, &raw)?;
+    let (version, artifacts) = normalize_firmware_release(&raw, &bootkey_sha256)?;
+    validate_otp_policy_bounds(&policy_raw)?;
+
+    for (path, bytes) in [
+        (FIRMWARE_BOOT_AUTHORITY, authority.as_slice()),
+        (FIRMWARE_BOOT_AUTHORITY_SIG, authority_sig.as_slice()),
+        (FIRMWARE_RELEASE_CERT, certificate.as_slice()),
+        (FIRMWARE_SIGNING_PEM, signing_pem.as_slice()),
+        (FIRMWARE_OTP_POLICY, policy_raw.as_slice()),
+    ] {
+        let artifact = artifacts.iter().find(|a| a.path == path).unwrap();
+        check_size(artifact, bytes.len() as u64)?;
+        check_digest(artifact, Sha256::digest(bytes))?;
+    }
+
+    let mut remaining: HashSet<&str> = artifacts
+        .iter()
+        .map(|artifact| artifact.path.as_str())
+        .chain([FIRMWARE_RELEASE_MANIFEST, FIRMWARE_RELEASE_SIGNATURE])
+        .collect();
+    let mut directories_left = 1024;
+    scan_inventory(
+        root,
+        &mut remaining,
+        &mut String::new(),
+        &mut directories_left,
+    )?;
+    if let Some(path) = remaining.iter().min() {
+        return Err(invalid(format!("missing firmware bundle entry {path}")));
+    }
+
+    let mut uf2_bytes = Vec::new();
+    let mut uf2_sha256 = String::new();
+    let mut elf_bytes = Vec::new();
+    let mut elf_sha256 = String::new();
+    for artifact in &artifacts {
+        if artifact.path == FIRMWARE_SIGNED_UF2 {
+            uf2_bytes.reserve_exact(artifact.size as usize);
+            copy_artifact(root, artifact, &mut uf2_bytes)?;
+            uf2_sha256 = artifact.sha256.clone();
+        } else if artifact.path == FIRMWARE_SIGNED_ELF {
+            elf_bytes.reserve_exact(artifact.size as usize);
+            copy_artifact(root, artifact, &mut elf_bytes)?;
+            elf_sha256 = artifact.sha256.clone();
+        } else {
+            copy_artifact(root, artifact, io::sink())?;
+        }
+    }
+
+    Ok(VerifiedFirmware {
+        version,
+        bootkey_sha256,
+        uf2_sha256,
+        uf2_bytes,
+        elf_sha256,
+        elf_bytes,
+    })
+}
+
+pub(crate) fn load_and_verify_firmware_with_trust(
+    bundle_or_firmware_dir: &Path,
+    trust: TrustRoots<'_>,
+) -> Result<VerifiedFirmware, ReleaseError> {
+    let root = open_bundle(bundle_or_firmware_dir)?;
+    match fs_at::statat(&root, MANIFEST, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => {
+            let dist = load_and_verify_manifest_at(&root, trust)?;
+            let fw_dir = File::from(fs_at::openat(
+                &root,
+                "firmware",
+                DIRECTORY_FLAGS | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )?);
+            let fw = load_and_verify_firmware_at(&fw_dir, trust)?;
+            let dist_uf2 = dist
+                .artifacts
+                .iter()
+                .find(|a| a.path == FIRMWARE_IMAGE)
+                .ok_or_else(|| invalid("missing firmware UF2 in distribution manifest"))?;
+            let dist_elf = dist
+                .artifacts
+                .iter()
+                .find(|a| a.path == FIRMWARE_ELF_IN_DIST)
+                .ok_or_else(|| invalid("missing firmware ELF in distribution manifest"))?;
+            if dist_uf2.sha256 != fw.uf2_sha256
+                || dist_uf2.size != fw.uf2_bytes.len() as u64
+                || dist_elf.sha256 != fw.elf_sha256
+                || dist_elf.size != fw.elf_bytes.len() as u64
+            {
+                return Err(ReleaseError::SignatureFailed(
+                    "distribution and firmware release manifests disagree on firmware digests"
+                        .into(),
+                ));
+            }
+            Ok(fw)
+        }
+        Err(rustix::io::Errno::NOENT) => {
+            match fs_at::statat(&root, FIRMWARE_RELEASE_MANIFEST, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(_) => load_and_verify_firmware_at(&root, trust),
+                Err(rustix::io::Errno::NOENT) => Err(invalid(format!(
+                    "no signed distribution.json or release.json manifest in {} (pass --firmware-dir DIR or stage a verified release bundle)",
+                    bundle_or_firmware_dir.display()
+                ))),
+                Err(e) => Err(e.into()),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn load_and_verify_firmware(
+    bundle_or_firmware_dir: &Path,
+) -> Result<VerifiedFirmware, ReleaseError> {
+    load_and_verify_firmware_with_trust(bundle_or_firmware_dir, PRODUCTION_TRUST)
+}
+
+pub fn load_and_verify_manifest(bundle_root: &Path) -> Result<ReleaseManifest, ReleaseError> {
+    let root = open_bundle(bundle_root)?;
+    load_and_verify_manifest_at(&root, PRODUCTION_TRUST)
 }
 
 #[cfg(test)]

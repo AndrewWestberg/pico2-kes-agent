@@ -3,11 +3,23 @@
 mod distribution;
 
 pub(crate) use distribution::copy_verified_artifact;
-pub use distribution::load_and_verify_manifest;
+#[cfg(test)]
+pub(crate) use distribution::{TrustRoots, load_and_verify_firmware_with_trust};
+pub use distribution::{load_and_verify_firmware, load_and_verify_manifest};
 
 use serde::{Deserialize, Serialize};
 
 use std::io;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedFirmware {
+    pub version: String,
+    pub bootkey_sha256: String,
+    pub uf2_sha256: String,
+    pub uf2_bytes: Vec<u8>,
+    pub elf_sha256: String,
+    pub elf_bytes: Vec<u8>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleasePlatform {
