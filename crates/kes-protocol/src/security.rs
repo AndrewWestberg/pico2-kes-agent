@@ -73,3 +73,58 @@ impl SecurityStatus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorized_bootkey_is_present_and_verifies_locked_profile() {
+        let bootkey = AUTHORIZED_BOOTKEY.expect("public firmware authority key must be present");
+        assert_ne!(bootkey, [0u8; 32]);
+
+        let status = SecurityStatus {
+            chip_revision: 2,
+            rom_version: 2,
+            critical: 7,
+            boot_flags0: 0x20_0000
+                | 0x08_0000
+                | 0x04_0000
+                | 0x01_0000
+                | 0x8000
+                | 0x2000
+                | 0x100
+                | 0x80,
+            boot_flags1: 0xe01,
+            bootkey0: bootkey,
+            page2_lock0: 0,
+            page2_lock1: 0x15,
+            page63_lock0: 0,
+            page63_lock1: 0x15,
+            debugen: 0,
+            debugen_lock: 0x10f,
+            redundancy_ok: true,
+            jedec_id: [0xef, 0x40, 0x16],
+            sfdp_header: [
+                0x53, 0x46, 0x44, 0x50, 0x0a, 0x01, 0x00, 0xff, 0x00, 0x08, 0x01, 0x17, 0x80, 0x00,
+                0x00, 0xff,
+            ],
+            density_bits_minus_one: 0x01ff_ffff,
+            usb_serial: *b"0123456789abcdef",
+            storage_blank_at_boot: false,
+        };
+
+        assert_eq!(
+            status.profile(AUTHORIZED_BOOTKEY.as_ref()),
+            "rp2350-signed-msd-v1"
+        );
+        assert_eq!(status.profile(None), "incomplete");
+
+        let mut wrong_key_status = status;
+        wrong_key_status.bootkey0[0] ^= 0xff;
+        assert_eq!(
+            wrong_key_status.profile(AUTHORIZED_BOOTKEY.as_ref()),
+            "incomplete"
+        );
+    }
+}

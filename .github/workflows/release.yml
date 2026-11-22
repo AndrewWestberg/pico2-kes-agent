@@ -36,13 +36,18 @@ jobs:
       - name: Install Debian build prerequisites
         run: |
           apt-get update
-          apt-get install -y binutils build-essential ca-certificates cmake curl git pkg-config libudev-dev libusb-1.0-0-dev libssl-dev python3
+          apt-get install -y binutils build-essential ca-certificates cmake curl git gpg gpgv openssl pkg-config libudev-dev libusb-1.0-0-dev libssl-dev python3
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify public firmware authority
+        run: |
+          set -eu
+          python3 -c 'import runpy; runpy.run_path("tools/firmware.py")["verify_authority"]("security")'
       - name: Build host binaries with immutable identity
         env:
+          PICO2_REQUIRE_FIRMWARE_AUTHORITY: '1'
           P2KES_BUILD_VERSION: ${{ github.ref_name }}
           P2KES_SOURCE_COMMIT: ${{ github.sha }}
         run: |
