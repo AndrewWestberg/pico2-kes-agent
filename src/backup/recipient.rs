@@ -253,7 +253,10 @@ impl RecipientKeyFile {
         private
             .as_mut_slice()
             .copy_from_slice(fields.ciphertext.get(..32).ok_or(Error::InvalidFormat)?);
-        let tag: [u8; 16] = fields.ciphertext[32..]
+        let tag: [u8; 16] = fields
+            .ciphertext
+            .get(32..)
+            .ok_or(Error::InvalidFormat)?
             .try_into()
             .map_err(|_| Error::InvalidFormat)?;
         cipher
@@ -265,8 +268,7 @@ impl RecipientKeyFile {
             )
             .map_err(|_| Error::Authentication)?;
         key.zeroize();
-        let actual: [u8; 32] = private.as_slice().try_into().expect("fixed secret buffer");
-        verify_private(&actual, fields.public_key, fields.recipient_id)?;
+        verify_private(&private, fields.public_key, fields.recipient_id)?;
         Ok(private)
     }
 }
@@ -284,23 +286,34 @@ pub fn create(
     validate_passphrase(passphrase)?;
     let mut private = SecretBuffer::new(32).map_err(|_| Error::MemoryProtection)?;
     entropy.fill(private.as_mut_slice())?;
-    let private_bytes: [u8; 32] = private.as_slice().try_into().expect("fixed secret buffer");
-    let public_key = PublicKey::from(&StaticSecret::from(private_bytes)).to_bytes();
+    let public_key = {
+        let slice = private.as_slice();
+        if slice.len() != 32 {
+            return Err(Error::InvalidFormat);
+        }
+        let mut private_bytes = Zeroizing::new([0; 32]);
+        private_bytes.copy_from_slice(slice);
+        let secret = StaticSecret::from(*private_bytes);
+        PublicKey::from(&secret).to_bytes()
+    };
     let public = RecipientPublic {
         public_key,
         recipient_id: Sha256::digest(public_key).into(),
     };
-    let protected = encode_private(&private_bytes, public, passphrase, entropy)?;
+    let protected = encode_private(&private, public, passphrase, entropy)?;
     protected.unlock(passphrase)?;
     Ok((public, protected))
 }
 
 fn encode_private(
-    private: &[u8; 32],
+    private: &SecretBuffer,
     public: RecipientPublic,
     passphrase: &[u8],
     entropy: &mut impl Entropy,
 ) -> Result<RecipientKeyFile, Error> {
+    if private.as_slice().len() != 32 {
+        return Err(Error::InvalidFormat);
+    }
     let mut salt = [0; 16];
     let mut nonce = [0; 24];
     entropy.fill(&mut salt)?;
@@ -308,7 +321,8 @@ fn encode_private(
     let aad = header(&salt, &nonce, &public.public_key, &public.recipient_id)?;
     let mut key = derive_key(passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key[..]).map_err(|_| Error::InvalidFormat)?;
-    let mut ciphertext = Zeroizing::new(Vec::from(private.as_slice()));
+    let mut ciphertext = Zeroizing::new(Vec::with_capacity(48));
+    ciphertext.extend_from_slice(private.as_slice());
     let tag = cipher
         .encrypt_in_place_detached(&XNonce::from(nonce), &aad, &mut ciphertext)
         .map_err(|_| Error::Authentication)?;
@@ -523,11 +537,20 @@ fn validate_passphrase(passphrase: &[u8]) -> Result<(), Error> {
 }
 
 fn verify_private(
-    private: &[u8; 32],
+    private: &SecretBuffer,
     public: [u8; 32],
     recipient_id: [u8; 32],
 ) -> Result<(), Error> {
-    let actual = PublicKey::from(&StaticSecret::from(*private)).to_bytes();
+    let actual = {
+        let slice = private.as_slice();
+        if slice.len() != 32 {
+            return Err(Error::Authentication);
+        }
+        let mut private_bytes = Zeroizing::new([0; 32]);
+        private_bytes.copy_from_slice(slice);
+        let secret = StaticSecret::from(*private_bytes);
+        PublicKey::from(&secret).to_bytes()
+    };
     if actual == public && Sha256::digest(actual).as_slice() == recipient_id {
         Ok(())
     } else {
@@ -611,5 +634,176 @@ mod tests {
             check_swap_status(&b"\xff"[..]),
             Err(Error::MemoryProtection)
         );
+    }
+
+    struct CounterEntropy(u8);
+
+    impl Entropy for CounterEntropy {
+        fn fill(&mut self, output: &mut [u8]) -> Result<(), Error> {
+            for byte in output {
+                *byte = self.0;
+                self.0 = self.0.wrapping_add(1);
+            }
+            Ok(())
+        }
+    }
+
+    fn expected_public_for(raw_private: [u8; 32]) -> RecipientPublic {
+        let mut zeroizing_private = Zeroizing::new(raw_private);
+        let secret = StaticSecret::from(*zeroizing_private);
+        let public_key = PublicKey::from(&secret).to_bytes();
+        zeroizing_private.zeroize();
+        RecipientPublic {
+            public_key,
+            recipient_id: Sha256::digest(public_key).into(),
+        }
+    }
+
+    #[test]
+    fn create_and_unlock_round_trip_and_wipe_unlocked_secret_buffer() {
+        let mut expected_private = [0u8; 32];
+        CounterEntropy(7).fill(&mut expected_private).unwrap();
+        let expected_public = expected_public_for(expected_private);
+
+        let mut entropy = CounterEntropy(7);
+        let (public, key_file) = create(b"recipient test passphrase", &mut entropy).unwrap();
+        assert_eq!(public.public_key, expected_public.public_key);
+        assert_eq!(public.recipient_id, expected_public.recipient_id);
+
+        let mut unlocked = key_file.unlock(b"recipient test passphrase").unwrap();
+        assert_eq!(unlocked.as_slice(), &expected_private);
+        unlocked.clear();
+        assert!(unlocked.as_slice().iter().all(|&byte| byte == 0));
+
+        assert_eq!(
+            key_file.unlock(b"wrong passphrase").err(),
+            Some(Error::Authentication)
+        );
+        expected_private.zeroize();
+    }
+
+    #[test]
+    fn secret_buffer_helpers_verify_and_fail_closed_on_invalid_lengths_or_keys() {
+        let raw_private = [0x42; 32];
+        let public = expected_public_for(raw_private);
+        let secret = SecretBuffer::copy_from_slice(&raw_private).unwrap();
+
+        assert_eq!(
+            verify_private(&secret, public.public_key, public.recipient_id),
+            Ok(())
+        );
+
+        let mut wrong_public = public.public_key;
+        wrong_public[0] ^= 1;
+        assert_eq!(
+            verify_private(&secret, wrong_public, public.recipient_id),
+            Err(Error::Authentication)
+        );
+
+        let mut wrong_id = public.recipient_id;
+        wrong_id[0] ^= 1;
+        assert_eq!(
+            verify_private(&secret, public.public_key, wrong_id),
+            Err(Error::Authentication)
+        );
+
+        let wrong_secret = SecretBuffer::copy_from_slice(&[0x24; 32]).unwrap();
+        assert_eq!(
+            verify_private(&wrong_secret, public.public_key, public.recipient_id),
+            Err(Error::Authentication)
+        );
+
+        for invalid_len in [1, 16, 31, 33, 64] {
+            let invalid_buf = SecretBuffer::new(invalid_len).unwrap();
+            assert_eq!(
+                verify_private(&invalid_buf, public.public_key, public.recipient_id),
+                Err(Error::Authentication)
+            );
+            assert_eq!(
+                encode_private(
+                    &invalid_buf,
+                    public,
+                    b"test passphrase",
+                    &mut CounterEntropy(1)
+                )
+                .err(),
+                Some(Error::InvalidFormat)
+            );
+        }
+
+        let mismatched_file = encode_private(
+            &wrong_secret,
+            public,
+            b"test passphrase",
+            &mut CounterEntropy(9),
+        )
+        .unwrap();
+        assert_eq!(
+            mismatched_file.unlock(b"test passphrase").err(),
+            Some(Error::Authentication)
+        );
+    }
+
+    #[test]
+    fn malformed_ciphertext_buffers_fail_closed() {
+        let public = expected_public_for([0x11; 32]);
+        for bad_len in [0usize, 16, 31, 32, 47, 49, 64] {
+            let bad_ciphertext = vec![0xaa; bad_len];
+            let mut storage = [0; 512];
+            let mut encoder = Encoder::new(&mut storage);
+            encode_fields(
+                &mut encoder,
+                &[1; 16],
+                &[2; 24],
+                &public.public_key,
+                &public.recipient_id,
+                Some(&bad_ciphertext),
+            )
+            .unwrap();
+            let encoded_map = encoder.finish().unwrap();
+            let mut encoded = Vec::from(MAGIC.as_slice());
+            encoded.extend_from_slice(encoded_map.encoded());
+
+            assert_eq!(
+                RecipientKeyFile::parse(encoded.clone()).err(),
+                Some(Error::InvalidFormat)
+            );
+            let unvalidated = RecipientKeyFile { encoded };
+            assert_eq!(
+                unvalidated.unlock(b"test passphrase").err(),
+                Some(Error::InvalidFormat)
+            );
+        }
+    }
+
+    #[test]
+    fn scoped_zeroizing_conversion_wipes_ephemeral_key_bytes_on_drop() {
+        struct TrackedKey<'a> {
+            bytes: [u8; 32],
+            wiped_on_drop: &'a std::cell::Cell<bool>,
+        }
+
+        impl Zeroize for TrackedKey<'_> {
+            fn zeroize(&mut self) {
+                self.bytes.zeroize();
+                self.wiped_on_drop
+                    .set(self.bytes.iter().all(|&byte| byte == 0));
+            }
+        }
+
+        let secret = SecretBuffer::copy_from_slice(&[0x5a; 32]).unwrap();
+        let wiped_on_drop = std::cell::Cell::new(false);
+        let derived_public = {
+            let mut ephemeral = Zeroizing::new(TrackedKey {
+                bytes: [0; 32],
+                wiped_on_drop: &wiped_on_drop,
+            });
+            ephemeral.bytes.copy_from_slice(secret.as_slice());
+            assert!(ephemeral.bytes.iter().any(|&byte| byte != 0));
+            let static_secret = StaticSecret::from(ephemeral.bytes);
+            PublicKey::from(&static_secret).to_bytes()
+        };
+        assert!(wiped_on_drop.get());
+        assert_eq!(derived_public, expected_public_for([0x5a; 32]).public_key);
     }
 }

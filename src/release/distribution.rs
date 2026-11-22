@@ -332,8 +332,8 @@ fn check_digest(
     if expected.len() != 64
         || !digest
             .iter()
-            .zip(expected.chunks_exact(2))
-            .all(|(&byte, pair)| pair == [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]])
+            .zip(expected.as_chunks::<2>().0)
+            .all(|(&byte, &pair)| pair == [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]])
     {
         return Err(ReleaseError::HashMismatch {
             artifact: artifact.path.clone(),
