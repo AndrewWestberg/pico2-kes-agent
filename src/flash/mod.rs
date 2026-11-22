@@ -24,11 +24,15 @@ pub fn cmd_verify(bundle_root: &Path, uf2_path: Option<&Path>) -> Result<(), Str
 }
 
 pub fn cmd_flash(uf2_path: &Path) -> Result<(), String> {
+    let file_name = uf2_path.file_name().ok_or("invalid UF2 filename")?;
     let bytes = fs::read(uf2_path).map_err(|e| e.to_string())?;
     uf2::validate_uf2(&bytes)?;
-    let mount = uf2::find_bootsel_mount()
-        .ok_or("no RP2350 BOOTSEL mass-storage device found (hold BOOTSEL and replug)")?;
-    uf2::copy_uf2_to_bootsel(uf2_path, &mount)?;
-    println!("flashed {} to {}", uf2_path.display(), mount.display());
+    let mount = uf2::find_bootsel_mount()?;
+    uf2::copy_uf2_to_bootsel(&mount, file_name, &bytes)?;
+    println!(
+        "flashed {} to {}",
+        uf2_path.display(),
+        mount.path().display()
+    );
     Ok(())
 }
